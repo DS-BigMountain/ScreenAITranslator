@@ -94,7 +94,16 @@ class App {
   Post([this,id]{if(id==generation_)SetStage(Stage::Layout);});auto blocks=BuildOverlay(result,cropped,region,monitor,options);CheckStop(stop);
   auto total=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count();
   Post([this,id,blocks=std::move(blocks),result=std::move(result),options,monitor,apiMs,total]{
-   if(id!=generation_)return;overlay_.Show(blocks,options,monitor.dpi,[this,id]{Post([this,id]{if(id==generation_)CloseOverlay();});},[this]{Post([this]{Begin(false);});});SetStage(Stage::Displaying);
+   if(id!=generation_)return;
+   overlay_.Show(blocks,options,monitor.dpi,
+    [this,id]{Post([this,id]{if(id==generation_)CloseOverlay();});},
+    [this,id]{Post([this,id]{if(id==generation_&&stage_==Stage::Displaying)Begin(false);});},
+    [this,id,monitor](RECT region){Post([this,id,monitor,region]{
+     if(id!=generation_||stage_!=Stage::Displaying)return;
+     // The fixed path closes the old overlay before capturing fresh screen pixels.
+     sessionRegion_=NormalizeRegion(monitor,region);Begin(true);
+    });});
+   SetStage(Stage::Displaying);
    if(options.contextEnabled){context_.Add(result,options.contextSize);SetTimer(window_,ContextTimer,30*60*1000,nullptr);}
    if(options.autoHide)SetTimer(window_,HideTimer,options.autoHideSeconds*1000,nullptr);
    settingsWindow_.Status(L"翻译完成 · API "+std::to_wstring(apiMs)+L" ms · 本次处理 "+std::to_wstring(total)+L" ms");
@@ -133,7 +142,7 @@ class App {
   switch(m){case UiMessage:Dispatch();return 0;case WM_HOTKEY:switch(w){case 1:Begin(false);break;case 2:Begin(true);break;case 3:ShowSettings();break;case 4:Cancel();break;}return 0;
   case TrayMessage:if(l==WM_LBUTTONDBLCLK)ShowSettings();else if(l==WM_RBUTTONUP||l==WM_CONTEXTMENU)TrayMenu();return 0;
   case WM_COPYDATA:ShowSettings();return TRUE;
-  case WM_TIMER:if(w==HideTimer)CloseOverlay();else if(w==ContextTimer)ContextChanged();return 0;
+  case WM_TIMER:if(w==HideTimer){if(!overlay_.Dragging())CloseOverlay();}else if(w==ContextTimer)ContextChanged();return 0;
   case WM_DISPLAYCHANGE:Cancel();currentMonitor_={};if(sessionRegion_&&!RestoreRegion(*sessionRegion_,EnumerateMonitors())){sessionRegion_.reset();SaveState();}return 0;
   case WM_QUERYENDSESSION:return TRUE;
   case WM_ENDSESSION:if(w)DestroyWindow(h);return 0;

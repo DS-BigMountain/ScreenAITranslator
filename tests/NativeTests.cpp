@@ -1,5 +1,6 @@
 ﻿#include "common/Platform.h"
 #include "overlay/Overlay.h"
+#include "capture/Capture.h"
 #include "overlay/SpatialLayout.h"
 #include "selection/Selection.h"
 #include "settings/SettingsWindow.h"
@@ -7,6 +8,7 @@
 #include <iostream>
 #include <algorithm>
 #include <dwrite.h>
+#include <dwmapi.h>
 #include <wincodec.h>
 namespace {
 int checks{};
@@ -19,6 +21,9 @@ unsigned long long Snapshot(HWND window,const std::wstring& name){
  std::vector<unsigned char> pixels(static_cast<size_t>(sat::Width(r))*sat::Height(r)*4);sat::CheckHR(image->CopyPixels(nullptr,sat::Width(r)*4,static_cast<UINT>(pixels.size()),pixels.data()),"test");unsigned long long hash=1469598103934665603ULL;for(auto pixel:pixels){hash^=pixel;hash*=1099511628211ULL;}return hash;
 }
 std::vector<HWND> Windows(const wchar_t* name){std::vector<HWND> result;HWND h=nullptr;while((h=FindWindowExW(nullptr,h,name,nullptr))!=nullptr){DWORD pid{};GetWindowThreadProcessId(h,&pid);if(pid==GetCurrentProcessId())result.push_back(h);}return result;}
+RECT Bounds(HWND window){RECT r{};Require(GetWindowRect(window,&r)!=FALSE,"window bounds unavailable");return r;}
+void MouseAt(HWND window,UINT message,WPARAM buttons,POINT screen){ScreenToClient(window,&screen);SendMessageW(window,message,buttons,MAKELPARAM(screen.x,screen.y));}
+void RequireBounds(HWND window,RECT expected,const char* message){auto actual=Bounds(window);Require(EqualRect(&actual,&expected)!=FALSE,message);}
 void TestLayout(){
  sat::Image image{600,160,std::vector<unsigned char>(600*160*4,255)};sat::Monitor monitor{L"test",{-1920,-200,0,880},144};RECT roi{-1860,20,-1260,180};sat::Settings settings;settings.spatialOverlay=false;settings.autoFont=false;settings.fontSize=22;
  sat::TranslationResult result{"ja",{{"字幕","这是一段应当完整显示的中文翻译。",{10,10,280,240}},{"名前","角色名称",{300,10,200,220}}}};
@@ -60,6 +65,100 @@ void TestSpatialOverlay(){
  SendMessageW(bar,WM_COMMAND,4,0);Require(reselected==1,"reselect action not connected");SendMessageW(bar,WM_COMMAND,5,0);Require(dismissed==1,"toolbar close action not connected");overlay.Close();Require(Windows(L"SAT.TranslationToolbar").empty(),"toolbar leaked on close");
  sat::Monitor negative{L"negative",{-1920,-1080,0,0},144};RECT tinyRegion{-1900,-100,-1850,-50};auto edge=sat::BuildOverlay(result,image,tinyRegion,negative,settings);Require(EqualRect(&edge[0].screen,&tinyRegion)!=FALSE,"negative screen position changed");
  result.segments={{"bad","边界",{-500,-500,5000,5000}}};auto clamped=sat::BuildOverlay(result,image,roi,monitor,settings);auto rect=clamped[0].positioned[0].rect;Require(rect.left==0&&rect.top==0&&rect.right==600&&rect.bottom==300,"out-of-range model box was not clamped");
+}
+void TestOverlayDragging(){
+ sat::Image image{440,240,std::vector<unsigned char>(440*240*4,245)};
+ sat::TranslationResult result{"en",{{"move","拖动边框后重新翻译",{100,100,600,400}}}};
+ for(bool spatial:{false,true})for(UINT dpi:{96u,192u}){
+  sat::Monitor monitor{L"drag-test",{-300,-200,1300,1000},dpi};RECT roi{100,100,540,340};sat::Settings settings;settings.spatialOverlay=spatial;
+  auto blocks=sat::BuildOverlay(result,image,roi,monitor,settings);sat::Overlay overlay;int moved{},dismissed{};RECT translated{};
+  overlay.Show(blocks,settings,dpi,[&]{++dismissed;},{},[&](RECT r){translated=r;++moved;});Pump();auto h=Windows(L"SAT.Overlay").front();
+  auto start=[&](POINT local){auto r=Bounds(h);POINT p{r.left+local.x,r.top+local.y};MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,p);return p;};
+  // Text, close buttons, and a stationary/jittering border click are not drags.
+  auto body=start({40,100});POINT destination{body.x+40,body.y+30};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);MouseAt(h,WM_LBUTTONUP,0,destination);
+  RequireBounds(h,roi,"body drag moved the translation");Require(moved==0&&!overlay.Dragging(),"body drag requested translation");
+  auto edge=start({1,60});Require(overlay.Dragging(),"border press did not arm drag");destination={edge.x+1,edge.y+1};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);MouseAt(h,WM_LBUTTONUP,0,destination);
+  RequireBounds(h,roi,"border jitter moved the translation");Require(moved==0,"border click requested translation");
+  // Coordinates stay in screen pixels even after the window has already moved.
+  edge=start({1,60});destination={edge.x+45,edge.y+25};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);auto preview=roi;OffsetRect(&preview,45,25);
+  RequireBounds(h,preview,"drag preview has wrong screen coordinates");Require(moved==0,"drag called translation before release");
+  destination={edge.x+70,edge.y+45};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);OffsetRect(&roi,70,45);RequireBounds(h,roi,"moving window introduced coordinate drift");
+  MouseAt(h,WM_LBUTTONUP,0,destination);MouseAt(h,WM_LBUTTONUP,0,destination);Require(moved==1&&EqualRect(&translated,&roi),"release did not translate exactly once at the final position");Require(!overlay.Dragging()&&GetCapture()!=h,"release retained mouse capture");
+  // Returning to the original location and losing capture must not commit a region.
+  edge=start({1,60});destination={edge.x-40,edge.y-20};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,edge);MouseAt(h,WM_LBUTTONUP,0,edge);
+  RequireBounds(h,roi,"round-trip drag did not restore position");Require(moved==1,"round-trip drag requested translation");
+  for(UINT cancel:{WM_CANCELMODE,WM_CAPTURECHANGED,WM_RBUTTONDOWN}){
+   edge=start({1,60});destination={edge.x+30,edge.y+20};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);
+   if(cancel==WM_CAPTURECHANGED)ReleaseCapture();else SendMessageW(h,cancel,0,0);
+   RequireBounds(h,roi,"cancelled drag retained preview position");Require(moved==1&&!overlay.Dragging(),"cancelled drag committed a translation");
+  }
+  // All four borders move the whole frame, without resizing it.
+  for(POINT border:std::vector<POINT>{{220,1},{439,100},{220,239}}){
+   edge=start(border);destination={edge.x-20,edge.y-10};MouseAt(h,WM_LBUTTONUP,0,destination);OffsetRect(&roi,-20,-10);
+   RequireBounds(h,roi,"border release did not apply its final coordinates");Require(EqualRect(&translated,&roi)!=FALSE,"border drag changed capture size");
+  }
+  auto beforeClamp=moved;edge=start({1,60});destination={-2000,-2000};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);MouseAt(h,WM_LBUTTONUP,0,destination);
+  roi={monitor.rect.left,monitor.rect.top,monitor.rect.left+440,monitor.rect.top+240};RequireBounds(h,roi,"drag escaped monitor at negative coordinates");Require(moved==beforeClamp+1&&EqualRect(&translated,&roi),"clamped drag did not retain capture dimensions");
+  // Move back into the monitor to leave room for an expanded reading frame.
+  edge=start({1,60});destination={edge.x+450,edge.y+350};MouseAt(h,WM_LBUTTONUP,0,destination);OffsetRect(&roi,450,350);
+  if(spatial){
+   auto bar=Windows(L"SAT.TranslationToolbar").front();SendMessageW(bar,WM_COMMAND,1,0);auto toolbarBefore=Bounds(bar);
+   edge=start({1,60});destination={edge.x+15,edge.y+10};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);auto toolbarAfter=Bounds(bar);
+   Require(toolbarAfter.left-toolbarBefore.left==15&&toolbarAfter.top-toolbarBefore.top==10,"toolbar did not follow drag");MouseAt(h,WM_LBUTTONUP,0,destination);OffsetRect(&roi,15,10);
+   SendMessageW(bar,WM_COMMAND,2,0);auto reading=Bounds(h);Require(sat::Height(reading)>sat::Height(roi),"reading test did not expand the frame");
+   edge=start({1,60});destination={edge.x-15,edge.y-10};MouseAt(h,WM_LBUTTONUP,0,destination);OffsetRect(&roi,-15,-10);OffsetRect(&reading,-15,-10);
+   RequireBounds(h,reading,"reading frame did not move by the pointer delta");Require(EqualRect(&translated,&roi)!=FALSE,"reading dimensions leaked into translation region");
+   SendMessageW(bar,WM_COMMAND,0,0);RequireBounds(h,roi,"returning from reading lost moved capture coordinates");
+  }else{
+   auto beforeClose=moved;auto close=blocks.front().closeButton;auto point=start({close.right-1,close.top+1});Require(!overlay.Dragging(),"close button started border drag");MouseAt(h,WM_LBUTTONUP,0,point);Require(dismissed==1&&moved==beforeClose,"close button committed drag");
+  }
+  auto beforeClose=moved;edge=start({1,60});destination={edge.x+20,edge.y+20};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);overlay.Close();Require(moved==beforeClose&&!overlay.Dragging(),"closing a drag committed its preview");
+  overlay.Notice(L"正在翻译",roi,monitor,[]{});h=Windows(L"SAT.Overlay").front();edge=start({1,40});destination={edge.x+30,edge.y+20};MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,destination);MouseAt(h,WM_LBUTTONUP,0,destination);Require(!overlay.Dragging()&&moved==beforeClose,"status notice retained translation drag callback");overlay.Close();
+ }
+}
+class DragBackdrop {
+ HWND window_{};
+ static LRESULT CALLBACK Proc(HWND h,UINT m,WPARAM w,LPARAM l){
+  if(m==WM_PAINT){PAINTSTRUCT ps{};auto dc=BeginPaint(h,&ps);RECT r{};GetClientRect(h,&r);auto brush=CreateSolidBrush(static_cast<COLORREF>(GetWindowLongPtrW(h,GWLP_USERDATA)));FillRect(dc,&r,brush);DeleteObject(brush);EndPaint(h,&ps);return 0;}
+  return DefWindowProcW(h,m,w,l);
+ }
+public:
+ explicit DragBackdrop(RECT r){
+  WNDCLASSW wc{};wc.lpfnWndProc=Proc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.DragBackdrop";RegisterClassW(&wc);
+  window_=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,wc.lpszClassName,L"Drag transparency fixture",WS_POPUP,r.left,r.top,sat::Width(r),sat::Height(r),nullptr,nullptr,wc.hInstance,nullptr);Require(window_!=nullptr,"drag backdrop creation failed");ShowWindow(window_,SW_SHOWNOACTIVATE);
+ }
+ ~DragBackdrop(){DestroyWindow(window_);}
+ void Color(COLORREF color){SetWindowLongPtrW(window_,GWLP_USERDATA,color);InvalidateRect(window_,nullptr,FALSE);UpdateWindow(window_);}
+};
+bool InteriorShowsBackdrop(HWND window,COLORREF color){
+ auto r=Bounds(window);int width=sat::Width(r),height=sat::Height(r);DwmFlush();Sleep(40);
+ HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=width;bi.bmiHeader.biHeight=-height;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;
+ void* pixels{};auto bitmap=CreateDIBSection(screen,&bi,DIB_RGB_COLORS,&pixels,nullptr,0);
+ if(!screen||!dc||!bitmap){if(bitmap)DeleteObject(bitmap);if(dc)DeleteDC(dc);if(screen)ReleaseDC(nullptr,screen);throw std::runtime_error("drag pixel probe allocation failed");}
+ auto old=SelectObject(dc,bitmap);bool copied=BitBlt(dc,0,0,width,height,screen,r.left,r.top,SRCCOPY|CAPTUREBLT)!=FALSE;GdiFlush();
+ bool clear=true,border=false;auto bytes=static_cast<const unsigned char*>(pixels);
+ for(int y=0;y<height;++y)for(int x=0;x<width;++x){auto p=(static_cast<size_t>(y)*width+x)*4;bool match=bytes[p]==GetBValue(color)&&bytes[p+1]==GetGValue(color)&&bytes[p+2]==GetRValue(color);if(x>=6&&x<width-6&&y>=6&&y<height-6)clear&=match;else border|=!match;}
+ SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(nullptr,screen);Require(copied,"drag pixel probe failed");Require(border,"drag preview lost its visible border");return clear;
+}
+void TestDragTransparency(){
+ auto monitor=sat::MonitorAtCursor();monitor.dpi=96;DragBackdrop backdrop(monitor.rect);
+ sat::Image image{240,160,std::vector<unsigned char>(240*160*4,245)};sat::TranslationResult result{"en",{{"source","拖动时不应遮住下面的内容",{100,100,800,700}}}};
+ RECT roi{monitor.rect.left+80,monitor.rect.top+80,monitor.rect.left+320,monitor.rect.top+240};
+ // Check traditional, spatial, source, and expanded reading views against a live background.
+ for(int mode=-1;mode<3;++mode){
+  auto color=RGB(31,97,149);backdrop.Color(color);sat::Settings settings;settings.spatialOverlay=mode>=0;auto blocks=sat::BuildOverlay(result,image,roi,monitor,settings);
+  sat::Overlay overlay;int moved{};overlay.Show(blocks,settings,96,[]{},{},[&](RECT){++moved;});Pump();auto h=Windows(L"SAT.Overlay").front();HWND toolbar=mode>=0?Windows(L"SAT.TranslationToolbar").front():nullptr;if(toolbar)SendMessageW(toolbar,WM_COMMAND,mode,0);
+  auto view=Bounds(h);POINT start{view.left+1,view.top+60},end{start.x+20,start.y+15};
+  MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_LBUTTONUP,0,start);Require(!InteriorShowsBackdrop(h,color),"stationary border click hid contents");
+  MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,end);
+  Require(InteriorShowsBackdrop(h,color),"drag retained screenshot, text, or background pixels");Require(!toolbar||!IsWindowVisible(toolbar),"toolbar obstructs the drag preview");Require(moved==0,"clearing drag contents submitted translation");
+  color=RGB(183,61,37);backdrop.Color(color);Require(InteriorShowsBackdrop(h,color),"drag shows a frozen backdrop instead of live transparency");
+  SendMessageW(h,WM_CANCELMODE,0,0);RequireBounds(h,view,"cancel changed the original position");Require(!InteriorShowsBackdrop(h,color),"cancel failed to restore contents");Require(!toolbar||IsWindowVisible(toolbar),"cancel failed to restore toolbar");
+  MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,end);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,start);MouseAt(h,WM_LBUTTONUP,0,start);
+  Require(!InteriorShowsBackdrop(h,color)&&moved==0,"round-trip drag did not restore contents without translating");Require(!toolbar||IsWindowVisible(toolbar),"round-trip drag failed to restore toolbar");
+  MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,end);MouseAt(h,WM_LBUTTONUP,0,end);
+  Require(moved==1&&InteriorShowsBackdrop(h,color),"release flashed the old contents before retranslation");overlay.Close();
+ }
 }
 sat::Image InstallerFixture(){
  sat::ComPtr<IWICImagingFactory> factory;sat::CheckHR(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory)),"test");
@@ -125,7 +224,7 @@ void TestSettings(){
  window.Show(options,"test-only-key",state,cb);h=window.Window();SendMessageW(GetDlgItem(h,149),CB_SETCURSEL,1,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(146,BN_CLICKED),0);Require(fetched==1&&SendMessageW(GetDlgItem(h,144),CB_GETCOUNT,0,0)==2,"fetch button fails to populate list");SendMessageW(GetDlgItem(h,144),CB_SETCURSEL,0,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(147,BN_CLICKED),0);Require(tested==1,"test API button not connected");window.Close();
 }
 }
-int main(){try{SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);sat::ComScope com;INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&cc);TestLayout();TestOverlay();TestSpatialOverlay();TestCrowdedLayouts();TestSelection();TestSettings();std::cout<<"NativeTests: PASS ("<<checks<<" checks)\n";return 0;}catch(const std::exception& e){std::cerr<<"NativeTests: FAIL: "<<e.what()<<"\n";return 1;}}
+int main(){try{SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);sat::ComScope com;INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&cc);TestLayout();TestOverlay();TestSpatialOverlay();TestOverlayDragging();TestDragTransparency();TestCrowdedLayouts();TestSelection();TestSettings();std::cout<<"NativeTests: PASS ("<<checks<<" checks)\n";return 0;}catch(const std::exception& e){std::cerr<<"NativeTests: FAIL: "<<e.what()<<"\n";return 1;}}
 
 
 
