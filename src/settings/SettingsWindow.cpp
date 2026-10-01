@@ -40,7 +40,7 @@ void SettingsWindow::Build(){
  // can paint over native edit/static controls during themed redraw/WM_PRINT.
  tabs_=Add(-1,0,WC_TABCONTROLW,L"",WS_TABSTOP,18,18,704,34);
  const wchar_t* pages[]{L"使用偏好",L"快捷键",L"模型连接",L"翻译质量",L"显示效果"};for(int i=0;i<5;++i){TCITEMW t{};t.mask=TCIF_TEXT;t.pszText=const_cast<wchar_t*>(pages[i]);TabCtrl_InsertItem(tabs_,i,&t);}TabCtrl_SetCurSel(tabs_,page_);
- Check(0,Startup,L"Windows 登录后静默启动",settings_.startup,218);Check(0,Tray,L"显示系统托盘图标",settings_.tray,258);Label(0,L"固定区域复用本次最近框选，退出程序后清空。",38,298,654);Check(0,AutoHide,L"自动隐藏翻译结果（默认关闭）",settings_.autoHide,338);
+ Check(0,Startup,L"Windows 登录后静默启动",settings_.startup,218);Check(0,Tray,L"显示系统托盘图标",settings_.tray,258);Label(0,L"固定区域跟随最后一次框选或拖动位置，退出程序后清空。",38,298,654);Check(0,AutoHide,L"自动隐藏翻译结果（默认关闭）",settings_.autoHide,338);
  Label(0,L"自动隐藏时间（秒）",38,384);Edit(0,HideSeconds,std::to_wstring(settings_.autoHideSeconds),380,150,ES_NUMBER);
  Label(0,L"关闭设置后在后台运行。截图只在主动触发时进行。",38,438,640);
  Label(0,L"关闭托盘前，请先配置“打开设置”快捷键。",38,474,640);

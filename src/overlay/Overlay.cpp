@@ -35,7 +35,8 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result,const Ima
  if(result.segments.empty())return {};
  if(!Valid(screenRoi))throw AppError("layout","译文框范围无效，请重新框选");
  auto factory=WriteFactory();float scale=monitor.dpi/96.f;
- OverlayBlock block;block.screen=screenRoi;
+ OverlayBlock block;block.screen=screenRoi;block.monitorArea=monitor.rect;block.workArea=monitor.rect;
+ MONITORINFO info{sizeof(info)};auto handle=MonitorFromRect(&screenRoi,MONITOR_DEFAULTTONULL);if(GetMonitorInfoW(handle,&info)&&EqualRect(&info.rcMonitor,&monitor.rect))block.workArea=info.rcWork;
  for(const auto& segment:result.segments){if(!block.text.empty())block.text+=L"\n\n";block.text+=Wide(segment.translated);}
  auto bg=AnalyzeBackground(roi,{0,0,roi.width,roi.height});
  block.background=bg.simple?bg.color:(bg.luminance>128?RGB(235,235,235):RGB(20,22,27));block.opacity=bg.simple?1.f:settings.backgroundOpacity;
@@ -52,13 +53,53 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result,const Ima
  CheckHR(factory->CreateTextLayout(block.text.c_str(),static_cast<UINT32>(block.text.size()),format.Get(),static_cast<float>(std::max(1,Width(block.viewport))),static_cast<float>(std::max(1,Height(block.viewport))),&block.layout),"layout");
  DWRITE_TEXT_METRICS metrics{};CheckHR(block.layout->GetMetrics(&metrics),"layout");block.contentHeight=metrics.height;
   if(settings.spatialOverlay){
-  block.image=std::make_shared<Image>(roi);block.positioned=LayoutPositioned(result,roi,settings,monitor.dpi);block.workArea=monitor.rect;
-  MONITORINFO info{sizeof(info)};auto handle=MonitorFromRect(&screenRoi,MONITOR_DEFAULTTONEAREST);if(GetMonitorInfoW(handle,&info))block.workArea=info.rcWork;
+  block.image=std::make_shared<Image>(roi);block.positioned=LayoutPositioned(result,roi,settings,monitor.dpi);
  }
  return {std::move(block)};
 }
 Overlay::~Overlay(){Close();}
-void Overlay::Close(){dismissed_={};reselect_={};if(toolbar_){DestroyWindow(toolbar_);toolbar_=nullptr;}for(auto& w:windows_)if(w->hwnd)DestroyWindow(w->hwnd);windows_.clear();}
+void Overlay::Close(){dismissed_={};reselect_={};moved_={};if(toolbar_){DestroyWindow(toolbar_);toolbar_=nullptr;}for(auto& w:windows_){w->drag.reset();if(w->hwnd)DestroyWindow(w->hwnd);}windows_.clear();}
+bool Overlay::Dragging()const{return std::any_of(windows_.begin(),windows_.end(),[](const auto& window){return window->drag.has_value();});}
+bool Overlay::DragBorder(const WindowData& data,POINT point)const{
+ if(!moved_||!Valid(data.block.monitorArea))return false;
+ const auto& active=data.reading&&data.mode==2?*data.reading:data.block;
+ RECT client{0,0,Width(active.screen),Height(active.screen)};
+ if(!PtInRect(&client,point)||((!data.block.image||data.mode==2)&&PtInRect(&active.closeButton,point)))return false;
+ const int edge=std::max(4,MulDiv(6,data.dpi,96));
+ return point.x<edge||point.y<edge||point.x>=client.right-edge||point.y>=client.bottom-edge;
+}
+void Overlay::MoveDrag(WindowData& data,POINT point){
+ if(!data.drag)return;auto& drag=*data.drag;
+ LONG dx=point.x-drag.start.x,dy=point.y-drag.start.y;
+ const bool firstMove=!drag.moved;
+ if(!drag.moved){
+  if(std::abs(dx)<GetSystemMetricsForDpi(SM_CXDRAG,data.dpi)&&std::abs(dy)<GetSystemMetricsForDpi(SM_CYDRAG,data.dpi))return;
+  drag.moved=true;
+ }
+ // Keep both the actual capture and the visible reading frame on this monitor.
+ // Moving a reading frame never replaces the capture with its expanded dimensions.
+ const auto area=data.block.monitorArea;
+ dx=std::clamp(dx,std::max(area.left-drag.region.left,area.left-drag.view.left),std::min(area.right-drag.region.right,area.right-drag.view.right));
+ dy=std::clamp(dy,std::max(area.top-drag.region.top,area.top-drag.view.top),std::min(area.bottom-drag.region.bottom,area.bottom-drag.view.bottom));
+ data.block.screen=drag.region;OffsetRect(&data.block.screen,dx,dy);
+ if(data.reading&&drag.reading){data.reading->screen=*drag.reading;OffsetRect(&data.reading->screen,dx,dy);}
+ RECT view=drag.view;OffsetRect(&view,dx,dy);
+ if(firstMove){
+  data.dragPreview=true;if(toolbar_)ShowWindow(toolbar_,SW_HIDE);Render(data);
+ }else SetWindowPos(data.hwnd,nullptr,view.left,view.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+ PositionToolbar();
+}
+void Overlay::RestoreContents(WindowData& data){
+ if(!data.dragPreview)return;data.dragPreview=false;Render(data);
+ if(toolbar_)ShowWindow(toolbar_,SW_SHOWNOACTIVATE);
+}
+void Overlay::CancelDrag(WindowData& data){
+ if(!data.drag)return;auto drag=*data.drag;data.drag.reset();data.pressed=false;
+ data.block.screen=drag.region;if(data.reading&&drag.reading)data.reading->screen=*drag.reading;
+ SetWindowPos(data.hwnd,nullptr,drag.view.left,drag.view.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);PositionToolbar();
+ if(GetCapture()==data.hwnd)ReleaseCapture();
+ RestoreContents(data);
+}
 void Overlay::Render(WindowData& window){
  const auto& block=window.reading&&window.mode==2?*window.reading:window.block;const auto& settings=window.settings;const auto dpi=window.dpi;
  int w=Width(block.screen),h=Height(block.screen);BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=w;bi.bmiHeader.biHeight=-h;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
@@ -72,7 +113,14 @@ void Overlay::Render(WindowData& window){
   // Default white switches to dark on a light cover; explicitly chosen colors remain honored.
   foreground=ReadableTextColor(foreground,block.background);
   CheckHR(rt->CreateSolidColorBrush(ColorF(foreground),&fill),"overlay");CheckHR(rt->CreateSolidColorBrush(ColorF(settings.outlineColor),&edge),"overlay");
-  rt->BeginDraw();rt->Clear(D2D1::ColorF(0,0.f));rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);rt->FillRectangle(D2D1::RectF(0,0,static_cast<float>(w),static_cast<float>(h)),background.Get());
+  rt->BeginDraw();rt->Clear(D2D1::ColorF(0,0.f));
+  if(window.dragPreview){
+   // Leave every interior pixel transparent so the live desktop stays visible.
+   edge->SetColor(ColorF(RGB(88,119,235)));
+   const float stroke=std::min(std::max(1.f,2*dpi/96.f),float(std::min(w,h))/2);
+   rt->DrawRectangle(D2D1::RectF(stroke/2,stroke/2,w-stroke/2,h-stroke/2),edge.Get(),stroke);
+  }else{
+  rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);rt->FillRectangle(D2D1::RectF(0,0,static_cast<float>(w),static_cast<float>(h)),background.Get());
   if(block.image&&window.mode!=2){
    const auto& image=*block.image;ComPtr<ID2D1Bitmap> bitmap;
    auto bitmapProps=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_IGNORE));
@@ -115,7 +163,7 @@ void Overlay::Render(WindowData& window){
   if(w>100*scale&&headerBottom>16*scale){
    ComPtr<IDWriteTextFormat> title;auto writer=WriteFactory();CheckHR(writer->CreateTextFormat(settings.font.c_str(),nullptr,DWRITE_FONT_WEIGHT_MEDIUM,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,12*scale,L"zh-CN",&title),"overlay");
    title->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);title->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-   const wchar_t* caption=block.contentHeight>Height(block.viewport)?L"译文 · 滚轮查看":L"译文";
+   const wchar_t* caption=moved_?L"译文 · 拖动边框，松手重译":block.contentHeight>Height(block.viewport)?L"译文 · 滚轮查看":L"译文";
    rt->DrawText(caption,static_cast<UINT32>(wcslen(caption)),title.Get(),D2D1::RectF(8*scale,0,float(close.left)-4*scale,headerBottom),white.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
   }
   if(block.contentHeight>Height(block.viewport)){
@@ -126,13 +174,14 @@ void Overlay::Render(WindowData& window){
   const float stroke=std::min(std::max(1.f,2*scale),float(std::min(w,h))/2);
   rt->DrawRectangle(D2D1::RectF(stroke/2,stroke/2,w-stroke/2,h-stroke/2),frame.Get(),stroke);
   }
+  }
   CheckHR(rt->EndDraw(),"overlay");
   POINT position{block.screen.left,block.screen.top},origin{};SIZE size{w,h};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};if(!UpdateLayeredWindow(window.hwnd,nullptr,&position,&size,dc,&origin,0,&blend,ULW_ALPHA))throw AppError("overlay","无法显示翻译层");
  }catch(...){SelectObject(dc,previous);DeleteObject(bmp);DeleteDC(dc);throw;}
  SelectObject(dc,previous);DeleteObject(bmp);DeleteDC(dc);
 }
-void Overlay::Show(const std::vector<OverlayBlock>& blocks,const Settings& settings,UINT dpi,std::function<void()> dismissed,std::function<void()> reselect){
- Close();dismissed_=std::move(dismissed);reselect_=std::move(reselect);WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.Overlay";wc.lpfnWndProc=Proc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);RegisterClassW(&wc);
+void Overlay::Show(const std::vector<OverlayBlock>& blocks,const Settings& settings,UINT dpi,std::function<void()> dismissed,std::function<void()> reselect,std::function<void(RECT)> moved){
+ Close();dismissed_=std::move(dismissed);reselect_=std::move(reselect);moved_=std::move(moved);WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.Overlay";wc.lpfnWndProc=Proc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);RegisterClassW(&wc);
  try{for(auto& b:blocks){auto data=std::make_unique<WindowData>();data->owner=this;data->block=b;data->settings=settings;data->dpi=dpi;auto ptr=data.get();windows_.push_back(std::move(data));
    ptr->hwnd=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,wc.lpszClassName,L"翻译结果 · 右上角关闭",WS_POPUP,b.screen.left,b.screen.top,Width(b.screen),Height(b.screen),nullptr,nullptr,wc.hInstance,ptr);if(!ptr->hwnd)throw AppError("overlay","无法创建翻译层");Render(*ptr);ShowWindow(ptr->hwnd,SW_SHOWNOACTIVATE);
  }if(!blocks.empty()&&blocks.front().image){ShowToolbar();}}catch(...){Close();throw;}
@@ -144,11 +193,17 @@ void Overlay::Notice(const std::wstring& text,RECT anchor,const Monitor& m,std::
 LRESULT CALLBACK Overlay::Proc(HWND h,UINT m,WPARAM w,LPARAM l){
  auto data=reinterpret_cast<WindowData*>(GetWindowLongPtrW(h,GWLP_USERDATA));if(m==WM_NCCREATE){data=static_cast<WindowData*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);data->hwnd=h;SetWindowLongPtrW(h,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(data));}
  if(data)try{switch(m){case WM_MOUSEACTIVATE:return MA_NOACTIVATE;
- case WM_LBUTTONDOWN:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto& active=data->reading&&data->mode==2?*data->reading:data->block;data->pressed=(!data->block.image||data->mode==2)&&PtInRect(&active.closeButton,point)!=FALSE;SetCapture(h);return 0;}
- case WM_LBUTTONUP:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto& active=data->reading&&data->mode==2?*data->reading:data->block;bool close=data->pressed&&PtInRect(&active.closeButton,point);data->pressed=false;if(GetCapture()==h)ReleaseCapture();if(close){auto cb=data->owner->dismissed_;if(cb)cb();}return 0;}
- case WM_RBUTTONDOWN:case WM_MBUTTONDOWN:SetCapture(h);return 0;
+ case WM_SETCURSOR:if(LOWORD(l)==HTCLIENT){POINT point{};GetCursorPos(&point);ScreenToClient(h,&point);SetCursor(LoadCursorW(nullptr,data->drag||data->owner->DragBorder(*data,point)?IDC_SIZEALL:IDC_ARROW));return TRUE;}break;
+ case WM_LBUTTONDOWN:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto& active=data->reading&&data->mode==2?*data->reading:data->block;data->pressed=(!data->block.image||data->mode==2)&&PtInRect(&active.closeButton,point)!=FALSE;
+  if(!data->drag&&data->owner->DragBorder(*data,point)){ClientToScreen(h,&point);data->drag=DragState{point,data->block.screen,active.screen,data->reading?std::optional<RECT>(data->reading->screen):std::nullopt};SetCursor(LoadCursorW(nullptr,IDC_SIZEALL));}
+  SetCapture(h);return 0;}
+ case WM_MOUSEMOVE:if(data->drag){if(!(w&MK_LBUTTON)){data->owner->CancelDrag(*data);return 0;}POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ClientToScreen(h,&point);data->owner->MoveDrag(*data,point);SetCursor(LoadCursorW(nullptr,IDC_SIZEALL));}return 0;
+ case WM_LBUTTONUP:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+  if(data->drag){ClientToScreen(h,&point);data->owner->MoveDrag(*data,point);auto region=data->block.screen;bool changed=!EqualRect(&region,&data->drag->region);data->drag.reset();data->pressed=false;auto cb=data->owner->moved_;if(GetCapture()==h)ReleaseCapture();if(changed&&cb)cb(region);else data->owner->RestoreContents(*data);return 0;}
+  const auto& active=data->reading&&data->mode==2?*data->reading:data->block;bool close=data->pressed&&PtInRect(&active.closeButton,point);data->pressed=false;if(GetCapture()==h)ReleaseCapture();if(close){auto cb=data->owner->dismissed_;if(cb)cb();}return 0;}
+ case WM_RBUTTONDOWN:case WM_MBUTTONDOWN:if(data->drag){data->owner->CancelDrag(*data);return 0;}SetCapture(h);return 0;
  case WM_RBUTTONUP:case WM_MBUTTONUP:if(GetCapture()==h)ReleaseCapture();return 0;
- case WM_MOUSEWHEEL:{if(data->block.image&&data->mode!=2){
+ case WM_MOUSEWHEEL:{if(data->drag)return 0;if(data->block.image&&data->mode!=2){
    if(data->mode==0){POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&point);
     for(auto it=data->block.positioned.rbegin();it!=data->block.positioned.rend();++it)if(PtInRect(&it->rect,point)){
      auto maximum=std::max(0.f,it->contentHeight-(Height(it->rect)-2*it->padding));it->scroll=std::clamp(it->scroll-GET_WHEEL_DELTA_WPARAM(w)/float(WHEEL_DELTA)*it->fontSize*3,0.f,maximum);data->owner->Render(*data);break;}
@@ -156,7 +211,8 @@ LRESULT CALLBACK Overlay::Proc(HWND h,UINT m,WPARAM w,LPARAM l){
   }const auto& active=data->reading&&data->mode==2?*data->reading:data->block;auto maximum=std::max(0.f,active.contentHeight-Height(active.viewport));data->scroll=std::clamp(data->scroll-GET_WHEEL_DELTA_WPARAM(w)/float(WHEEL_DELTA)*data->block.fontSize*3,0.f,maximum);data->owner->Render(*data);return 0;}
  case WM_MOUSEHWHEEL:return 0;
  case WM_CLOSE:{auto cb=data->owner->dismissed_;if(cb)cb();return 0;}
- case WM_CAPTURECHANGED:data->pressed=false;return 0;
+ case WM_CANCELMODE:case WM_CAPTURECHANGED:data->pressed=false;data->owner->CancelDrag(*data);if(m==WM_CANCELMODE&&GetCapture()==h)ReleaseCapture();return 0;
+ case WM_KEYDOWN:if(w==VK_ESCAPE&&data->drag){data->owner->CancelDrag(*data);return 0;}break;
  case WM_NCDESTROY:data->hwnd=nullptr;SetWindowLongPtrW(h,GWLP_USERDATA,0);break;
  }}catch(...){return 0;}
  return DefWindowProcW(h,m,w,l);

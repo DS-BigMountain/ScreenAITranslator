@@ -13,7 +13,7 @@ void Overlay::ShowToolbar(){
  if(bounds.bottom>data.block.workArea.bottom){bounds.top=r.top-gap-h;bounds.bottom=r.top-gap;}
  bounds=Fit(bounds,data.block.workArea);
  WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.TranslationToolbar";wc.lpfnWndProc=ToolbarProc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);RegisterClassW(&wc);
- toolbarStatus_=L"原位覆盖 · 按字高展开，蓝色标记处可滚轮阅读";
+ toolbarStatus_=L"原位覆盖 · 拖动边框松手重译，蓝色标记处滚轮阅读";
  toolbar_=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,wc.lpszClassName,L"屏幕翻译操作",WS_POPUP,bounds.left,bounds.top,Width(bounds),Height(bounds),data.hwnd,nullptr,wc.hInstance,this);
  if(!toolbar_)throw AppError("overlay","无法创建翻译工具条");ShowWindow(toolbar_,SW_SHOWNOACTIVATE);
 }
@@ -37,6 +37,7 @@ void Overlay::PaintToolbar(){
 }
 void Overlay::ToolbarAction(int action){
  if(windows_.empty())return;auto& data=*windows_.front();
+ if(data.drag)CancelDrag(data);
  if(action==5){auto cb=dismissed_;if(cb)cb();return;}
  if(action==4){auto cb=reselect_;if(cb)cb();else toolbarStatus_=L"请使用截图快捷键重新框选";}
  if(action>=0&&action<=2){
@@ -48,7 +49,7 @@ void Overlay::ToolbarAction(int action){
 
   }
   data.mode=action;data.scroll=0;Render(data);PositionToolbar();
-  toolbarStatus_=action==1?L"原始截图 · 切换视图不会再次请求模型":action==2?L"全文译文 · 鼠标滚轮阅读长内容":L"原位覆盖 · 按字高展开，蓝色标记处可滚轮阅读";
+  toolbarStatus_=action==1?L"原始截图 · 拖动边框松手重译":action==2?L"全文译文 · 滚轮阅读，拖边框按原选区大小重译":L"原位覆盖 · 拖动边框松手重译，蓝色标记处滚轮阅读";
  }
  if(action==3){
   const auto& text=data.block.text;size_t bytes=(text.size()+1)*sizeof(wchar_t);auto memory=GlobalAlloc(GMEM_MOVEABLE,bytes);
