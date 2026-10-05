@@ -36,3 +36,7 @@
 .vs/
 Thumbs.db
 Desktop.ini
+
+# Release sidecar checksums are not distributed.
+*.sha256
+*.sha265

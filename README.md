@@ -6,8 +6,8 @@ Windows 原生屏幕翻译工具：框选画面，使用自行配置的视觉大
 
 V1.1.0 新增边框拖动重译：拖动时框内完全透明，固定区域跟随最后一次翻译位置。安装向导使用简体中文，包括安装、任务选择、按钮和卸载提示。下载见 [V1.1.0 发布页](https://github.com/DS-BigMountain/ScreenAITranslator/releases/tag/V1.1.0)；本地构建产物如下。
 
-- 安装版：`out/1.1.0/ScreenAITranslator-Setup-1.1.0.exe`
-- 便携版：`out/1.1.0/ScreenAITranslator-1.1.0-portable.zip`（含程序与第三方许可证）
+- 安装版：`__release_packages__/1.1.0/ScreenAITranslator-Setup-1.1.0.exe`
+- 便携版：`__release_packages__/1.1.0/ScreenAITranslator-1.1.0-portable.zip`（含程序与第三方许可证）
 
 1. 打开 **模型连接**，选择 DeepSeek 或 OpenAI Compatible，填写 Base URL、API Key 与模型名。可以获取模型列表，也可以直接输入模型名。
 2. 点击 **测试 API**，用内置测试图验证图片识别与翻译。测试会产生一次真实 API 请求，不会上传桌面。模型必须支持图片输入与本程序的 JSON 返回协议，列表可见不等于具备视觉能力。
@@ -36,17 +36,16 @@ V1.1.0 新增边框拖动重译：拖动时框内完全透明，固定区域跟�
 
 上下文只存在内存，30 分钟无翻译后清空；重选固定区域清空上下文。新任务取消旧请求，旧结果不会重新出现。没有历史或日志模块，已有旧版历史文件不读取、不删除。损坏配置保留原文件与备份，不静默覆盖。卸载保留用户配置。
 
-## 构建与测试
+## 构建
 
 需要 Visual Studio 2026 或 2022 的 C++ 桌面组件、Windows SDK、CMake 3.24+，目标 x64。静态 CRT，无需额外安装 VC Redistributable。
 
 ```powershell
 ./scripts/build.ps1 -Package -BootstrapInno
 # Visual Studio 2022：首次构建时添加 -Generator 'Visual Studio 17 2022'
-ctest --test-dir build -C Release --output-on-failure
 ```
 
-`sat_core` 负责捕获、协议、配置；`sat_ui` 负责框选、原位布局、结果绘制、工具条和设置；App 管理任务与取消。测试使用合成图片、隔离配置与模拟 Provider，原生窗口测试短暂显示窗口。DPAPI 和桌面捕获需要正常 Windows 用户会话。
+`sat_core` 负责捕获、协议、配置；`sat_ui` 负责框选、原位布局、结果绘制、工具条和设置；App 管理任务与取消。
 
 ## 已知边界
 
@@ -54,7 +53,7 @@ ctest --test-dir build -C Release --output-on-failure
 - 识别、译文质量和定位精度取决于所选视觉模型；不支持图片的纯文本模型不能直接接入。本版没有本地 OCR + 文本模型通路。
 - 原位背景为采样色块，复杂纹理不做生成式修复；长内容可完整阅读，不承诺无损重建所有排版。
 - 每次框选限一个显示器；保留已有固定区域失效与重映射规则。不支持独占全屏注入、受保护内容或绕过反作弊。
-- 本轮本地自动测试不等于真实模型质量验收；Windows 10、混合 DPI 多屏及实际游戏场景仍需实机验证。
+- Windows 10、混合 DPI 多屏及实际游戏场景仍需实机验证。
 - 产物未做商业代码签名。
 
 
@@ -63,6 +62,6 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## GitHub 存档
 
-仓库仅包含软件源码、资源、测试代码、必要构建脚本、第三方依赖及许可证、使用说明和版本记录。开发文档、工作日志、测试截图、测试报告、工具缓存及 out 发布产物不纳入 Git。版本说明见 [CHANGELOG.md](CHANGELOG.md)。
+仓库仅包含软件源码、资源、测试代码、必要构建脚本、第三方依赖及许可证、使用说明和版本记录。开发文档、工作日志、测试截图、测试报告、工具缓存及 __release_packages__ 发布产物不纳入 Git。版本说明见 [CHANGELOG.md](CHANGELOG.md)。
 
-GitHub Release 使用标签 V1.1.0，上传 out/1.1.0 中的安装包、便携 ZIP 及对应 .sha256 文件；便携 ZIP 已包含程序与第三方许可证。
+GitHub Release 使用标签 V1.1.0，上传 __release_packages__/1.1.0 中的安装包、便携 ZIP ；便携 ZIP 已包含程序与第三方许可证。
