@@ -1,9 +1,14 @@
 #include <windows.h>
+#ifdef SAT_WINUI_MANIFEST
+1 RT_MANIFEST SAT_WINUI_MANIFEST
+#else
 1 RT_MANIFEST "app.manifest"
+#endif
 101 ICON "app.ico"
+201 RCDATA "Settings.xaml"
 1 VERSIONINFO
- FILEVERSION 1,1,0,0
- PRODUCTVERSION 1,1,0,0
+ FILEVERSION 1,2,0,0
+ PRODUCTVERSION 1,2,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -14,9 +19,9 @@ BEGIN
   BLOCK "040904B0"
   BEGIN
    VALUE "FileDescription", "Screen AI Translator\0"
-   VALUE "FileVersion", "1.1.0\0"
+   VALUE "FileVersion", "1.2.0\0"
    VALUE "ProductName", "Screen AI Translator\0"
-   VALUE "ProductVersion", "1.1.0\0"
+   VALUE "ProductVersion", "1.2.0\0"
    VALUE "OriginalFilename", "ScreenAITranslator.exe\0"
   END
  END
@@ -25,6 +30,3 @@ BEGIN
   VALUE "Translation", 0x409, 1200
  END
 END
-
-
-

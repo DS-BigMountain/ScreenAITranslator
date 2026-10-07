@@ -1,8 +1,14 @@
 #ifndef AppVersion
-  #define AppVersion "1.1.0"
+  #define AppVersion "1.2.0"
 #endif
-#ifndef AppBinary
-  #define AppBinary "..\build\Release\ScreenAITranslator.exe"
+#ifndef AppStage
+  #define AppStage "..\build\package-stage\Release"
+#endif
+#ifndef PackageOutput
+  #define PackageOutput "..\__release_packages__\" + AppVersion
+#endif
+#ifndef PackageName
+  #define PackageName "ScreenAITranslator-Setup-" + AppVersion
 #endif
 
 [Setup]
@@ -17,9 +23,9 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0
-OutputDir=..\__release_packages__\{#AppVersion}
-OutputBaseFilename=ScreenAITranslator-Setup-{#AppVersion}
+MinVersion=10.0.17763
+OutputDir={#PackageOutput}
+OutputBaseFilename={#PackageName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -38,8 +44,7 @@ Name: "startup"; Description: "登录 Windows 后在后台启动"; GroupDescript
 Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: unchecked
 
 [Files]
-Source: "{#AppBinary}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\third_party\nlohmann\LICENSE.MIT"; DestDir: "{app}\licenses"; DestName: "nlohmann-json-LICENSE.txt"; Flags: ignoreversion
+Source: "{#AppStage}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\Screen AI Translator\Screen AI Translator"; Filename: "{app}\ScreenAITranslator.exe"; WorkingDir: "{app}"
@@ -55,8 +60,3 @@ Filename: "{app}\ScreenAITranslator.exe"; Description: "打开屏幕翻译"; Fla
 
 ; User settings and DPAPI ciphertext live outside {app}.
 ; Uninstall preserves user data, including untouched legacy files, and never launches the program.
-
-
-
-
-

@@ -10,10 +10,13 @@
 !/tests/
 !/scripts/
 !/installer/
+!/cmake/
 
 /scripts/*
 !/scripts/build.ps1
 !/scripts/Get-InnoSetup.ps1
+!/scripts/Get-WinUI.ps1
+!/scripts/Test-Installer.ps1
 
 /installer/*
 !/installer/setup.iss

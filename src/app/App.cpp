@@ -4,6 +4,7 @@
 #include "providers/Provider.h"
 #include "settings/Store.h"
 #include "settings/SettingsWindow.h"
+#include "settings/WinUIRuntime.h"
 #include "selection/Selection.h"
 #include "overlay/Overlay.h"
 #include <commctrl.h>
@@ -163,7 +164,7 @@ public:
   if(!std::filesystem::exists(store_.Root()/L"config.json")){DWORD bytes{};settings_.startup=RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",L"ScreenAITranslator",RRF_RT_REG_SZ,nullptr,nullptr,&bytes)==ERROR_SUCCESS;}
   if(!settings_.tray&&!settings_.hotkeys[2].key)settings_.tray=true;UpdateTray();
   // Installer supplies startup registration; explicit Save updates it for portable runs.
-  if(!background_)ShowSettings();MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){auto settingsHandle=settingsWindow_.Window();if(settingsHandle&&IsWindowVisible(settingsHandle)&&(msg.hwnd==settingsHandle||IsChild(settingsHandle,msg.hwnd))&&IsDialogMessageW(settingsHandle,&msg))continue;TranslateMessage(&msg);DispatchMessageW(&msg);}return static_cast<int>(msg.wParam);
+  if(!background_)ShowSettings();MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){if(WinUIRuntime::ProcessMessage(msg))continue;TranslateMessage(&msg);DispatchMessageW(&msg);}return static_cast<int>(msg.wParam);
  }
 };
 }
@@ -171,9 +172,5 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR command,int){
  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&controls);
  const bool background=wcsstr(command,L"--background")!=nullptr;
  HANDLE mutex=CreateMutexW(nullptr,FALSE,L"Local\\ScreenAITranslator.SingleInstance");if(!mutex)return 1;if(GetLastError()==ERROR_ALREADY_EXISTS){if(!background){if(auto existing=FindWindowW(L"SAT.Controller",L"ScreenAITranslator.Controller")){COPYDATASTRUCT cd{};DWORD_PTR result{};SendMessageTimeoutW(existing,WM_COPYDATA,0,reinterpret_cast<LPARAM>(&cd),SMTO_ABORTIFHUNG,1000,&result);}}CloseHandle(mutex);return 0;}
- int exitCode=0;try{sat::ComScope com;sat::App app(background);exitCode=app.Run();}catch(...){exitCode=1;}CloseHandle(mutex);return exitCode;
+ int exitCode=0;try{sat::WinUIRuntime ui;sat::App app(background);exitCode=app.Run();}catch(...){exitCode=1;}CloseHandle(mutex);return exitCode;
 }
-
-
-
-

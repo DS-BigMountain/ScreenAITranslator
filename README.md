@@ -1,17 +1,21 @@
-# 屏幕翻译 · Screen AI Translator V1.1.0
+# 屏幕翻译 · Screen AI Translator V1.2.0
 
-Windows 原生屏幕翻译工具：框选画面，使用自行配置的视觉大模型翻译，在原文字位置覆盖译文。C++20 / Win32，不依赖浏览器运行时。
+Windows 原生屏幕翻译工具：框选画面，使用自行配置的视觉大模型翻译，在原文字位置覆盖译文。C++20 / WinUI 3 设置界面，截图与透明覆盖层使用 Win32 / Direct2D，不依赖浏览器运行时。
+
+V1.2.0 将设置窗口迁移至 WinUI 3，采用左侧导航、标准控件与分组卡片，重新组织功能按钮。删除原宣传文案及侧边栏技术框架标识，保留框选翻译、边框拖动重译和固定区域跟随功能。
+
+便携包须完整解压后运行其中的 `ScreenAITranslator.exe`。WinUI 3 运行时及其资源随程序分发，不能只复制主程序 EXE。
 
 ## 下载与使用
 
-V1.1.0 新增边框拖动重译：拖动时框内完全透明，固定区域跟随最后一次翻译位置。安装向导使用简体中文，包括安装、任务选择、按钮和卸载提示。下载见 [V1.1.0 发布页](https://github.com/DS-BigMountain/ScreenAITranslator/releases/tag/V1.1.0)；本地构建产物如下。
+安装向导使用简体中文，包括安装、任务选择、按钮和卸载提示。下载见 [V1.2.0 发布页](https://github.com/DS-BigMountain/ScreenAITranslator/releases/tag/V1.2.0)；本地构建产物如下。
 
-- 安装版：`__release_packages__/1.1.0/ScreenAITranslator-Setup-1.1.0.exe`
-- 便携版：`__release_packages__/1.1.0/ScreenAITranslator-1.1.0-portable.zip`（含程序与第三方许可证）
+- 安装版：`__release_packages__/1.2.0/ScreenAITranslator-Setup-1.2.0.exe`
+- 便携版：`__release_packages__/1.2.0/ScreenAITranslator-1.2.0-portable.zip`（含程序、运行时与第三方许可证）
 
 1. 打开 **模型连接**，选择 DeepSeek 或 OpenAI Compatible，填写 Base URL、API Key 与模型名。可以获取模型列表，也可以直接输入模型名。
-2. 点击 **测试 API**，用内置测试图验证图片识别与翻译。测试会产生一次真实 API 请求，不会上传桌面。模型必须支持图片输入与本程序的 JSON 返回协议，列表可见不等于具备视觉能力。
-3. 保存设置，然后在 **使用偏好** 点击 **开始屏幕翻译**。也可在快捷键页自行指定截图、固定区域、打开设置和取消快捷键；沿用既有偏好，不自动覆盖旧组合键。
+2. 点击 **测试连接**，用内置测试图验证图片识别与翻译。测试会产生一次真实 API 请求，不会上传桌面。模型必须支持图片输入与本程序的 JSON 返回协议，列表可见不等于具备视觉能力。
+3. 保存设置，然后在 **翻译与偏好** 点击 **框选翻译**。也可在快捷键页自行指定截图、固定区域、打开设置和取消快捷键；沿用既有偏好，不自动覆盖旧组合键。
 4. 拖动框选，松开鼠标翻译；Esc / 右键取消框选。等待时点击状态框的 × 可取消请求。
 5. 译文直接覆盖在文字位置，选区旁工具条可切换 **原位译文 / 查看原图 / 全文阅读**，以及 **复制译文 / 重新框选 / 关闭**。切换视图不重新调用 API。
 6. 鼠标移到翻译框边缘，出现移动光标后按住左键拖动。拖动时只保留边框，框内完全透明，译文、截图和工具条暂时隐藏，方便看清下方的实时画面；松手自动截取新位置并再次翻译。保持原截图大小，拖动范围限制在当前显示器内。右键取消或拖动被中断时恢复原位置和内容；单击、轻微抖动和拖回原位不触发重译。
@@ -38,12 +42,14 @@ V1.1.0 新增边框拖动重译：拖动时框内完全透明，固定区域跟�
 
 ## 构建
 
-需要 Visual Studio 2026 或 2022 的 C++ 桌面组件、Windows SDK、CMake 3.24+，目标 x64。静态 CRT，无需额外安装 VC Redistributable。
+需要 Visual Studio 2026 或 2022 的 C++ 桌面组件、Windows SDK、CMake 3.24+，目标 x64。首次构建从 Microsoft NuGet 源恢复固定版本的 Windows App SDK 1.8 与 C++/WinRT；主程序使用静态 CRT，Windows App SDK 所需的 VC 运行时随交付包部署。最低系统版本为 Windows 10 1809。
 
 ```powershell
 ./scripts/build.ps1 -Package -BootstrapInno
 # Visual Studio 2022：首次构建时添加 -Generator 'Visual Studio 17 2022'
 ```
+
+构建脚本不生成 Git 标签，也不上传 GitHub。可添加 `-Preview` 将预览包输出到对应版本的独立子目录。依赖、编译产物和打包暂存文件均保留在 `build/`；交付目录仅保留安装包与便携包，不生成独立校验文件。打包时逐文件核验 ZIP 内容，并验证运行时签名。
 
 `sat_core` 负责捕获、协议、配置；`sat_ui` 负责框选、原位布局、结果绘制、工具条和设置；App 管理任务与取消。
 
@@ -56,12 +62,8 @@ V1.1.0 新增边框拖动重译：拖动时框内完全透明，固定区域跟�
 - Windows 10、混合 DPI 多屏及实际游戏场景仍需实机验证。
 - 产物未做商业代码签名。
 
-
-
-
-
 ## GitHub 存档
 
 仓库仅包含软件源码、资源、测试代码、必要构建脚本、第三方依赖及许可证、使用说明和版本记录。开发文档、工作日志、测试截图、测试报告、工具缓存及 __release_packages__ 发布产物不纳入 Git。版本说明见 [CHANGELOG.md](CHANGELOG.md)。
 
-GitHub Release 使用标签 V1.1.0，上传 __release_packages__/1.1.0 中的安装包、便携 ZIP ；便携 ZIP 已包含程序与第三方许可证。
+GitHub Release 使用标签 V1.2.0，上传 `__release_packages__/1.2.0` 中的安装包与便携 ZIP；便携 ZIP 已包含程序、运行时与第三方许可证。
