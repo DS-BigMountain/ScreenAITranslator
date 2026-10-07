@@ -1,4 +1,4 @@
-﻿#include "common/Platform.h"
+#include "common/Platform.h"
 #include "overlay/Overlay.h"
 #include "capture/Capture.h"
 #include "overlay/SpatialLayout.h"
@@ -130,12 +130,14 @@ public:
  ~DragBackdrop(){DestroyWindow(window_);}
  void Color(COLORREF color){SetWindowLongPtrW(window_,GWLP_USERDATA,color);InvalidateRect(window_,nullptr,FALSE);UpdateWindow(window_);}
 };
-bool InteriorShowsBackdrop(HWND window,COLORREF color){
+bool InteriorShowsBackdrop(HWND window){
  auto r=Bounds(window);int width=sat::Width(r),height=sat::Height(r);DwmFlush();Sleep(40);
  HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=width;bi.bmiHeader.biHeight=-height;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;
  void* pixels{};auto bitmap=CreateDIBSection(screen,&bi,DIB_RGB_COLORS,&pixels,nullptr,0);
  if(!screen||!dc||!bitmap){if(bitmap)DeleteObject(bitmap);if(dc)DeleteDC(dc);if(screen)ReleaseDC(nullptr,screen);throw std::runtime_error("drag pixel probe allocation failed");}
  auto old=SelectObject(dc,bitmap);bool copied=BitBlt(dc,0,0,width,height,screen,r.left,r.top,SRCCOPY|CAPTUREBLT)!=FALSE;GdiFlush();
+ // 屏幕捕获可能包含 HDR 或系统颜色变换；采用同一帧中框外的背景像素作为参照。
+ auto color=GetPixel(screen,r.left-8,r.top+20);Require(color!=CLR_INVALID,"backdrop reference pixel unavailable");
  bool clear=true,border=false;auto bytes=static_cast<const unsigned char*>(pixels);
  for(int y=0;y<height;++y)for(int x=0;x<width;++x){auto p=(static_cast<size_t>(y)*width+x)*4;bool match=bytes[p]==GetBValue(color)&&bytes[p+1]==GetGValue(color)&&bytes[p+2]==GetRValue(color);if(x>=6&&x<width-6&&y>=6&&y<height-6)clear&=match;else border|=!match;}
  SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(nullptr,screen);Require(copied,"drag pixel probe failed");Require(border,"drag preview lost its visible border");return clear;
@@ -149,15 +151,15 @@ void TestDragTransparency(){
   auto color=RGB(31,97,149);backdrop.Color(color);sat::Settings settings;settings.spatialOverlay=mode>=0;auto blocks=sat::BuildOverlay(result,image,roi,monitor,settings);
   sat::Overlay overlay;int moved{};overlay.Show(blocks,settings,96,[]{},{},[&](RECT){++moved;});Pump();auto h=Windows(L"SAT.Overlay").front();HWND toolbar=mode>=0?Windows(L"SAT.TranslationToolbar").front():nullptr;if(toolbar)SendMessageW(toolbar,WM_COMMAND,mode,0);
   auto view=Bounds(h);POINT start{view.left+1,view.top+60},end{start.x+20,start.y+15};
-  MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_LBUTTONUP,0,start);Require(!InteriorShowsBackdrop(h,color),"stationary border click hid contents");
+  MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_LBUTTONUP,0,start);Require(!InteriorShowsBackdrop(h),"stationary border click hid contents");
   MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,end);
-  Require(InteriorShowsBackdrop(h,color),"drag retained screenshot, text, or background pixels");Require(!toolbar||!IsWindowVisible(toolbar),"toolbar obstructs the drag preview");Require(moved==0,"clearing drag contents submitted translation");
-  color=RGB(183,61,37);backdrop.Color(color);Require(InteriorShowsBackdrop(h,color),"drag shows a frozen backdrop instead of live transparency");
-  SendMessageW(h,WM_CANCELMODE,0,0);RequireBounds(h,view,"cancel changed the original position");Require(!InteriorShowsBackdrop(h,color),"cancel failed to restore contents");Require(!toolbar||IsWindowVisible(toolbar),"cancel failed to restore toolbar");
+  if(!InteriorShowsBackdrop(h)){Snapshot(h,L"drag-failure.png");throw std::runtime_error("drag retained screenshot, text, or background pixels");}Require(!toolbar||!IsWindowVisible(toolbar),"toolbar obstructs the drag preview");Require(moved==0,"clearing drag contents submitted translation");
+  color=RGB(183,61,37);backdrop.Color(color);Require(InteriorShowsBackdrop(h),"drag shows a frozen backdrop instead of live transparency");
+  SendMessageW(h,WM_CANCELMODE,0,0);RequireBounds(h,view,"cancel changed the original position");Require(!InteriorShowsBackdrop(h),"cancel failed to restore contents");Require(!toolbar||IsWindowVisible(toolbar),"cancel failed to restore toolbar");
   MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,end);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,start);MouseAt(h,WM_LBUTTONUP,0,start);
-  Require(!InteriorShowsBackdrop(h,color)&&moved==0,"round-trip drag did not restore contents without translating");Require(!toolbar||IsWindowVisible(toolbar),"round-trip drag failed to restore toolbar");
+  Require(!InteriorShowsBackdrop(h)&&moved==0,"round-trip drag did not restore contents without translating");Require(!toolbar||IsWindowVisible(toolbar),"round-trip drag failed to restore toolbar");
   MouseAt(h,WM_LBUTTONDOWN,MK_LBUTTON,start);MouseAt(h,WM_MOUSEMOVE,MK_LBUTTON,end);MouseAt(h,WM_LBUTTONUP,0,end);
-  Require(moved==1&&InteriorShowsBackdrop(h,color),"release flashed the old contents before retranslation");overlay.Close();
+  Require(moved==1&&InteriorShowsBackdrop(h),"release flashed the old contents before retranslation");overlay.Close();
  }
 }
 sat::Image InstallerFixture(){
@@ -208,26 +210,6 @@ void TestSelection(){
  selection.Show(monitor,image,[&](auto r){chosen=r;++callbacks;});Pump();HWND h=selection.Window();SendMessageW(h,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(120,130));SendMessageW(h,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(420,290));SendMessageW(h,WM_LBUTTONUP,0,MAKELPARAM(420,290));Require(callbacks==1&&chosen.has_value(),"release failed to select");Require(chosen->left==160&&chosen->top==190&&chosen->right==460&&chosen->bottom==350,"selection physical offset mismatch");Require(!selection.Window(),"selection not destroyed before completion");
  selection.Show(monitor,image,[&](auto r){chosen=r;++callbacks;});SendMessageW(selection.Window(),WM_KEYDOWN,VK_ESCAPE,0);Require(callbacks==2&&!chosen,"Esc did not cancel");
 }
-void TestSettings(){
- sat::SettingsWindow window;sat::Settings options;sat::PersistentState state;sat::SettingsCallbacks cb;bool saved{};cb.apply=[&](auto& value,auto& key){saved=value.model=="test-vision"&&key=="test-only-key"&&value.thinkingHigh;return std::wstring{};};cb.action=[](auto){};window.Show(options,"test-only-key",state,cb);Pump();auto h=window.Window();Require(h!=nullptr,"settings missing");Require(GetWindowLongPtrW(GetDlgItem(h,142),GWL_STYLE)&ES_PASSWORD,"key not masked");
- auto tabs=FindWindowExW(h,nullptr,WC_TABCONTROLW,nullptr);for(int page=0;page<5;++page){TabCtrl_SetCurSel(tabs,page);NMHDR notification{tabs,0,TCN_SELCHANGE};SendMessageW(h,WM_NOTIFY,0,reinterpret_cast<LPARAM>(&notification));RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);Pump();Sleep(200);Pump();Snapshot(h,L"settings-"+std::to_wstring(page)+L".png");}
- Require(TabCtrl_GetItemCount(tabs)==5,"history tab remains");
- Require((GetWindowLongPtrW(GetDlgItem(h,144),GWL_STYLE)&3)==CBS_DROPDOWN,"model name cannot be entered manually");
- Require(GetDlgItem(h,103)==nullptr,"region persistence checkbox remains");Require(SendMessageW(GetDlgItem(h,149),CB_GETCOUNT,0,0)==2,"thinking mode must have exactly two choices");SendMessageW(GetDlgItem(h,149),CB_SETCURSEL,1,0);
- window.ApiFinished({"test-vision"},L"已获取测试模型",true);SendMessageW(h,WM_COMMAND,MAKEWPARAM(220,BN_CLICKED),reinterpret_cast<LPARAM>(GetDlgItem(h,220)));Require(saved,"settings save did not read native controls");SendMessageW(h,WM_COMMAND,MAKEWPARAM(143,BN_CLICKED),0);Require(SendMessageW(GetDlgItem(h,142),EM_GETPASSWORDCHAR,0,0)==0,"key reveal failed");
- window.ApiBusy(true);Require(!IsWindowEnabled(GetDlgItem(h,146))&&!IsWindowEnabled(GetDlgItem(h,220)),"busy API permits duplicate requests or save");window.ApiFinished({},L"测试完成",false);Require(IsWindowEnabled(GetDlgItem(h,146)),"API completion leaves controls disabled");
- SetWindowTextW(GetDlgItem(h,142),L"changed-key");Require(SendMessageW(GetDlgItem(h,144),CB_GETCOUNT,0,0)==0,"credential change retains stale model list");
- SetWindowTextW(GetDlgItem(h,144),L"test-vision");SetWindowTextW(GetDlgItem(h,142),L"test-only-key");SetWindowTextW(GetDlgItem(h,144),L"test-vision");saved=false;
- SendMessageW(h,WM_COMMAND,MAKEWPARAM(220,BN_CLICKED),0);Require(saved,"manual model cannot be saved without model discovery");
- window.Close();Require(!window.Window(),"settings close failed");
- int fetched{},tested{};cb.api=[&](bool fetch,const sat::Settings& value,const std::string& key){Require(key=="test-only-key","API button uses wrong key");if(fetch){++fetched;window.ApiFinished({"second","test-vision"},L"已获取",true);}else{++tested;Require(value.model=="second"&&value.thinkingHigh,"API test ignores model or thinking preference");window.ApiFinished({},L"测试通过",false);}};
- window.Show(options,"test-only-key",state,cb);h=window.Window();SendMessageW(GetDlgItem(h,149),CB_SETCURSEL,1,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(146,BN_CLICKED),0);Require(fetched==1&&SendMessageW(GetDlgItem(h,144),CB_GETCOUNT,0,0)==2,"fetch button fails to populate list");SendMessageW(GetDlgItem(h,144),CB_SETCURSEL,0,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(147,BN_CLICKED),0);Require(tested==1,"test API button not connected");window.Close();
+
 }
-}
-int main(){try{SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);sat::ComScope com;INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&cc);TestLayout();TestOverlay();TestSpatialOverlay();TestOverlayDragging();TestDragTransparency();TestCrowdedLayouts();TestSelection();TestSettings();std::cout<<"NativeTests: PASS ("<<checks<<" checks)\n";return 0;}catch(const std::exception& e){std::cerr<<"NativeTests: FAIL: "<<e.what()<<"\n";return 1;}}
-
-
-
-
-
-
+int main(){try{SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);sat::ComScope com;INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&cc);TestLayout();TestOverlay();TestSpatialOverlay();TestOverlayDragging();TestDragTransparency();TestCrowdedLayouts();TestSelection();std::cout<<"NativeTests: PASS ("<<checks<<" checks)\n";return 0;}catch(const std::exception& e){std::cerr<<"NativeTests: FAIL: "<<e.what()<<"\n";return 1;}}

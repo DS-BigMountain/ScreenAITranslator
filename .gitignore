@@ -10,10 +10,13 @@
 !/tests/
 !/scripts/
 !/installer/
+!/cmake/
 
 /scripts/*
 !/scripts/build.ps1
 !/scripts/Get-InnoSetup.ps1
+!/scripts/Get-WinUI.ps1
+!/scripts/Test-Installer.ps1
 
 /installer/*
 !/installer/setup.iss
@@ -36,3 +39,7 @@
 .vs/
 Thumbs.db
 Desktop.ini
+
+# Release sidecar checksums are not distributed.
+*.sha256
+*.sha265

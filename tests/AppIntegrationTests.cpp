@@ -44,7 +44,7 @@ void HotkeyTransaction(){
 int main(){
  std::filesystem::path root=std::filesystem::temp_directory_path()/(L"SAT-integration-"+std::to_wstring(GetCurrentProcessId()));
  try{
-  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);sat::ComScope com;INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&cc);
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);sat::WinUIRuntime ui;INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&cc);
   HotkeyTransaction();sat::Store store(root);sat::Settings options;options.startup=false;options.autoHideSeconds=1;options.encryptedKey=sat::ProtectSecret("test-only-key");store.SaveSettings(options);
   {auto monitor=sat::MonitorAtCursor();nlohmann::json legacy={{"version",1},{"tab",0},{"fixed",{{"monitorId",sat::Utf8(monitor.id)},{"x",.1},{"y",.1},{"width",.2},{"height",.2},{"monitorWidth",sat::Width(monitor.rect)},{"monitorHeight",sat::Height(monitor.rect)}}}};std::ofstream file(root/L"state.json");file<<legacy.dump();}
   std::exception_ptr driverError;std::jthread driver([&]{HWND controller{};try{
@@ -86,7 +86,3 @@ int main(){
   std::filesystem::remove_all(root);std::cout<<"AppIntegrationTests: PASS (real desktop capture -> frozen selection -> ROI/JPEG -> fake provider -> DirectWrite overlay, border drag/retranslation, latest fixed region, reading geometry, session-only region reuse/restart, dismissal, Esc, cancellation, context)\n";return 0;
  }catch(const std::exception& e){std::cerr<<"AppIntegrationTests: FAIL: "<<e.what()<<"; isolated artifacts retained in "<<sat::Utf8(root.wstring())<<"\n";return 1;}
 }
-
-
-
-
