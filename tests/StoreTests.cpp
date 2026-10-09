@@ -26,6 +26,7 @@ void RunStoreTests() {
     TestDirectory temp;
     Store store(temp.path);
     auto settings = store.LoadSettings();
+    Check(settings.ocrMode == 0, "Default OCR uses bundled English/Japanese model");
     Check(!settings.thinkingHigh && settings.contextEnabled && settings.contextSize == 8, "Persistence and context defaults");
     Check(settings.hotkeys[0].key == 0 && settings.hotkeys[1].key == 0, "Hotkeys must start unassigned");
     Check(!std::filesystem::exists(temp.path), "Read missing config must not create data");
@@ -34,18 +35,23 @@ void RunStoreTests() {
     Check(settings.encryptedKey != secret && UnprotectSecret(settings.encryptedKey) == secret, "DPAPI round trip");
     Throws([] { UnprotectSecret("plaintext-key"); }, "Plaintext must not be accepted as protected secret");
     Check(settings.spatialOverlay,"Spatial overlay is the new default"); settings.spatialOverlay=false;settings.thinkingHigh=true;
+    settings.ocrMode = 2;settings.matchTextColor=false;
     settings.prompt = "只翻译字幕。保留专有名词。";
     settings.font = L"微软雅黑";
     settings.hotkeys[0] = {MOD_CONTROL | MOD_ALT, 'T'};
     store.SaveSettings(settings);
     auto loaded = store.LoadSettings();
     Check(loaded.prompt == settings.prompt && loaded.font == settings.font && loaded.hotkeys[0].key == 'T', "UTF-8 settings round trip");
+    Check(!loaded.matchTextColor,"Color preference persisted");
+    Check(loaded.ocrMode == 2, "OCR mode persisted");
     Check(!loaded.spatialOverlay && loaded.thinkingHigh,"Overlay and thinking preferences persisted");
     Check(UnprotectSecret(loaded.encryptedKey) == secret, "Protected key persisted");
     Check(File(temp.path / "config.json").find(secret) == std::string::npos, "Config must not contain plaintext key");
     settings.model = "custom-vision"; store.SaveSettings(settings);
     Check(std::filesystem::exists(temp.path / "config.json.bak"), "Atomic save retains backup");
-    auto bad = settings; bad.contextSize = 100;
+    auto bad = settings; bad.ocrMode = 4;
+    Throws([&] { store.SaveSettings(bad); }, "Invalid OCR mode must fail");
+    bad = settings; bad.contextSize = 100;
     Throws([&] { store.SaveSettings(bad); }, "Invalid context count must fail");
     Check(store.LoadSettings().model == "custom-vision", "Validation failure preserves config");
     bad = settings; bad.hotkeys[1] = bad.hotkeys[0];
@@ -68,6 +74,7 @@ void RunStoreTests() {
     Check(!nlohmann::json::parse(File(temp.path / "state.json")).contains("fixed"), "Legacy region ignored and removed from state writes");
     Check(!std::filesystem::exists(temp.path / "history") && !std::filesystem::exists(temp.path / "logs"), "Settings and state operations must not create history or logs");
     auto oldConfig = nlohmann::json::parse(File(temp.path / "config.json"));
+    oldConfig.erase("ocrMode");oldConfig.erase("matchTextColor");
     oldConfig["history"] = true;oldConfig["persistRegion"] = true;
     { std::ofstream output(temp.path / "config.json", std::ios::binary); output << oldConfig.dump(); }
     std::filesystem::create_directory(temp.path / "history");
@@ -75,6 +82,8 @@ void RunStoreTests() {
     { std::ofstream output(temp.path / "history" / "translations.jsonl", std::ios::binary); output << "legacy history sentinel"; }
     { std::ofstream output(temp.path / "logs" / "errors.jsonl", std::ios::binary); output << "legacy error sentinel"; }
     auto migrated = store.LoadSettings();
+    Check(migrated.matchTextColor,"Legacy settings enable original color matching");
+    Check(migrated.ocrMode == 0, "Legacy configuration defaults to bundled automatic mode");
     store.SaveSettings(migrated);
     Check(!nlohmann::json::parse(File(temp.path / "config.json")).contains("persistRegion"), "Removed persistence option is not written back");
     Check(!nlohmann::json::parse(File(temp.path / "config.json")).contains("history"), "Legacy history flag is ignored and omitted on save");

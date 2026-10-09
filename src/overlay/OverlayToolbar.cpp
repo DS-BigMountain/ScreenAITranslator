@@ -13,7 +13,9 @@ void Overlay::ShowToolbar(){
  if(bounds.bottom>data.block.workArea.bottom){bounds.top=r.top-gap-h;bounds.bottom=r.top-gap;}
  bounds=Fit(bounds,data.block.workArea);
  WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.TranslationToolbar";wc.lpfnWndProc=ToolbarProc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);RegisterClassW(&wc);
- toolbarStatus_=L"原位覆盖 · 拖动边框松手重译，蓝色标记处滚轮阅读";
+ toolbarStatus_=L"原位覆盖 · 蓝色标记处滚轮阅读，全文阅读可查看完整译文";
+ if(std::none_of(data.block.positioned.begin(),data.block.positioned.end(),[](const PositionedText& p){return !p.detectedLines.empty();}))toolbarStatus_=L"AI 定位 · 如有错位，请使用全文阅读查看译文";
+ if(std::any_of(data.block.positioned.begin(),data.block.positioned.end(),[](const PositionedText& p){return p.suppressed;}))toolbarStatus_=L"部分区域定位存在冲突，已保留原图；请使用全文阅读查看译文";
  toolbar_=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,wc.lpszClassName,L"屏幕翻译操作",WS_POPUP,bounds.left,bounds.top,Width(bounds),Height(bounds),data.hwnd,nullptr,wc.hInstance,this);
  if(!toolbar_)throw AppError("overlay","无法创建翻译工具条");ShowWindow(toolbar_,SW_SHOWNOACTIVATE);
 }
@@ -50,6 +52,10 @@ void Overlay::ToolbarAction(int action){
   }
   data.mode=action;data.scroll=0;Render(data);PositionToolbar();
   toolbarStatus_=action==1?L"原始截图 · 拖动边框松手重译":action==2?L"全文译文 · 滚轮阅读，拖边框按原选区大小重译":L"原位覆盖 · 拖动边框松手重译，蓝色标记处滚轮阅读";
+  if(action==0){
+   if(std::none_of(data.block.positioned.begin(),data.block.positioned.end(),[](const PositionedText& p){return !p.detectedLines.empty();}))toolbarStatus_=L"AI 定位 · 如有错位，请使用全文阅读查看译文";
+   if(std::any_of(data.block.positioned.begin(),data.block.positioned.end(),[](const PositionedText& p){return p.suppressed;}))toolbarStatus_=L"部分区域定位存在冲突，已保留原图；请使用全文阅读查看译文";
+  }
  }
  if(action==3){
   const auto& text=data.block.text;size_t bytes=(text.size()+1)*sizeof(wchar_t);auto memory=GlobalAlloc(GMEM_MOVEABLE,bytes);

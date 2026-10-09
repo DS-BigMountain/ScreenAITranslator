@@ -121,6 +121,7 @@ void ValidateSettings(const Settings& s) {
     Require(url.nScheme == INTERNET_SCHEME_HTTPS || (url.nScheme == INTERNET_SCHEME_HTTP && (host == L"localhost" || host == L"127.0.0.1" || host == L"::1" || host == L"[::1]")), "HTTPS is required except for loopback test servers");
     Require(s.timeoutSeconds >= 1 && s.timeoutSeconds <= 300, "Timeout must be 1 to 300 seconds");
     Require(s.autoHideSeconds >= 1 && s.autoHideSeconds <= 3600, "Auto-hide time must be 1 to 3600 seconds");
+    Require(s.ocrMode >= 0 && s.ocrMode <= 3, "Invalid OCR mode");
     Require(s.quality >= 0 && s.quality <= 2 && s.contextSize >= 5 && s.contextSize <= 10, "Invalid quality or context count (5 to 10)");
     Require(s.prompt.size() <= 32768 && s.prompt.find('\0') == std::string::npos, "Prompt exceeds limit or contains invalid characters");
     Require(!s.font.empty() && s.font.size() <= 128, "Invalid font name");
@@ -138,14 +139,14 @@ Settings Store::LoadSettings() {
     const auto j = ReadJson(root_ / L"config.json");
     Settings s;
     try {
-        for (auto field : {"startup", "tray", "autoHide", "contextEnabled", "autoFont", "spatialOverlay", "thinkingHigh"})
+        for (auto field : {"startup", "tray", "autoHide", "contextEnabled", "autoFont", "matchTextColor", "spatialOverlay", "thinkingHigh"})
             Require(!j.contains(field) || j.at(field).is_boolean(), "Invalid boolean setting");
-        for (auto field : {"autoHideSeconds", "timeoutSeconds", "quality", "contextSize", "textColor", "outlineColor"})
+        for (auto field : {"autoHideSeconds", "timeoutSeconds", "quality", "ocrMode", "contextSize", "textColor", "outlineColor"})
             Require(!j.contains(field) || (j.at(field).is_number_integer() && j.at(field).get<long long>() >= 0 && j.at(field).get<long long>() <= INT_MAX), "Invalid integer setting");
 #define READ_FIELD(field) s.field = j.value(#field, s.field)
         READ_FIELD(startup); READ_FIELD(tray); READ_FIELD(autoHide); READ_FIELD(autoHideSeconds);
-        READ_FIELD(provider); READ_FIELD(model); READ_FIELD(timeoutSeconds); READ_FIELD(thinkingHigh); READ_FIELD(encryptedKey); READ_FIELD(quality);
-        READ_FIELD(contextEnabled); READ_FIELD(contextSize); READ_FIELD(prompt); READ_FIELD(autoFont); READ_FIELD(spatialOverlay); READ_FIELD(fontSize);
+        READ_FIELD(provider); READ_FIELD(model); READ_FIELD(timeoutSeconds); READ_FIELD(thinkingHigh); READ_FIELD(encryptedKey); READ_FIELD(quality); READ_FIELD(ocrMode);
+        READ_FIELD(contextEnabled); READ_FIELD(contextSize); READ_FIELD(prompt); READ_FIELD(autoFont); READ_FIELD(matchTextColor); READ_FIELD(spatialOverlay); READ_FIELD(fontSize);
         READ_FIELD(textColor); READ_FIELD(outlineColor); READ_FIELD(outlineWidth); READ_FIELD(backgroundOpacity);
 #undef READ_FIELD
         s.baseUrl = Wide(j.value("baseUrl", Utf8(s.baseUrl))); s.font = Wide(j.value("font", Utf8(s.font)));
@@ -168,8 +169,8 @@ void Store::SaveSettings(const Settings& s) {
     Json j{{"version", 1}};
 #define WRITE_FIELD(field) j[#field] = s.field
     WRITE_FIELD(startup); WRITE_FIELD(tray); WRITE_FIELD(autoHide); WRITE_FIELD(autoHideSeconds);
-    WRITE_FIELD(provider); WRITE_FIELD(model); WRITE_FIELD(timeoutSeconds); WRITE_FIELD(thinkingHigh); WRITE_FIELD(encryptedKey); WRITE_FIELD(quality);
-    WRITE_FIELD(contextEnabled); WRITE_FIELD(contextSize); WRITE_FIELD(prompt); WRITE_FIELD(autoFont); WRITE_FIELD(spatialOverlay); WRITE_FIELD(fontSize);
+    WRITE_FIELD(provider); WRITE_FIELD(model); WRITE_FIELD(timeoutSeconds); WRITE_FIELD(thinkingHigh); WRITE_FIELD(encryptedKey); WRITE_FIELD(quality); WRITE_FIELD(ocrMode);
+    WRITE_FIELD(contextEnabled); WRITE_FIELD(contextSize); WRITE_FIELD(prompt); WRITE_FIELD(autoFont); WRITE_FIELD(matchTextColor); WRITE_FIELD(spatialOverlay); WRITE_FIELD(fontSize);
     WRITE_FIELD(textColor); WRITE_FIELD(outlineColor); WRITE_FIELD(outlineWidth); WRITE_FIELD(backgroundOpacity);
 #undef WRITE_FIELD
     j["baseUrl"] = Utf8(s.baseUrl); j["font"] = Utf8(s.font); j["hotkeys"] = Json::array();

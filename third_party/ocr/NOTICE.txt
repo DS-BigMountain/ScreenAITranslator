@@ -1,0 +1,21 @@
+Bundled OCR dependencies for Screen AI Translator 1.3.0
+
+ONNX Runtime 1.22.1 (Microsoft, MIT):
+https://github.com/microsoft/onnxruntime/tree/v1.22.1
+Distributed from the Microsoft.ML.OnnxRuntime NuGet package.
+The package's LICENSE and ThirdPartyNotices.txt accompany the runtime.
+
+PP-OCRv5 mobile detection and recognition (PaddleOCR, Apache-2.0):
+https://github.com/PaddlePaddle/PaddleOCR
+ONNX conversions distributed by RapidOCR (Apache-2.0):
+https://www.modelscope.cn/models/RapidAI/RapidOCR/files?Revision=v3.10.0
+https://github.com/RapidAI/RapidOCR
+Models: ch_PP-OCRv5_det_mobile, ch_PP-OCRv5_rec_mobile,
+en_PP-OCRv5_rec_mobile. Recognition dictionaries are embedded in the models.
+Models are distributed unchanged; local filenames are det.onnx, rec-ja.onnx,
+rec-en.onnx. Pinned source URLs and integrity values are in scripts/Get-Ocr.ps1.
+
+The application supplies its own native horizontal-text preprocessing,
+connected-component geometry extraction, and CTC decoding implementation.
+No Python, PaddlePaddle, OpenCV, GPU runtime, or Windows OCR language pack
+is required on the target machine.

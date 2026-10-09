@@ -31,7 +31,7 @@ public:
   Hotkey previous[4];std::copy(std::begin(values_),std::end(values_),previous);Release();
   for(int i=0;i<4;++i){auto k=s.hotkeys[i];if(k.key&&!RegisterHotKey(window_,i+1,k.modifiers|MOD_NOREPEAT,k.key)){
     Release();for(int j=0;j<4;++j)if(previous[j].key&&RegisterHotKey(window_,j+1,previous[j].modifiers|MOD_NOREPEAT,previous[j].key))registered_.push_back(j+1);
-    const wchar_t* names[]{L"普通截图翻译",L"固定区域翻译",L"打开设置",L"关闭翻译层"};return std::wstring(names[i])+L"快捷键已被占用，设置未保存。";
+    const wchar_t* names[]{L"普通截图翻译",L"翻译上次区域",L"打开设置",L"关闭翻译层"};return std::wstring(names[i])+L"快捷键已被占用，设置未保存。";
    }if(k.key)registered_.push_back(i+1);
   }std::copy(std::begin(s.hotkeys),std::end(s.hotkeys),values_);return {};
  }
@@ -41,7 +41,7 @@ struct Secret {std::string value;explicit Secret(std::string s):value(std::move(
 class App {
  HWND window_{};Store store_;Settings settings_;PersistentState state_;std::optional<FixedRegion> sessionRegion_;std::string key_;std::wstring recovery_;
  std::function<std::unique_ptr<ITranslationProvider>(const std::string&)> providerFactory_;
- std::unique_ptr<Hotkeys> hotkeys_;SettingsWindow settingsWindow_;Selection selection_;Overlay overlay_;TranslationContext context_;Worker worker_;
+ std::unique_ptr<Hotkeys> hotkeys_;SettingsWindow settingsWindow_;Selection selection_;Overlay overlay_,progress_;TranslationContext context_;Worker worker_;
  std::mutex queueMutex_;std::deque<std::function<void()>> queue_;bool shuttingDown_{};unsigned long long generation_{};
  Stage stage_{Stage::Idle};Monitor currentMonitor_;RECT anchor_{};bool trayAdded_{};UINT taskbarCreated_{};bool background_{};bool apiActive_{};
  static LRESULT CALLBACK Proc(HWND h,UINT m,WPARAM w,LPARAM l){
@@ -63,9 +63,14 @@ class App {
  void Notice(const std::wstring& text){
   try{if(currentMonitor_.id.empty())currentMonitor_=MonitorAtCursor();if(!Valid(anchor_)){anchor_=currentMonitor_.rect;anchor_.left+=40;anchor_.top+=40;anchor_.right=anchor_.left+420;anchor_.bottom=anchor_.top+70;}
    overlay_.Notice(text,anchor_,currentMonitor_,[this]{Post([this]{CloseOverlay();});});SetTimer(window_,HideTimer,4000,nullptr);
-  }catch(...){/* The settings window retains the current error if rendering fails. */}SetStage(Stage::Idle);
+  }catch(...){/* The settings window retains the current error if rendering fails. */}progress_.Close();SetStage(Stage::Idle);
  }
- void CloseOverlay(){KillTimer(window_,HideTimer);overlay_.Close();SetStage(Stage::Idle);}
+ void StartProgress(unsigned long long id){
+  if(id!=generation_)return;
+  if(!progress_.Count())progress_.Progress(anchor_,currentMonitor_,[this,id]{Post([this,id]{if(id==generation_)Cancel();});});
+  SetStage(Stage::Preprocessing);
+ }
+ void CloseOverlay(){KillTimer(window_,HideTimer);overlay_.Close();progress_.Close();SetStage(Stage::Idle);}
  void Cancel(){++generation_;worker_.Cancel();if(apiActive_){apiActive_=false;settingsWindow_.ApiFinished({},L"API 操作已取消。",false);}selection_.Close();CloseOverlay();}
  void Begin(bool fixed,bool reselect=false){
   Cancel();auto id=generation_;if(reselect){ContextChanged();sessionRegion_.reset();SaveState();}
@@ -79,7 +84,10 @@ class App {
   worker_.Submit([this,id,monitor,region,options,history,secret](std::stop_token stop){
    try{ComScope com;CheckStop(stop);DwmFlush();auto image=std::make_shared<Image>(CaptureMonitor(monitor,stop));CheckStop(stop);
     if(region){Translate(id,monitor,image,*region,options,history,secret->value,stop);return;}
-    Post([this,id,monitor,image]{if(id!=generation_)return;SetStage(Stage::Selecting);selection_.Show(monitor,image,[this,id,monitor,image](std::optional<RECT> chosen){Post([this,id,monitor,image,chosen]{
+    Post([this,id,monitor,image]{if(id!=generation_)return;SetStage(Stage::Selecting);selection_.Show(monitor,image,[this,id,monitor,image](std::optional<RECT> chosen){
+     if(id!=generation_)return;
+     if(chosen){anchor_=*chosen;try{StartProgress(id);}catch(const AppError& e){Error(e);return;}catch(...){Error(AppError("overlay","无法显示翻译进度"));return;}}
+     Post([this,id,monitor,image,chosen]{
       if(id!=generation_)return;if(!chosen){SetStage(Stage::Idle);return;}anchor_=*chosen;sessionRegion_=NormalizeRegion(monitor,*chosen);
       auto options=settings_;auto history=context_.Get(options.contextEnabled,options.contextSize);auto secret=std::make_shared<Secret>(key_);
       worker_.Submit([this,id,monitor,image,region=*chosen,options,history,secret](std::stop_token nextStop){try{ComScope com;Translate(id,monitor,image,region,options,history,secret->value,nextStop);}catch(const Cancelled&){}catch(const AppError& e){Post([this,id,e]{if(id==generation_)Error(e);});}catch(...){Post([this,id]{if(id==generation_)Error(AppError("translation","翻译处理失败"));});}});
@@ -88,9 +96,11 @@ class App {
   });
  }
  void Translate(unsigned long long id,const Monitor& monitor,std::shared_ptr<Image> screenshot,RECT region,const Settings& options,const std::vector<ContextItem>& history,const std::string& key,std::stop_token stop){
-  auto start=std::chrono::steady_clock::now();Post([this,id]{if(id==generation_)SetStage(Stage::Preprocessing);});RECT local=region;OffsetRect(&local,-monitor.rect.left,-monitor.rect.top);auto cropped=Crop(*screenshot,local);screenshot.reset();CheckStop(stop);
+  auto start=std::chrono::steady_clock::now();Post([this,id]{StartProgress(id);});RECT local=region;OffsetRect(&local,-monitor.rect.left,-monitor.rect.top);auto cropped=Crop(*screenshot,local);screenshot.reset();CheckStop(stop);
   auto jpeg=EncodeJpeg(cropped,options.quality,stop);auto data=Base64(jpeg);jpeg.clear();jpeg.shrink_to_fit();CheckStop(stop);
-  Post([this,id]{if(id!=generation_)return;overlay_.Notice(L"正在翻译… 点击 × 取消",anchor_,currentMonitor_,[this,id]{Post([this,id]{if(id==generation_)Cancel();});});SetStage(Stage::Requesting);});auto provider=providerFactory_(options.provider);auto apiStart=std::chrono::steady_clock::now();auto result=provider->Translate(data,history,options,key,stop);auto apiMs=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-apiStart).count();data.clear();data.shrink_to_fit();CheckStop(stop);
+  auto detected=options.spatialOverlay?DetectText(cropped,stop,options.ocrMode):TextDetection{};
+  if(options.spatialOverlay&&detected.regions.empty())detected=DetectTextGeometry(cropped,stop);
+  Post([this,id]{if(id==generation_)SetStage(Stage::Requesting);});auto provider=providerFactory_(options.provider);auto apiStart=std::chrono::steady_clock::now();auto result=provider->TranslateLocated(data,history,options,key,stop,detected.regions);auto apiMs=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-apiStart).count();data.clear();data.shrink_to_fit();CheckStop(stop);
   if(result.segments.empty()){Post([this,id]{if(id==generation_)Notice(L"未识别到文字");});return;}
   Post([this,id]{if(id==generation_)SetStage(Stage::Layout);});auto blocks=BuildOverlay(result,cropped,region,monitor,options);CheckStop(stop);
   auto total=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count();
@@ -104,7 +114,7 @@ class App {
      // The fixed path closes the old overlay before capturing fresh screen pixels.
      sessionRegion_=NormalizeRegion(monitor,region);Begin(true);
     });});
-   SetStage(Stage::Displaying);
+   progress_.Close();SetStage(Stage::Displaying);
    if(options.contextEnabled){context_.Add(result,options.contextSize);SetTimer(window_,ContextTimer,30*60*1000,nullptr);}
    if(options.autoHide)SetTimer(window_,HideTimer,options.autoHideSeconds*1000,nullptr);
    settingsWindow_.Status(L"翻译完成 · API "+std::to_wstring(apiMs)+L" ms · 本次处理 "+std::to_wstring(total)+L" ms");
@@ -135,7 +145,7 @@ class App {
   settingsWindow_.Show(settings_,key_,state_,std::move(cb));if(!recovery_.empty())settingsWindow_.Status(recovery_);
  }
  void TrayMenu(){
-  HMENU menu=CreatePopupMenu();const wchar_t* labels[]{L"打开设置",L"普通截图翻译",L"固定区域翻译",L"重新选择固定区域",L"关闭当前翻译",L"退出"};for(int i=0;i<6;++i)AppendMenuW(menu,MF_STRING,100+i,labels[i]);POINT pt{};GetCursorPos(&pt);SetForegroundWindow(window_);int action=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,pt.x,pt.y,0,window_,nullptr);DestroyMenu(menu);PostMessageW(window_,WM_NULL,0,0);Action(action);
+  HMENU menu=CreatePopupMenu();const wchar_t* labels[]{L"打开设置",L"普通截图翻译",L"翻译上次区域",L"重新选择区域",L"关闭当前翻译",L"退出"};for(int i=0;i<6;++i)AppendMenuW(menu,MF_STRING,100+i,labels[i]);POINT pt{};GetCursorPos(&pt);SetForegroundWindow(window_);int action=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,pt.x,pt.y,0,window_,nullptr);DestroyMenu(menu);PostMessageW(window_,WM_NULL,0,0);Action(action);
  }
  void Action(int action){switch(action){case 100:ShowSettings();break;case 101:Begin(false);break;case 102:Begin(true);break;case 103:Begin(true,true);break;case 104:Cancel();break;case 105:DestroyWindow(window_);break;}}
  LRESULT Message(HWND h,UINT m,WPARAM w,LPARAM l){

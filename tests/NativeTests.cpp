@@ -57,7 +57,7 @@ void TestSpatialOverlay(){
  sat::Settings settings;settings.outlineWidth=0;sat::Monitor monitor{L"fixture",{0,0,1280,900},96};RECT roi{60,120,660,420};
  sat::TranslationResult result{"en",{{"Welcome back","欢迎回来",{50,100,500,150}},{"Settings","设置",{750,100,200,140}},{"Details","这是一段很长的说明，完整内容应该在全文阅读中保留。",{50,600,260,90}}}};
  auto blocks=sat::BuildOverlay(result,image,roi,monitor,settings);Require(blocks.size()==1&&blocks[0].image&&blocks[0].positioned.size()==3,"spatial document missing image or regions");
- auto& items=blocks[0].positioned;Require(items[0].rect.left==30&&items[0].rect.top==30&&items[1].rect.left==450,"normalized locations not mapped to physical pixels");Require(!items[2].overflow&&sat::Height(items[2].rect)>sat::Height(items[2].sourceRect),"long spatial text should expand into free space");Require(items[2].fontSize>=12,"auto layout shrank text below legibility floor");
+ auto& items=blocks[0].positioned;Require(items[0].sourceRect.left>=28&&items[0].sourceRect.left<40&&items[0].sourceRect.top>=28&&items[0].sourceRect.top<45&&items[1].sourceRect.left>=448&&items[1].sourceRect.left<460,"AI box refinement left the actual source glyphs");Require(items[2].overflow&&std::abs(items[2].rect.top-items[2].sourceRect.top)<=10,"long spatial text left its original region");Require(items[2].fontSize>=10,"auto layout shrank text below legibility floor");
  sat::Overlay overlay;int dismissed{},reselected{};overlay.Show(blocks,settings,96,[&]{++dismissed;},[&]{++reselected;});Pump();auto h=Windows(L"SAT.Overlay").front();auto bars=Windows(L"SAT.TranslationToolbar");Require(bars.size()==1,"spatial toolbar missing");auto bar=bars.front();
  auto translated=Snapshot(h,L"spatial-translated.png");Snapshot(bar,L"spatial-toolbar.png");SendMessageW(bar,WM_COMMAND,1,0);auto original=Snapshot(h,L"spatial-original.png");Require(original!=translated,"source toggle did not change image");
  SendMessageW(bar,WM_COMMAND,2,0);RECT reading{};GetWindowRect(h,&reading);Require(sat::Height(reading)>=320,"reading view did not expand small capture");Snapshot(h,L"spatial-reading.png");
@@ -181,10 +181,11 @@ void TestCrowdedLayouts(){
  }};
  auto checkFit=[&](const sat::OverlayBlock& block){
   for(size_t i=0;i<block.positioned.size();++i){const auto& item=block.positioned[i];DWRITE_TEXT_METRICS m{};item.layout->GetMetrics(&m);
-   Require(m.height+2*item.padding<=sat::Height(item.rect)+.5f,"measured text height exceeds expanded cover");
-   Require(m.widthIncludingTrailingWhitespace+2*item.padding<=sat::Width(item.rect)+.5f,"measured text width exceeds expanded cover");
+   Require(item.overflow||(m.height+2*item.padding<=sat::Height(item.rect)+.5f&&m.widthIncludingTrailingWhitespace+2*item.padding<=sat::Width(item.rect)+.5f),"clipped text lacks overflow indication");
+   Require(std::abs(item.rect.top-item.sourceRect.top)<=4+int(std::ceil((item.detectedLines.empty()?0:sat::Height(item.detectedLines.front()))*.18f))&&std::abs(item.rect.left-item.sourceRect.left)<=4,"fallback moved a passage to another location");
+   Require(item.eraseHeight==sat::Height(item.sourceRect),"translation height expanded source removal");
    Require(item.rect.left>=0&&item.rect.top>=0&&item.rect.right<=image.width&&item.rect.bottom<=image.height,"expanded cover escaped capture");
-   for(size_t j=0;j<i;++j){RECT overlap{};Require(!IntersectRect(&overlap,&item.rect,&block.positioned[j].rect),"expanded translation covers overlap");}
+   for(size_t j=0;j<i;++j){RECT overlap{};Require(item.suppressed||block.positioned[j].suppressed||!IntersectRect(&overlap,&item.rect,&block.positioned[j].rect),"visible translation covers overlap");}
   }
  };
  auto blocks=sat::BuildOverlay(result,image,roi,monitor,settings);checkFit(blocks[0]);
@@ -205,11 +206,28 @@ void TestCrowdedLayouts(){
  Require(sat::ReadableTextColor(RGB(25,25,25),RGB(20,20,20))==RGB(255,255,255),"low contrast dark-on-dark text retained");
 
 }
+void TestProgress(){
+ auto monitor=sat::MonitorAtCursor();DragBackdrop backdrop(monitor.rect);sat::Overlay progress;
+ RECT roi{monitor.rect.left+80,monitor.rect.top+80,monitor.rect.left+500,monitor.rect.top+300};
+ int dismissed{};
+ for(UINT dpi:{96u,144u,192u}){
+  monitor.dpi=dpi;backdrop.Color(RGB(31,97,149));progress.Progress(roi,monitor,[&]{++dismissed;});
+  auto frame=Windows(L"SAT.ProgressFrame").front();auto notice=Windows(L"SAT.Overlay").front();
+  Require(IsWindowVisible(frame)&&IsWindowVisible(notice),"processing UI is not immediately visible");RequireBounds(frame,roi,"processing border changed selection geometry");
+  Require(InteriorShowsBackdrop(frame),"processing frame obscures source pixels");backdrop.Color(RGB(91,143,67));Require(InteriorShowsBackdrop(frame),"processing frame freezes the desktop");
+  auto noticeBounds=Bounds(notice);RECT overlap{};Require(!IntersectRect(&overlap,&noticeBounds,&roi),"processing notice covers source despite available space");
+  if(dpi==96){Snapshot(frame,L"processing-frame.png");Snapshot(notice,L"processing-notice.png");}
+  // Verify the status window's close control remains usable at each scale.
+  auto x=sat::Width(noticeBounds)-5;SendMessageW(notice,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(x,5));SendMessageW(notice,WM_LBUTTONUP,0,MAKELPARAM(x,5));
+  progress.Close();Require(Windows(L"SAT.ProgressFrame").empty()&&Windows(L"SAT.Overlay").empty(),"processing UI survived close");
+ }
+ Require(dismissed==3,"processing cancel control failed");
+}
 void TestSelection(){
  sat::Monitor monitor{L"test",{40,60,640,460},96};auto image=std::make_shared<sat::Image>(sat::Image{600,400,std::vector<unsigned char>(600*400*4,150)});sat::Selection selection;std::optional<RECT> chosen;int callbacks{};
- selection.Show(monitor,image,[&](auto r){chosen=r;++callbacks;});Pump();HWND h=selection.Window();SendMessageW(h,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(120,130));SendMessageW(h,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(420,290));SendMessageW(h,WM_LBUTTONUP,0,MAKELPARAM(420,290));Require(callbacks==1&&chosen.has_value(),"release failed to select");Require(chosen->left==160&&chosen->top==190&&chosen->right==460&&chosen->bottom==350,"selection physical offset mismatch");Require(!selection.Window(),"selection not destroyed before completion");
+ selection.Show(monitor,image,[&](auto r){Require(IsWindowVisible(selection.Window()),"selection disappeared before replacement callback");chosen=r;++callbacks;});Pump();HWND h=selection.Window();SendMessageW(h,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(120,130));SendMessageW(h,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(420,290));SendMessageW(h,WM_LBUTTONUP,0,MAKELPARAM(420,290));Require(callbacks==1&&chosen.has_value(),"release failed to select");Require(chosen->left==160&&chosen->top==190&&chosen->right==460&&chosen->bottom==350,"selection physical offset mismatch");Require(!selection.Window(),"selection not destroyed after handoff");
  selection.Show(monitor,image,[&](auto r){chosen=r;++callbacks;});SendMessageW(selection.Window(),WM_KEYDOWN,VK_ESCAPE,0);Require(callbacks==2&&!chosen,"Esc did not cancel");
 }
 
 }
-int main(){try{SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);sat::ComScope com;INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&cc);TestLayout();TestOverlay();TestSpatialOverlay();TestOverlayDragging();TestDragTransparency();TestCrowdedLayouts();TestSelection();std::cout<<"NativeTests: PASS ("<<checks<<" checks)\n";return 0;}catch(const std::exception& e){std::cerr<<"NativeTests: FAIL: "<<e.what()<<"\n";return 1;}}
+int main(){try{SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);sat::ComScope com;INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_WIN95_CLASSES|ICC_HOTKEY_CLASS};InitCommonControlsEx(&cc);TestLayout();TestOverlay();TestSpatialOverlay();TestOverlayDragging();TestDragTransparency();TestCrowdedLayouts();TestProgress();TestSelection();std::cout<<"NativeTests: PASS ("<<checks<<" checks)\n";return 0;}catch(const std::exception& e){std::cerr<<"NativeTests: FAIL: "<<e.what()<<"\n";return 1;}}

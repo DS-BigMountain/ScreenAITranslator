@@ -7,8 +7,8 @@
 101 ICON "app.ico"
 201 RCDATA "Settings.xaml"
 1 VERSIONINFO
- FILEVERSION 1,2,0,0
- PRODUCTVERSION 1,2,0,0
+ FILEVERSION 1,3,0,0
+ PRODUCTVERSION 1,3,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -19,9 +19,9 @@ BEGIN
   BLOCK "040904B0"
   BEGIN
    VALUE "FileDescription", "Screen AI Translator\0"
-   VALUE "FileVersion", "1.2.0\0"
+   VALUE "FileVersion", "1.3.0\0"
    VALUE "ProductName", "Screen AI Translator\0"
-   VALUE "ProductVersion", "1.2.0\0"
+   VALUE "ProductVersion", "1.3.0\0"
    VALUE "OriginalFilename", "ScreenAITranslator.exe\0"
   END
  END

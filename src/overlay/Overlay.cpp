@@ -1,4 +1,4 @@
-﻿#include "Overlay.h"
+#include "Overlay.h"
 #include "SpatialLayout.h"
 #include "capture/Capture.h"
 #include <d2d1.h>
@@ -116,7 +116,7 @@ void Overlay::Render(WindowData& window){
   rt->BeginDraw();rt->Clear(D2D1::ColorF(0,0.f));
   if(window.dragPreview){
    // Leave every interior pixel transparent so the live desktop stays visible.
-   edge->SetColor(ColorF(RGB(88,119,235)));
+   edge->SetColor(ColorF(window.progressFrame?RGB(72,180,255):RGB(88,119,235)));
    const float stroke=std::min(std::max(1.f,2*dpi/96.f),float(std::min(w,h))/2);
    rt->DrawRectangle(D2D1::RectF(stroke/2,stroke/2,w-stroke/2,h-stroke/2),edge.Get(),stroke);
   }else{
@@ -126,21 +126,7 @@ void Overlay::Render(WindowData& window){
    auto bitmapProps=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_IGNORE));
    CheckHR(rt->CreateBitmap(D2D1::SizeU(image.width,image.height),image.bgra.data(),image.width*4,bitmapProps,&bitmap),"overlay");
    rt->DrawBitmap(bitmap.Get(),D2D1::RectF(0,0,float(w),float(h)));
-   // Clear all source anchors before painting adjusted covers and text.
-   if(window.mode==0)for(const auto& item:block.positioned){background->SetColor(ColorF(item.background));auto source=item.sourceRect;source.bottom=std::min<LONG>(image.height,std::max(source.bottom,source.top+int(std::ceil(item.eraseHeight))));rt->FillRectangle(D2D1::RectF(float(source.left),float(source.top),float(source.right),float(source.bottom)),background.Get());}
-   if(window.mode==0)for(const auto& item:block.positioned){
-    auto box=D2D1::RectF(float(item.rect.left),float(item.rect.top),float(item.rect.right),float(item.rect.bottom));
-    background->SetColor(ColorF(item.background));rt->FillRectangle(box,background.Get());
-    auto color=settings.textColor;
-    color=ReadableTextColor(color,item.background);
-    fill->SetColor(ColorF(color));
-    const float pad=item.padding;
-    rt->PushAxisAlignedClip(D2D1::RectF(box.left+pad,box.top+pad,box.right-pad,box.bottom-pad),D2D1_ANTIALIAS_MODE_ALIASED);
-    // Solid local covers make the text readable without black outlines on white backgrounds.
-    rt->DrawTextLayout(D2D1::Point2F(box.left+pad,box.top+pad-item.scroll),item.layout.Get(),fill.Get(),D2D1_DRAW_TEXT_OPTIONS_NONE);
-    rt->PopAxisAlignedClip();
-    if(item.overflow){edge->SetColor(ColorF(RGB(67,100,235)));rt->FillRectangle(D2D1::RectF(box.right-std::min(18.f,box.right-box.left),box.bottom-3,box.right,box.bottom),edge.Get());}
-   }
+   if(window.mode==0)DrawPositioned(rt.Get(),block.positioned,settings.textColor);
    edge->SetColor(ColorF(RGB(88,119,235)));rt->DrawRectangle(D2D1::RectF(1,1,float(w)-1,float(h)-1),edge.Get(),2);
   }else{
   // Clip all translated text to the selected region's content area. Long text scrolls.
@@ -190,6 +176,23 @@ void Overlay::Notice(const std::wstring& text,RECT anchor,const Monitor& m,std::
  Settings s;s.spatialOverlay=false;s.autoFont=false;s.fontSize=17;s.outlineWidth=0;Image image;image.width=std::max(300,Width(anchor));image.height=70;image.bgra.resize(static_cast<size_t>(image.width)*image.height*4,28);for(size_t i=3;i<image.bgra.size();i+=4)image.bgra[i]=255;
  TranslationResult r;r.segments.push_back({"",Utf8(text),{0,0,1000,1000}});RECT roi{anchor.left,anchor.top,anchor.left+image.width,anchor.top+70};roi=Clamp(roi,m.rect);auto blocks=BuildOverlay(r,image,roi,m,s);Show(blocks,s,m.dpi,std::move(dismissed));
 }
+void Overlay::Progress(RECT region,const Monitor& monitor,std::function<void()> dismissed){
+ // Keep the full selection outline while the notice occupies a separate strip.
+ // The transparent interior leaves the original desktop readable during OCR.
+ RECT anchor=region;const int noticeHeight=70;
+ if(region.bottom+noticeHeight<=monitor.rect.bottom)anchor.top=region.bottom;
+ else if(region.top-noticeHeight>=monitor.rect.top)anchor.top=region.top-noticeHeight;
+ anchor.bottom=anchor.top+noticeHeight;
+ Notice(L"正在翻译… 点击 × 取消",anchor,monitor,std::move(dismissed));
+ try{
+  WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.ProgressFrame";wc.lpfnWndProc=Proc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);RegisterClassW(&wc);
+  auto data=std::make_unique<WindowData>();data->owner=this;data->dpi=monitor.dpi;data->dragPreview=true;data->progressFrame=true;data->block.screen=region;
+  auto ptr=data.get();windows_.push_back(std::move(data));
+  ptr->hwnd=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT,wc.lpszClassName,L"翻译处理中选区",WS_POPUP,region.left,region.top,Width(region),Height(region),nullptr,nullptr,wc.hInstance,ptr);
+  if(!ptr->hwnd)throw AppError("overlay","无法创建处理中的选区边框");
+  Render(*ptr);ShowWindow(ptr->hwnd,SW_SHOWNOACTIVATE);
+ }catch(...){Close();throw;}
+}
 LRESULT CALLBACK Overlay::Proc(HWND h,UINT m,WPARAM w,LPARAM l){
  auto data=reinterpret_cast<WindowData*>(GetWindowLongPtrW(h,GWLP_USERDATA));if(m==WM_NCCREATE){data=static_cast<WindowData*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);data->hwnd=h;SetWindowLongPtrW(h,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(data));}
  if(data)try{switch(m){case WM_MOUSEACTIVATE:return MA_NOACTIVATE;
@@ -206,7 +209,7 @@ LRESULT CALLBACK Overlay::Proc(HWND h,UINT m,WPARAM w,LPARAM l){
  case WM_MOUSEWHEEL:{if(data->drag)return 0;if(data->block.image&&data->mode!=2){
    if(data->mode==0){POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&point);
     for(auto it=data->block.positioned.rbegin();it!=data->block.positioned.rend();++it)if(PtInRect(&it->rect,point)){
-     auto maximum=std::max(0.f,it->contentHeight-(Height(it->rect)-2*it->padding));it->scroll=std::clamp(it->scroll-GET_WHEEL_DELTA_WPARAM(w)/float(WHEEL_DELTA)*it->fontSize*3,0.f,maximum);data->owner->Render(*data);break;}
+     if(it->suppressed)continue;auto maximum=std::max(0.f,it->contentHeight-(Height(it->rect)-2*it->padding));it->scroll=std::clamp(it->scroll-GET_WHEEL_DELTA_WPARAM(w)/float(WHEEL_DELTA)*it->fontSize*3,0.f,maximum);data->owner->Render(*data);break;}
    }return 0;
   }const auto& active=data->reading&&data->mode==2?*data->reading:data->block;auto maximum=std::max(0.f,active.contentHeight-Height(active.viewport));data->scroll=std::clamp(data->scroll-GET_WHEEL_DELTA_WPARAM(w)/float(WHEEL_DELTA)*data->block.fontSize*3,0.f,maximum);data->owner->Render(*data);return 0;}
  case WM_MOUSEHWHEEL:return 0;
