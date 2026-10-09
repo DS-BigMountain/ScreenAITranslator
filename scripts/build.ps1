@@ -42,7 +42,6 @@ if (Test-Path -LiteralPath $stageRoot) {
 New-Item -ItemType Directory -Force -Path $stageRoot, $distributionRoot, (Join-Path $stageRoot 'licenses') | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'ocr-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
 Copy-Item -LiteralPath $appBinary -Destination (Join-Path $stageRoot 'ScreenAITranslator.exe')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'CHANGELOG.md') -Destination (Join-Path $stageRoot '更新说明.md')
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'winui-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party/nlohmann/LICENSE.MIT') -Destination (Join-Path $stageRoot 'licenses/nlohmann-json-LICENSE.txt')
 foreach ($name in @('Foundation.1.8.260803002', 'InteractiveExperiences.1.8.260708001', 'WinUI.1.8.260803003')) {
