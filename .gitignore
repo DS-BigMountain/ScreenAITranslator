@@ -16,6 +16,7 @@
 !/scripts/build.ps1
 !/scripts/Get-InnoSetup.ps1
 !/scripts/Get-WinUI.ps1
+!/scripts/Get-Ocr.ps1
 !/scripts/Test-Installer.ps1
 
 /installer/*

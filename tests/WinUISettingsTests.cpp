@@ -34,7 +34,7 @@ void TestSettings(){
  using namespace xaml::Controls;
  sat::SettingsWindow window;sat::Settings options;options.startup=false;sat::PersistentState state;sat::SettingsCallbacks cb;
  int saved{},fetched{},tested{},actions{},closed{};bool reject{};
- cb.apply=[&](auto& value,auto& key){Require(value.model=="test-vision"&&key=="test-only-key"&&value.thinkingHigh,"saved API values differ from controls");++saved;return reject?std::wstring(L"保存被测试拒绝"):std::wstring{};};
+ cb.apply=[&](auto& value,auto& key){Require(value.model=="test-vision"&&key=="test-only-key"&&value.thinkingHigh&&value.ocrMode==2&&value.font==L"SimSun"&&!value.matchTextColor,"saved API values differ from controls");++saved;return reject?std::wstring(L"保存被测试拒绝"):std::wstring{};};
  cb.action=[&](auto){++actions;};cb.closed=[&](RECT r,int page){Require(sat::Valid(r)&&page==2,"window position or navigation not preserved");++closed;};
  auto pump=[](){for(int i=0;i<20;++i){Pump();Sleep(25);}};
  auto click=[&](const wchar_t* name){auto button=window.Content().FindName(name).as<Button>();xaml::Automation::Peers::ButtonAutomationPeer peer(button);peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();pump();};
@@ -45,6 +45,10 @@ void TestSettings(){
  for(int page=0;page<5;++page){nav.SelectedItem(nav.MenuItems().GetAt(page));pump();auto panel=root.FindName(L"Page"+std::to_wstring(page)).as<StackPanel>();Require(panel.Visibility()==xaml::Visibility::Visible,"navigation failed to display selected page");Snapshot(h,L"settings-"+std::to_wstring(page)+L".png");}
  nav.SelectedItem(nav.MenuItems().GetAt(2));pump();
  auto model=root.FindName(L"Model").as<ComboBox>();Require(model.IsEditable(),"manual model entry disabled");Require(model.Text()==sat::Wide(options.model),"saved model is not displayed on first load");
+ auto ocr=root.FindName(L"OcrMode").as<ComboBox>();Require(ocr.Items().Size()==4&&ocr.SelectedIndex()==0,"OCR modes or default incorrect");ocr.SelectedIndex(2);
+ auto font=root.FindName(L"Font").as<ComboBox>();Require(font.IsEditable()&&font.Items().Size()>=10&&font.SelectedIndex()>=0,"common font dropdown unavailable");Require(font.Text()==options.font,"saved font was lost");font.SelectedIndex(2);
+ auto match=root.FindName(L"MatchTextColor").as<ToggleSwitch>();Require(match.IsOn(),"source color matching not enabled by default");match.IsOn(false);
+ Require(winrt::unbox_value<winrt::hstring>(root.FindName(L"TranslateFixed").as<Button>().Content())==L"翻译上次区域","last-region label not updated");
  auto thinking=root.FindName(L"ThinkingMode").as<ComboBox>();Require(thinking.Items().Size()==2,"thinking choices changed");thinking.SelectedIndex(1);
  click(L"FetchModels");Require(fetched==1&&model.Items().Size()==1,"model discovery is not connected");click(L"TestApi");Require(tested==1,"API test is not connected");
  click(L"Apply");Require(saved==1,"settings save failed");
@@ -56,7 +60,7 @@ void TestSettings(){
  nav.SelectedItem(nav.MenuItems().GetAt(3));click(L"ClearContext");Require(actions==5,"clear context disconnected");
  nav.SelectedItem(nav.MenuItems().GetAt(2));window.Show(options,"different-key",state,cb);Require(password.Password()==L"test-only-key","reopening visible window discarded unsaved input");
  // 关闭后释放控件引用，验证再次创建窗口的资源生命周期。
- model=nullptr;password=nullptr;thinking=nullptr;textColor=nullptr;nav=nullptr;root=nullptr;
+ font=nullptr;match=nullptr;ocr=nullptr;model=nullptr;password=nullptr;thinking=nullptr;textColor=nullptr;nav=nullptr;root=nullptr;
  click(L"Close");Require(!window.Window()&&closed==1,"close did not persist window state");
  for(int i=0;i<3;++i){window.Show(options,"test-only-key",state,cb);pump();Require(window.Content()!=nullptr,"window reopen failed");window.Close();pump();}
 }

@@ -13,7 +13,10 @@ void Selection::Show(const Monitor& m,std::shared_ptr<Image> image,std::function
 }
 void Selection::Finish(std::optional<RECT> r){
  auto callback=std::move(done_);done_={};dragging_=false;ReleaseCapture();
- if(hwnd_){DestroyWindow(hwnd_);hwnd_=nullptr;}image_.reset();if(callback)callback(r);
+ // Let the controller paint the replacement before removing the frozen selection.
+ // Close remains safe if the callback already cancelled this selection.
+ try{if(callback)callback(r);}catch(...){Close();throw;}
+ Close();
 }
 void Selection::Paint(){
  PAINTSTRUCT ps{};HDC dc=BeginPaint(hwnd_,&ps);RECT client{};GetClientRect(hwnd_,&client);

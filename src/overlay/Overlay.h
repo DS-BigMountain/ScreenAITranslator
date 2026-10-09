@@ -5,6 +5,9 @@ namespace sat {
 struct PositionedText {
  RECT rect{},sourceRect{}; COLORREF background{}; float fontSize{},padding{},contentHeight{},lineHeight{},eraseHeight{},scroll{}; bool overflow{};
  ComPtr<IDWriteTextLayout> layout;
+ bool suppressed{};
+ std::optional<COLORREF> sourceColor;
+ std::vector<RECT> detectedLines;
 };
 struct OverlayBlock {
  RECT screen{}; COLORREF background{};float opacity{1};
@@ -17,7 +20,7 @@ struct OverlayBlock {
 std::vector<OverlayBlock> BuildOverlay(const TranslationResult&,const Image& roi,RECT screenRoi,const Monitor&,const Settings&);
 class Overlay {
  struct DragState { POINT start{};RECT region{},view{};std::optional<RECT> reading;bool moved{}; };
- struct WindowData { Overlay* owner;HWND hwnd{};bool pressed{},dragPreview{};OverlayBlock block;Settings settings;UINT dpi{96};float scroll{};int mode{};std::optional<OverlayBlock> reading;std::optional<DragState> drag; };
+ struct WindowData { Overlay* owner;HWND hwnd{};bool pressed{},dragPreview{},progressFrame{};OverlayBlock block;Settings settings;UINT dpi{96};float scroll{};int mode{};std::optional<OverlayBlock> reading;std::optional<DragState> drag; };
  std::vector<std::unique_ptr<WindowData>> windows_;
  std::function<void()> dismissed_;
  std::function<void()> reselect_;
@@ -33,6 +36,7 @@ public:
  ~Overlay();
  void Show(const std::vector<OverlayBlock>&,const Settings&,UINT dpi,std::function<void()> dismissed,std::function<void()> reselect={},std::function<void(RECT)> moved={});
  void Notice(const std::wstring& text,RECT anchor,const Monitor&,std::function<void()> dismissed);
+ void Progress(RECT region,const Monitor&,std::function<void()> dismissed);
  void Close();size_t Count()const{return windows_.size();}
  bool Dragging()const;
 };

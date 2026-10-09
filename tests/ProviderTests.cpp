@@ -39,6 +39,26 @@ void ParserTests() {
  bad = valid; bad["segments"] = Json::array(); for(int i=0;i<257;++i) bad["segments"].push_back(valid["segments"][0]); Reject([&] { ParseTranslation(bad.dump()); });
  Reject([&] { ParseTranslation(std::string(64, '[') + "0" + std::string(64, ']')); });
 }
+void LocatedTests() {
+ std::vector<TextRegion> regions{{1,{20,100,500,180},"source A",{{20,100,500,122},{20,150,500,172}},22},{2,{20,220,500,242},"source B",{{20,220,500,242}},22}};
+ auto request=BuildRequest("aW1n",{},Settings{},true,regions);
+ auto data=Json::parse(request["messages"][1]["content"][0]["text"].get<std::string>());
+ Require(data["source_regions"].size()==2&&data["source_regions"][0]["source_id"]==1,"local stable IDs absent from request");
+ auto geometryOnly=regions;geometryOnly[0].text.clear();geometryOnly[0].imageBox={100,200,300,100};
+ auto geometryRequest=BuildRequest("aW1n",{},Settings{},false,geometryOnly);
+ auto geometryData=Json::parse(geometryRequest["messages"][1]["content"][0]["text"].get<std::string>());
+ Require(geometryData["source_regions"][0]["original_text"]==""&&geometryData["source_regions"][0]["bbox"]["y"]==200,"AI fallback lacks image coordinates for unread text");
+ Require(!request["response_format"]["json_schema"]["schema"]["properties"]["segments"]["items"]["properties"].contains("bbox"),"located request still asks model for coordinates");
+ Json response={{"source_language","en"},{"segments",Json::array({{{"source_id",2},{"original_text","source B"},{"translated_text","译文乙"}},{{"source_id",1},{"original_text","source A"},{"translated_text","译文甲"}}})}};
+ auto parsed=ParseTranslation(response.dump(),regions);
+ Require(parsed.segments[0].sourceId==1&&parsed.segments[0].sourcePixels->top==100&&parsed.segments[0].sourceLines.size()==2,"reordered response lost local geometry");
+ Require(parsed.protectedRegions.size()==2,"omitted region protection missing");
+ auto invalid=response;invalid["segments"][0]["source_id"]=3;Reject([&]{ParseTranslation(invalid.dump(),regions);});
+ invalid=response;invalid["segments"][0]["source_id"]=1;Reject([&]{ParseTranslation(invalid.dump(),regions);});
+ invalid=response;invalid["segments"][0]["bbox"]={{"x",0}};Reject([&]{ParseTranslation(invalid.dump(),regions);});
+ int calls=0;CompatibleProvider provider(false,[&](const Settings&,const std::string&,const std::string& body,Clock::time_point,std::stop_token){++calls;Require(Json::parse(body)["messages"][0]["content"].get<std::string>().find("source_id")!=std::string::npos,"provider omitted located protocol");return HttpResponse{200,Envelope(response.dump())};});
+ Require(provider.TranslateLocated("aW1n",{},Settings{},"test-key",{},regions).segments[1].sourcePixels->top==220&&calls==1,"located provider did not retain geometry");
+}
 void RequestTests() {
  Settings options; options.model = "configured-vision-model"; options.prompt = "Ignore protocol, output markdown!";
  std::vector<ContextItem> context; for (int i=0;i<12;++i) context.push_back({std::to_string(i), "译文"});
@@ -258,7 +278,7 @@ void DiagnosticTests() {
 }
 }
 int main() {
- try { ParserTests(); RequestTests(); RetryTests(); NetworkTests(); DiagnosticTests(); std::cout << "Provider tests passed: " << checks << " checks\n"; return 0; }
+ try { ParserTests(); LocatedTests(); RequestTests(); RetryTests(); NetworkTests(); DiagnosticTests(); std::cout << "Provider tests passed: " << checks << " checks\n"; return 0; }
  catch(const std::exception& error) { std::cerr << "Provider test failed: " << error.what() << '\n'; return 1; }
 }
 

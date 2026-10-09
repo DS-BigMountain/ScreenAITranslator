@@ -15,8 +15,15 @@
 
 namespace sat {
 struct Box { int x{}, y{}, width{}, height{}; };
-struct Segment { std::string original, translated; Box box; };
-struct TranslationResult { std::string language; std::vector<Segment> segments; };
+struct Segment {
+ std::string original, translated; Box box;
+ // Local OCR geometry is expressed in original capture pixels, independently of upload scaling.
+ std::optional<RECT> sourcePixels;
+ std::vector<RECT> sourceLines;
+ float sourceLineHeight{};
+ int sourceId{};
+};
+struct TranslationResult { std::string language; std::vector<Segment> segments; std::vector<RECT> protectedRegions; };
 struct ContextItem { std::string original, translated; };
 enum class CaptureBackend { Synthetic, Dxgi, GdiFallback };
 struct Image { int width{}, height{}; std::vector<unsigned char> bgra; CaptureBackend backend{CaptureBackend::Synthetic}; };
@@ -34,9 +41,11 @@ struct Settings {
  bool thinkingHigh{false};
  std::string encryptedKey;
  int quality{1};
+ int ocrMode{0}; // 0 auto English/Japanese, 1 English, 2 Japanese, 3 direct AI
  bool contextEnabled{true}; int contextSize{8};
  std::string prompt{"请准确翻译画面中的所有可见文字为简体中文。优先忠实原意，不进行文学化润色，不添加原文不存在的信息。角色名、专有名词应尽量保持一致。默认翻译所有字幕、对话、按钮和 UI 文本。"};
  std::wstring font{L"Microsoft YaHei UI"};
+ bool matchTextColor{true};
  bool autoFont{true}; float fontSize{22};
  bool spatialOverlay{true};
  COLORREF textColor{RGB(255,255,255)}, outlineColor{RGB(0,0,0)};

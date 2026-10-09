@@ -17,10 +17,11 @@ function Invoke-Checked {
     & $Program @ToolArguments
     if ($LASTEXITCODE -ne 0) { throw "$Program failed with exit code $LASTEXITCODE." }
 }
+& (Join-Path $PSScriptRoot 'Get-Ocr.ps1') -BuildRoot $buildRoot
 if (!$SkipBuild) {
     & (Join-Path $PSScriptRoot 'Get-WinUI.ps1') -BuildRoot $buildRoot
     Invoke-Checked 'cmake' @('-S', $projectRoot, '-B', $buildRoot, '-G', $Generator, '-A', 'x64')
-    Invoke-Checked 'cmake' @('--build', $buildRoot, '--config', $Configuration, '--parallel')
+    Invoke-Checked 'cmake' @('--build', $buildRoot, '--config', $Configuration, '--parallel', '1')
 }
 if (!$SkipTests) { Invoke-Checked 'ctest' @('--test-dir', $buildRoot, '-C', $Configuration, '--output-on-failure') }
 $appBinary = Join-Path $buildRoot "$Configuration/ScreenAITranslator.exe"
@@ -39,7 +40,9 @@ if (Test-Path -LiteralPath $stageRoot) {
     Remove-Item -LiteralPath $resolvedStage -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $stageRoot, $distributionRoot, (Join-Path $stageRoot 'licenses') | Out-Null
+Get-ChildItem -LiteralPath (Join-Path $buildRoot 'ocr-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
 Copy-Item -LiteralPath $appBinary -Destination (Join-Path $stageRoot 'ScreenAITranslator.exe')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'CHANGELOG.md') -Destination (Join-Path $stageRoot '更新说明.md')
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'winui-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party/nlohmann/LICENSE.MIT') -Destination (Join-Path $stageRoot 'licenses/nlohmann-json-LICENSE.txt')
 foreach ($name in @('Foundation.1.8.260803002', 'InteractiveExperiences.1.8.260708001', 'WinUI.1.8.260803003')) {
