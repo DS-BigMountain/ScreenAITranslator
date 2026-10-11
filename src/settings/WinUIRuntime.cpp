@@ -15,6 +15,7 @@
 extern "C" HRESULT __stdcall WindowsAppRuntime_EnsureIsLoaded();
 namespace sat {
 namespace {
+thread_local WinUIRuntime* activeRuntime{};
 namespace xaml = winrt::Microsoft::UI::Xaml;
 struct IslandApplication : xaml::ApplicationT<IslandApplication, xaml::Markup::IXamlMetadataProvider> {
  xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider provider;
@@ -50,12 +51,19 @@ struct WinUIRuntime::Impl {
   winrt::clear_factory_cache();
  }
 };
-WinUIRuntime::WinUIRuntime() {
+WinUIRuntime::WinUIRuntime(bool deferInitialization) {
  // 与 WinUI 应用入口一致，UI apartment 的生命周期覆盖整个进程。
  // XAML、队列和控件在析构时关闭，COM 在线程退出时完成最终清理。
  winrt::init_apartment(winrt::apartment_type::single_threaded);
- impl_=std::make_unique<Impl>();
+ if(activeRuntime)throw AppError("settings","UI runtime already exists on this thread");
+ if(!deferInitialization)impl_=std::make_unique<Impl>();
+ activeRuntime=this;
 }
-WinUIRuntime::~WinUIRuntime()=default;
-bool WinUIRuntime::ProcessMessage(const MSG& message) { return ContentPreTranslateMessage(&message)!=FALSE; }
+WinUIRuntime::~WinUIRuntime(){impl_.reset();activeRuntime=nullptr;}
+void WinUIRuntime::EnsureInitialized(){
+ if(!activeRuntime)throw AppError("settings","UI runtime unavailable");
+ if(!activeRuntime->impl_)activeRuntime->impl_=std::make_unique<Impl>();
+}
+bool WinUIRuntime::Initialized(){return activeRuntime&&bool(activeRuntime->impl_);}
+bool WinUIRuntime::ProcessMessage(const MSG& message) { return Initialized()&&ContentPreTranslateMessage(&message)!=FALSE; }
 }

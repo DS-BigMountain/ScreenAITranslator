@@ -31,7 +31,7 @@ public:
  HRESULT STDMETHODCALLTYPE DrawInlineObject(void*,FLOAT,FLOAT,IDWriteInlineObject*,BOOL,BOOL,IUnknown*)override{return E_NOTIMPL;}
 };
 }
-std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result,const Image& roi,RECT screenRoi,const Monitor& monitor,const Settings& settings){
+std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result,Image roi,RECT screenRoi,const Monitor& monitor,const Settings& settings){
  if(result.segments.empty())return {};
  if(!Valid(screenRoi))throw AppError("layout","译文框范围无效，请重新框选");
  auto factory=WriteFactory();float scale=monitor.dpi/96.f;
@@ -53,7 +53,7 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result,const Ima
  CheckHR(factory->CreateTextLayout(block.text.c_str(),static_cast<UINT32>(block.text.size()),format.Get(),static_cast<float>(std::max(1,Width(block.viewport))),static_cast<float>(std::max(1,Height(block.viewport))),&block.layout),"layout");
  DWRITE_TEXT_METRICS metrics{};CheckHR(block.layout->GetMetrics(&metrics),"layout");block.contentHeight=metrics.height;
   if(settings.spatialOverlay){
-  block.image=std::make_shared<Image>(roi);block.positioned=LayoutPositioned(result,roi,settings,monitor.dpi);
+  block.positioned=LayoutPositioned(result,roi,settings,monitor.dpi);block.image=std::make_shared<Image>(std::move(roi));
  }
  return {std::move(block)};
 }

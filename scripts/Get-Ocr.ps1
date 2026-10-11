@@ -20,6 +20,7 @@ $base = 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/
 Get-Verified "$base/det/ch_PP-OCRv5_det_mobile.onnx" "$runtime/models/det.onnx" '4D97C44A20D30A81AAD087D6A396B08F786C4635742AFC391F6621F5C6AE78AE'
 Get-Verified "$base/rec/ch_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-ja.onnx" '5825FC7EBF84AE7A412BE049820B4D86D77620F204A041697B0494669B1742C5'
 Get-Verified "$base/rec/en_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-en.onnx" 'C3461ADD59BB4323ECBA96A492AB75E06DDA42467C9E3D0C18DB5D1D21924BE8'
+Get-Verified "$base/rec/korean_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-ko.onnx" 'CD6E2EA50F6943CA7271EB8C56A877A5A90720B7047FE9C41A2E541A25773C9B'
 Copy-Item -LiteralPath "$cache/ort/runtimes/win-x64/native/onnxruntime.dll" -Destination $runtime -Force
 Copy-Item -LiteralPath "$cache/ort/LICENSE" -Destination "$runtime/licenses/ONNXRuntime-LICENSE.txt" -Force
 Copy-Item -LiteralPath "$cache/ort/ThirdPartyNotices.txt" -Destination "$runtime/licenses/ONNXRuntime-ThirdPartyNotices.txt" -Force

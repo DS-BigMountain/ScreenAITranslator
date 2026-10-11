@@ -1,5 +1,7 @@
 #include "capture/TextDetection.h"
+#include "capture/Capture.h"
 #include "common/Platform.h"
+#include "providers/Provider.h"
 #include <wincodec.h>
 #include <iostream>
 #include <thread>
@@ -18,28 +20,54 @@ std::string Text(const TextDetection& result){std::string text;for(const auto& r
 }
 int wmain(int argc,wchar_t** argv){try{
  ComScope com;auto english=Read(L"test-fixtures/installer-en.png");
+ if(argc==2&&std::wstring(argv[1])==L"--missing-korean"){
+  auto whole=Read(L"test-fixtures/korean-sign.jpg");auto image=Crop(whole,{0,0,whole.width/2,whole.height});
+  Require(DetectText(image,{},OcrKorean).regions.empty(),"Missing Korean model unexpectedly succeeded");
+  Require(DetectText(image,{},OcrAuto).regions.empty(),"Automatic mode accepted unverified Korean text with missing model");
+  auto geometry=DetectTextGeometry(image);Require(geometry.status=="local-geometry-ai"&&!geometry.regions.empty(),"Missing Korean weights broke vision geometry");
+  std::cout<<"Missing Korean model: safe fallback PASS\n";return 0;
+ }
  if(argc==2&&std::wstring(argv[1])==L"--missing-recognizer"){
-  Require(DetectText(english).regions.empty(),"Missing recognizer unexpectedly succeeded");auto geometry=DetectTextGeometry(english);Require(geometry.status=="local-geometry-ai"&&!geometry.regions.empty(),"AI fallback lost available detector geometry");for(const auto& r:geometry.regions)Require(r.text.empty()&&r.imageBox.width>0&&r.lineHeight>0,"AI geometry carried invented OCR text");std::cout<<"Detector-only fallback: PASS\n";return 0;
+  Require(DetectText(english,{},OcrJapanese).regions.empty(),"Missing recognizer unexpectedly succeeded");auto geometry=DetectTextGeometry(english);Require(geometry.status=="local-geometry-ai"&&!geometry.regions.empty(),"AI fallback lost available detector geometry");for(const auto& r:geometry.regions)Require(r.text.empty()&&r.imageBox.width>0&&r.lineHeight>0,"AI geometry carried invented OCR text");std::cout<<"Detector-only fallback: PASS\n";return 0;
  }
  if(argc==2&&std::wstring(argv[1])==L"--missing-assets"){
-  auto result=DetectText(english);Require(result.regions.empty()&&result.status=="ocr-unavailable","Missing assets did not produce safe fallback");
+  auto result=DetectText(english,{},OcrJapanese);Require(result.regions.empty()&&result.status=="ocr-unavailable","Missing assets did not produce safe fallback");
   Require(DetectText(english,{},3).status=="direct-ai","Direct AI attempted to load missing OCR");
   std::cout<<"Missing OCR assets: safe fallback PASS\n";return 0;
  }
- for(int mode:{0,1}){
+ for(int mode:{OcrJapanese,OcrEnglish}){
   auto start=std::chrono::steady_clock::now();auto result=DetectText(english,{},mode);auto text=Text(result);
   Require(result.status=="bundled-ocr"&&text.find("Additional Tasks")!=std::string::npos&&text.find("desktop shortcut")!=std::string::npos,"Bundled English recognition failed");
-  std::cout<<"English mode "<<mode<<": "<<std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count()<<" ms\n";
+  for(const auto& r:result.regions)Require(r.confidence>=0.f&&r.confidence<=1.f,"OCR confidence outside valid range");
+  std::cout<<"English mode "<<mode<<": "<<std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count()<<" ms, path="<<(CanTranslateText(result.regions)?"text":"vision")<<"\n";
  }
  auto geometry=DetectTextGeometry(english);Require(!geometry.regions.empty()&&geometry.status=="local-geometry-ai","Geometry-only AI path failed");for(const auto& r:geometry.regions)Require(r.text.empty()&&r.imageBox.width>0,"Geometry-only path ran recognition");
  auto japanese=Read(L"test-fixtures/news-ja.png");auto result=DetectText(japanese,{},2);
  Require(result.status=="bundled-ocr"&&Text(result).find("1200")!=std::string::npos&&Text(result).find("古代")!=std::string::npos,"Bundled Japanese recognition failed");
+ std::cout<<"Japanese path="<<(CanTranslateText(result.regions)?"text":"vision")<<"\n";
+ for(auto file:{L"test-fixtures/upstream/korean-sign.jpg",L"test-fixtures/upstream/korean-scene.jpg"}){
+  auto whole=Read(file);const bool scene=std::wstring(file).find(L"scene")!=std::wstring::npos;
+  // The scene photo's far-left reflection contains unrelated vertical text.
+  // Select the sign itself, as a user would select a translation region.
+  auto korean=Crop(whole,scene?RECT{whole.width/12,whole.height/5,whole.width*47/100,whole.height*4/5}:RECT{0,0,whole.width/2,whole.height});
+  const auto anchor=scene?"종합안내도":"좋아하는";
+  for(int mode:{OcrKorean,OcrAuto}){
+   if(mode==OcrAuto){
+    Require(DetectText(korean,{},mode).status=="direct-ai","Automatic mode must defer language recognition to vision");
+    auto located=DetectTextGeometry(korean);Require(!located.regions.empty()&&!CanTranslateText(located.regions),"Automatic mode accidentally chose text-only translation");
+    for(const auto& region:located.regions)Require(region.text.empty(),"Automatic geometry invented OCR text");continue;
+   }
+   auto detected=DetectText(korean,{},mode);auto text=Text(detected);
+   std::cout<<"Korean "<<mode<<" status="<<detected.status<<" text="<<text<<"\n";
+   Require(detected.status=="bundled-ocr"&&text.find(anchor)!=std::string::npos,"Korean screenshot lost expected text");
+  }
+ }
  Image blank{500,200,std::vector<unsigned char>(500*200*4,255)};
- Require(DetectText(blank).status=="no-text","Blank image generated OCR regions");
+ Require(DetectText(blank,{},OcrJapanese).status=="no-text","Blank image generated OCR regions");
  Require(DetectText(japanese,{},3).status=="direct-ai","Explicit AI path ignored");
  Require(DetectText(japanese,{},99).status=="invalid-mode","Invalid OCR mode accepted");
  std::stop_source source;std::jthread cancel([&]{std::this_thread::sleep_for(std::chrono::milliseconds(10));source.request_stop();});bool cancelled=false;
- try{DetectText(japanese,source.get_token());}catch(const Cancelled&){cancelled=true;}Require(cancelled,"In-flight OCR cancellation ignored");
+ try{DetectText(japanese,source.get_token(),OcrJapanese);}catch(const Cancelled&){cancelled=true;}Require(cancelled,"In-flight OCR cancellation ignored");
  Require(DetectText(english,{},1).status=="bundled-ocr","Cancelled run poisoned subsequent inference");
- std::cout<<"BundledOcrTests: PASS (English, Japanese, blank, direct AI, cancellation, recovery)\n";return 0;
+ std::cout<<"BundledOcrTests: PASS (English, Japanese, Korean, automatic vision, blank, cancellation, recovery)\n";return 0;
  }catch(const std::exception& e){std::cerr<<"BundledOcrTests: FAIL: "<<e.what()<<"\n";return 1;}}

@@ -10,6 +10,13 @@ std::atomic<int> translations{},cancelled{};
 std::atomic<bool> slow{};
 class FakeProvider final:public sat::ITranslationProvider {
 public:
+ sat::TranslationResult TranslateLocated(const std::string& image,const std::vector<sat::ContextItem>& context,const sat::Settings& options,const std::string& key,std::stop_token stop,const std::vector<sat::TextRegion>& regions)override{
+  if(sat::CanTranslateText(regions)){
+   if(!image.empty())throw std::runtime_error("text pipeline unnecessarily encoded an image");
+   return Translate("text-only",context,options,key,stop);
+  }
+  return Translate(image,context,options,key,stop);
+ }
  sat::TranslationResult Translate(const std::string& image,const std::vector<sat::ContextItem>& context,const sat::Settings&,const std::string& key,std::stop_token stop)override{
   if(image.empty()||key!="test-only-key")throw std::runtime_error("invalid pipeline input");
   auto call=++translations;if(call>1&&context.empty())throw std::runtime_error("context was not supplied");

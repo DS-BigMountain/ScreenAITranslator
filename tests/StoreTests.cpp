@@ -36,9 +36,13 @@ void RunStoreTests() {
     Throws([] { UnprotectSecret("plaintext-key"); }, "Plaintext must not be accepted as protected secret");
     Check(settings.spatialOverlay,"Spatial overlay is the new default"); settings.spatialOverlay=false;settings.thinkingHigh=true;
     settings.ocrMode = 2;settings.matchTextColor=false;
+    settings.provider="azure-translator";settings.serviceRegion="eastasia";settings.proxyMode=2;settings.proxyAddress=L"127.0.0.1:7890";
+    settings.fallbackEnabled=true;settings.fallbackProvider="gemini";settings.fallbackModel="vision-test";settings.fallbackBaseUrl=L"https://generativelanguage.googleapis.com/v1beta";settings.encryptedFallbackKey=ProtectSecret("fallback-test-secret");settings.translateAll=false;
     settings.prompt = "只翻译字幕。保留专有名词。";
     settings.font = L"微软雅黑";
     settings.hotkeys[0] = {MOD_CONTROL | MOD_ALT, 'T'};
+    settings.connectionProfiles["deepseek"]={L"https://api.deepseek.com","deepseek-flash",ProtectSecret("previous-provider-key"),{}};
+    settings.fallbackProfiles["anthropic"]={L"https://api.anthropic.com/v1","claude-test",ProtectSecret("previous-fallback-key"),{}};
     store.SaveSettings(settings);
     auto loaded = store.LoadSettings();
     Check(loaded.prompt == settings.prompt && loaded.font == settings.font && loaded.hotkeys[0].key == 'T', "UTF-8 settings round trip");
@@ -46,10 +50,20 @@ void RunStoreTests() {
     Check(loaded.ocrMode == 2, "OCR mode persisted");
     Check(!loaded.spatialOverlay && loaded.thinkingHigh,"Overlay and thinking preferences persisted");
     Check(UnprotectSecret(loaded.encryptedKey) == secret, "Protected key persisted");
+    Check(UnprotectSecret(loaded.connectionProfiles.at("deepseek").encryptedKey)=="previous-provider-key"&&UnprotectSecret(loaded.fallbackProfiles.at("anthropic").encryptedKey)=="previous-fallback-key","inactive connection profiles survive disk round trip");
+    Check(File(temp.path/"config.json").find("previous-provider-key")==std::string::npos&&File(temp.path/"config.json").find("previous-fallback-key")==std::string::npos,"inactive profile keys must be encrypted");
+    {auto invalid=settings;invalid.connectionProfiles["deepseek"].encryptedKey="plaintext";Throws([&]{store.SaveSettings(invalid);},"plaintext profile key rejected");}
+    Check(loaded.provider=="azure-translator"&&loaded.serviceRegion=="eastasia"&&loaded.proxyMode==2&&loaded.proxyAddress==settings.proxyAddress,"provider and proxy persisted");
+    Check(loaded.fallbackEnabled&&loaded.fallbackProvider=="gemini"&&loaded.fallbackModel=="vision-test"&&!loaded.translateAll&&UnprotectSecret(loaded.encryptedFallbackKey)=="fallback-test-secret","fallback and coverage preferences persisted");
+    Check(File(temp.path / "config.json").find("fallback-test-secret")==std::string::npos,"fallback key encrypted on disk");
+    for(auto proxy:{L"user:password@host:80",L"http://host:80",L"host:0",L"host:65536",L"host:80\r\nX-Key: bad"}){auto invalid=settings;invalid.proxyAddress=proxy;Throws([&]{ValidateSettings(invalid);},"invalid proxy must fail");}
+    {auto invalid=settings;invalid.fallbackProvider="deepl";Throws([&]{ValidateSettings(invalid);},"text service cannot be vision fallback");}
     Check(File(temp.path / "config.json").find(secret) == std::string::npos, "Config must not contain plaintext key");
     settings.model = "custom-vision"; store.SaveSettings(settings);
     Check(std::filesystem::exists(temp.path / "config.json.bak"), "Atomic save retains backup");
-    auto bad = settings; bad.ocrMode = 4;
+    {auto korean=settings;korean.ocrMode=OcrKorean;store.SaveSettings(korean);Check(store.LoadSettings().ocrMode==OcrKorean,"Korean OCR mode persisted");store.SaveSettings(settings);}
+    {auto legacy=settings;legacy.ocrMode=OcrDirectVision;store.SaveSettings(legacy);Check(store.LoadSettings().ocrMode==OcrDirectVision,"Legacy direct vision mode remains valid");store.SaveSettings(settings);}
+    auto bad = settings; bad.ocrMode = 5;
     Throws([&] { store.SaveSettings(bad); }, "Invalid OCR mode must fail");
     bad = settings; bad.contextSize = 100;
     Throws([&] { store.SaveSettings(bad); }, "Invalid context count must fail");

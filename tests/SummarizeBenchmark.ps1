@@ -37,7 +37,7 @@ $summary=@($rows | Group-Object image,path | ForEach-Object {
 })
 $comparisons=@(foreach($inputImage in $metadata.inputs){
     $direct=$summary | Where-Object {$_.image -eq $inputImage.image -and $_.path -eq 'direct_ai'}
-    $ocr=$summary | Where-Object {$_.image -eq $inputImage.image -and $_.path -eq 'ocr_image_ai'}
+    $ocr=$summary | Where-Object {$_.image -eq $inputImage.image -and $_.path -in @('ocr_image_ai', 'ocr_auto_ai')}
     [pscustomobject]@{image=$inputImage.image;all_trials_succeeded=($direct.success -eq $direct.trials -and $ocr.success -eq $ocr.trials);observed_median_reduction_percent=if($direct.success -eq $direct.trials -and $ocr.success -eq $ocr.trials){100*(1-$ocr.median_total_ms/$direct.median_total_ms)}else{$null}}
 })
 $result=[pscustomobject]@{groups=$summary;comparisons=$comparisons;trial_count=$rows.Count;http_attempts=($rows | ForEach-Object {$_.attempts.Count} | Measure-Object -Sum).Sum}

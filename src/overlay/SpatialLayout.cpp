@@ -112,7 +112,19 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result,con
    layout.Reset();CheckHR(factory->CreateTextLayout(text.c_str(),UINT32(text.size()),format.Get(),width,100000.f,&layout),"layout");
    DWRITE_TEXT_METRICS metrics{};CheckHR(layout->GetMetrics(&metrics),"layout");return metrics;
   };
-  const auto text=Wide(segment.translated);
+  auto text=Wide(segment.translated);
+  if(segment.sourceLines.size()>1){
+   std::erase(text,L'\r');
+   // OCR line breaks describe screen wrapping, not paragraph boundaries. Keep
+   // explicit blank paragraphs; let DirectWrite wrap each translated passage.
+   std::wstring reflowed;
+   for(size_t at=0;at<text.size();++at){auto ch=text[at];if(ch==L'\r')continue;
+    if(ch==L'\n'&&at>0&&at+1<text.size()&&text[at-1]!=L'\n'&&text[at+1]!=L'\n'&&text[at+1]!=L'\r'){
+     auto previous=reflowed.empty()?L' ':reflowed.back(),next=text[at+1];
+     if(previous<0x2e80&&next<0x2e80&&previous!=L' '&&next!=L' ')reflowed+=L' ';continue;
+    }reflowed+=ch;
+   }text=std::move(reflowed);
+  }
   float preferred=settings.fontSize*scale;
   if(settings.autoFont){
    if(detectedHeight>0)preferred=std::clamp(detectedHeight*1.05f,10.f,144.f);

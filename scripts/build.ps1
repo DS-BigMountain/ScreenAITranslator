@@ -7,6 +7,8 @@ param(
     [switch]$BootstrapInno,
     [switch]$SkipBuild,
     [switch]$SkipTests,
+    [ValidatePattern('^\d+\.\d+\.\d+(?:\.\d+)?$')][string]$ReleaseVersion,
+    [ValidatePattern('^[A-Za-z0-9-]+$')][string]$BuildLabel,
     [string]$InnoCompiler
 )
 $ErrorActionPreference = 'Stop'
@@ -29,8 +31,22 @@ if (!(Test-Path -LiteralPath $appBinary)) { throw "Application binary missing: $
 $appVersion = (Get-Item -LiteralPath $appBinary).VersionInfo.ProductVersion
 if ($appVersion -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') { throw 'Application version is missing or invalid.' }
 $suffix = if ($Preview) { '-WinUI3-preview' } else { '' }
-$distributionRoot = Join-Path $projectRoot "__release_packages__/$appVersion"
-if ($Preview) { $distributionRoot = Join-Path $distributionRoot 'WinUI3-preview' }
+if ($BuildLabel) { $suffix += "-$BuildLabel" }
+if ($ReleaseVersion -and $ReleaseVersion -ne $appVersion) { throw 'Requested release version does not match the application binary. Version numbers are not changed automatically.' }
+$distributionRoot = Join-Path $projectRoot '__release_packages__/临时'
+if ($ReleaseVersion) { $distributionRoot = Join-Path $projectRoot "__release_packages__/$ReleaseVersion" }
+else {
+    $buildTime = [TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('China Standard Time')).ToString('yyyyMMdd-HHmmss-fff')
+    $distributionRoot = Join-Path $distributionRoot $buildTime
+}
+$portableZipPath = Join-Path $distributionRoot "ScreenAITranslator-$appVersion$suffix-portable.zip"
+$setupName = "ScreenAITranslator-Setup-$appVersion$suffix"
+$setupPath = Join-Path $distributionRoot "$setupName.exe"
+$plannedOutputs = @($portableZipPath)
+if ($Package) { $plannedOutputs += $setupPath }
+foreach ($outputPath in $plannedOutputs) {
+    if (Test-Path -LiteralPath $outputPath) { throw "Existing delivery package will not be overwritten: $outputPath" }
+}
 $stageRoot = Join-Path $buildRoot "package-stage/$Configuration$suffix"
 # 暂存目录仅包含可再发行文件；构建、测试及诊断文件不进入交付包。
 if (Test-Path -LiteralPath $stageRoot) {
@@ -58,9 +74,7 @@ foreach ($binary in Get-ChildItem -LiteralPath $stageRoot -File | Where-Object E
         if ($signature.Status -notin @('Valid', 'NotSigned')) { throw "Application signature invalid: $($signature.Status)" }
     } elseif ($signature.Status -ne 'Valid') { throw "Runtime signature invalid: $($binary.Name): $($signature.Status)" }
 }
-$portableZipPath = Join-Path $distributionRoot "ScreenAITranslator-$appVersion$suffix-portable.zip"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-if (Test-Path -LiteralPath $portableZipPath) { Remove-Item -LiteralPath $portableZipPath -Force }
 [IO.Compression.ZipFile]::CreateFromDirectory($stageRoot, $portableZipPath, [IO.Compression.CompressionLevel]::Optimal, $false)
 $archive = [IO.Compression.ZipFile]::OpenRead($portableZipPath)
 try {
@@ -87,9 +101,7 @@ if ($Package) {
         elseif ($BootstrapInno) { $InnoCompiler = & (Join-Path $PSScriptRoot 'Get-InnoSetup.ps1') }
         else { throw 'Inno Setup compiler not found. Use -BootstrapInno or -InnoCompiler <absolute ISCC.exe path>.' }
     }
-    $setupName = "ScreenAITranslator-Setup-$appVersion$suffix"
     Invoke-Checked $InnoCompiler @('/Qp', "/DAppVersion=$appVersion", "/DAppStage=$stageRoot", "/DPackageOutput=$distributionRoot", "/DPackageName=$setupName", (Join-Path $projectRoot 'installer/setup.iss'))
-    $setupPath = Join-Path $distributionRoot "$setupName.exe"
     if (!(Test-Path -LiteralPath $setupPath)) { throw 'Installer compiler did not produce the expected setup EXE.' }
     $signature = Get-AuthenticodeSignature -LiteralPath $setupPath
     if ($signature.Status -notin @('Valid', 'NotSigned')) { throw "Installer signature verification failed: $($signature.Status)" }

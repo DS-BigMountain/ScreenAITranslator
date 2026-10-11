@@ -27,7 +27,7 @@ class SettingsWindow {
 public:
  SettingsWindow();
  ~SettingsWindow();
- void Show(const Settings&,const std::string&,const PersistentState&,SettingsCallbacks);
+ void Show(const Settings&,const std::string&,const PersistentState&,SettingsCallbacks,bool visible=true);
  void Close();
  HWND Window() const { return hwnd_; }
  winrt::Microsoft::UI::Xaml::FrameworkElement Content() const;
