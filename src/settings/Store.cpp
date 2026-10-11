@@ -1,4 +1,5 @@
 #include "Store.h"
+#include "providers/Catalog.h"
 #include <nlohmann/json.hpp>
 #include <shlobj.h>
 #include <wincrypt.h>
@@ -111,7 +112,17 @@ std::string UnprotectSecret(const std::string& encrypted) {
 }
 
 void ValidateSettings(const Settings& s) {
-    Require(s.provider == "deepseek" || s.provider == "openai-compatible", "Unsupported provider");
+    (void)Preset(s.provider);
+    for(const auto* profiles:{&s.connectionProfiles,&s.fallbackProfiles}){
+        Require(profiles->size()<=ProviderPresets().size(),"Too many connection profiles");
+        for(const auto& [id,profile]:*profiles){
+            (void)Preset(id);
+            Require(profile.baseUrl.size()<=2048&&profile.baseUrl.find_first_of(L"\r\n\t")==std::wstring::npos&&profile.baseUrl.find(L'\0')==std::wstring::npos,"Invalid saved connection address");
+            Require(profile.model.empty()||Plain(profile.model,256),"Invalid saved connection model");
+            Require(profile.serviceRegion.size()<=64&&std::all_of(profile.serviceRegion.begin(),profile.serviceRegion.end(),[](unsigned char c){return std::isalnum(c)||c=='-';}),"Invalid saved service region");
+            if(!profile.encryptedKey.empty()){auto key=UnprotectSecret(profile.encryptedKey);SecureZeroMemory(key.data(),key.size());}
+        }
+    }
     Require(Plain(s.model, 256), "Model must be nonempty and contain no control characters");
     Require(s.baseUrl.size() <= 2048 && s.baseUrl.find_first_of(L"\r\n\t ?#\\") == std::wstring::npos && s.baseUrl.find(L'\0') == std::wstring::npos, "Invalid API Base URL");
     URL_COMPONENTS url{}; url.dwStructSize = sizeof(url); url.dwHostNameLength = url.dwUserNameLength = url.dwPasswordLength = url.dwUrlPathLength = url.dwExtraInfoLength = static_cast<DWORD>(-1);
@@ -120,8 +131,16 @@ void ValidateSettings(const Settings& s) {
     std::transform(host.begin(), host.end(), host.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
     Require(url.nScheme == INTERNET_SCHEME_HTTPS || (url.nScheme == INTERNET_SCHEME_HTTP && (host == L"localhost" || host == L"127.0.0.1" || host == L"::1" || host == L"[::1]")), "HTTPS is required except for loopback test servers");
     Require(s.timeoutSeconds >= 1 && s.timeoutSeconds <= 300, "Timeout must be 1 to 300 seconds");
+    Require(s.proxyMode>=0&&s.proxyMode<=2,"Invalid proxy mode");
+    Require(s.proxyAddress.size()<=512,"Proxy address too long");
+    if(s.proxyMode==2){Require(std::regex_match(Utf8(s.proxyAddress),std::regex(R"(([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\]):[0-9]{1,5})")),"Proxy must be host:port without credentials or URL path");auto port=std::stoi(s.proxyAddress.substr(s.proxyAddress.rfind(L':')+1));Require(port>0&&port<=65535,"Proxy port must be 1 to 65535");}
+    Require(s.serviceRegion.size()<=64&&std::all_of(s.serviceRegion.begin(),s.serviceRegion.end(),[](unsigned char c){return std::isalnum(c)||c=='-';}),"Invalid service region");
+    if(s.fallbackEnabled){
+        Require(!IsTextService(s.fallbackProvider),"Fallback must use a vision-capable model service");
+        auto fallback=s;fallback.fallbackEnabled=false;fallback.provider=s.fallbackProvider;fallback.baseUrl=s.fallbackBaseUrl;fallback.model=s.fallbackModel;fallback.encryptedKey=s.encryptedFallbackKey;ValidateSettings(fallback);
+    }
     Require(s.autoHideSeconds >= 1 && s.autoHideSeconds <= 3600, "Auto-hide time must be 1 to 3600 seconds");
-    Require(s.ocrMode >= 0 && s.ocrMode <= 3, "Invalid OCR mode");
+    Require(ValidOcrMode(s.ocrMode), "Invalid OCR mode");
     Require(s.quality >= 0 && s.quality <= 2 && s.contextSize >= 5 && s.contextSize <= 10, "Invalid quality or context count (5 to 10)");
     Require(s.prompt.size() <= 32768 && s.prompt.find('\0') == std::string::npos, "Prompt exceeds limit or contains invalid characters");
     Require(!s.font.empty() && s.font.size() <= 128, "Invalid font name");
@@ -139,17 +158,21 @@ Settings Store::LoadSettings() {
     const auto j = ReadJson(root_ / L"config.json");
     Settings s;
     try {
-        for (auto field : {"startup", "tray", "autoHide", "contextEnabled", "autoFont", "matchTextColor", "spatialOverlay", "thinkingHigh"})
+        for (auto field : {"startup", "tray", "autoHide", "contextEnabled", "autoFont", "matchTextColor", "spatialOverlay", "thinkingHigh", "fallbackEnabled", "translateAll"})
             Require(!j.contains(field) || j.at(field).is_boolean(), "Invalid boolean setting");
-        for (auto field : {"autoHideSeconds", "timeoutSeconds", "quality", "ocrMode", "contextSize", "textColor", "outlineColor"})
+        for (auto field : {"autoHideSeconds", "timeoutSeconds", "quality", "ocrMode", "contextSize", "textColor", "outlineColor", "proxyMode"})
             Require(!j.contains(field) || (j.at(field).is_number_integer() && j.at(field).get<long long>() >= 0 && j.at(field).get<long long>() <= INT_MAX), "Invalid integer setting");
 #define READ_FIELD(field) s.field = j.value(#field, s.field)
         READ_FIELD(startup); READ_FIELD(tray); READ_FIELD(autoHide); READ_FIELD(autoHideSeconds);
         READ_FIELD(provider); READ_FIELD(model); READ_FIELD(timeoutSeconds); READ_FIELD(thinkingHigh); READ_FIELD(encryptedKey); READ_FIELD(quality); READ_FIELD(ocrMode);
         READ_FIELD(contextEnabled); READ_FIELD(contextSize); READ_FIELD(prompt); READ_FIELD(autoFont); READ_FIELD(matchTextColor); READ_FIELD(spatialOverlay); READ_FIELD(fontSize);
         READ_FIELD(textColor); READ_FIELD(outlineColor); READ_FIELD(outlineWidth); READ_FIELD(backgroundOpacity);
+        READ_FIELD(serviceRegion);READ_FIELD(proxyMode);READ_FIELD(fallbackEnabled);READ_FIELD(fallbackProvider);READ_FIELD(fallbackModel);READ_FIELD(encryptedFallbackKey);READ_FIELD(translateAll);
 #undef READ_FIELD
         s.baseUrl = Wide(j.value("baseUrl", Utf8(s.baseUrl))); s.font = Wide(j.value("font", Utf8(s.font)));
+        s.proxyAddress=Wide(j.value("proxyAddress",std::string{}));s.fallbackBaseUrl=Wide(j.value("fallbackBaseUrl",Utf8(s.fallbackBaseUrl)));
+        auto readProfiles=[&](const char* field,auto& profiles){if(!j.contains(field))return;const auto& entries=j.at(field);Require(entries.is_object()&&entries.size()<=ProviderPresets().size(),"Invalid connection profiles");for(auto it=entries.begin();it!=entries.end();++it){const auto& p=it.value();Require(p.is_object(),"Invalid connection profile");profiles[it.key()]={Wide(p.at("baseUrl").get<std::string>()),p.at("model").get<std::string>(),p.at("encryptedKey").get<std::string>(),p.value("serviceRegion",std::string{})};}};
+        readProfiles("connectionProfiles",s.connectionProfiles);readProfiles("fallbackProfiles",s.fallbackProfiles);
         if (j.contains("hotkeys")) {
             const auto& keys = j.at("hotkeys");
             Require(keys.is_array() && keys.size() == 4, "Invalid saved hotkeys");
@@ -172,8 +195,12 @@ void Store::SaveSettings(const Settings& s) {
     WRITE_FIELD(provider); WRITE_FIELD(model); WRITE_FIELD(timeoutSeconds); WRITE_FIELD(thinkingHigh); WRITE_FIELD(encryptedKey); WRITE_FIELD(quality); WRITE_FIELD(ocrMode);
     WRITE_FIELD(contextEnabled); WRITE_FIELD(contextSize); WRITE_FIELD(prompt); WRITE_FIELD(autoFont); WRITE_FIELD(matchTextColor); WRITE_FIELD(spatialOverlay); WRITE_FIELD(fontSize);
     WRITE_FIELD(textColor); WRITE_FIELD(outlineColor); WRITE_FIELD(outlineWidth); WRITE_FIELD(backgroundOpacity);
+    WRITE_FIELD(serviceRegion);WRITE_FIELD(proxyMode);WRITE_FIELD(fallbackEnabled);WRITE_FIELD(fallbackProvider);WRITE_FIELD(fallbackModel);WRITE_FIELD(encryptedFallbackKey);WRITE_FIELD(translateAll);
 #undef WRITE_FIELD
     j["baseUrl"] = Utf8(s.baseUrl); j["font"] = Utf8(s.font); j["hotkeys"] = Json::array();
+    j["proxyAddress"]=Utf8(s.proxyAddress);j["fallbackBaseUrl"]=Utf8(s.fallbackBaseUrl);
+    auto writeProfiles=[&](const char* field,const auto& profiles){j[field]=Json::object();for(const auto& [id,p]:profiles)j[field][id]={{"baseUrl",Utf8(p.baseUrl)},{"model",p.model},{"encryptedKey",p.encryptedKey},{"serviceRegion",p.serviceRegion}};};
+    writeProfiles("connectionProfiles",s.connectionProfiles);writeProfiles("fallbackProfiles",s.fallbackProfiles);
     for (const auto& h : s.hotkeys) j["hotkeys"].push_back({{"modifiers", h.modifiers}, {"key", h.key}});
     std::lock_guard lock(storeMutex);
     (void)ReadJson(root_ / L"config.json"); // Never overwrite malformed input with defaults.

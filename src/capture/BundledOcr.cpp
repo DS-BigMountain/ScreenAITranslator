@@ -38,24 +38,29 @@ struct Model {
  }
 };
 struct Engine {
- // Keep the module loaded for the process lifetime: ORT owns process-wide thread pools.
- HMODULE module{};std::unique_ptr<Ort::Env> env;std::unique_ptr<Ort::SessionOptions> options;
- std::unique_ptr<Model> detector,japanese,english;
+ std::unique_ptr<Ort::Env> env;std::unique_ptr<Ort::SessionOptions> options;
+ std::unique_ptr<Model> detector,recognizer;
  Engine(){
-  const auto root=AppDirectory();module=LoadLibraryExW((root/L"onnxruntime.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
+  const auto root=AppDirectory();
+  // Retain one DLL reference for ORT's process-wide callbacks, not one per capture.
+  static const HMODULE module=LoadLibraryExW((root/L"onnxruntime.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
   if(!module)throw AppError("ocr","Bundled OCR runtime unavailable");
   auto getApi=reinterpret_cast<const OrtApiBase*(ORT_API_CALL*)()>(GetProcAddress(module,"OrtGetApiBase"));
   const auto api=getApi?getApi()->GetApi(ORT_API_VERSION):nullptr;
   if(!api)throw AppError("ocr","Bundled OCR runtime incompatible");
   Ort::InitApi(api);env=std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_ERROR,"ScreenAITranslator");options=std::make_unique<Ort::SessionOptions>();
   options->SetIntraOpNumThreads(4);options->SetInterOpNumThreads(1);options->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-  options->DisableMemPattern();
+  // Dynamic screenshot sizes otherwise grow a per-session arena to the largest
+  // inference and keep those pages committed after every translation.
+  options->DisableMemPattern();options->DisableCpuMemArena();
   detector=std::make_unique<Model>(*env,*options,root/L"models/det.onnx",false);
  }
  Model& Recognizer(int mode){
-  auto& model=mode==1?english:japanese;
-  if(!model)model=std::make_unique<Model>(*env,*options,AppDirectory()/(mode==1?L"models/rec-en.onnx":L"models/rec-ja.onnx"),true);
-  return *model;
+  // Reuse the much smaller line-recognition workspace only within this request.
+  // It is destroyed with the recognizer before returning to the cloud pipeline.
+  options->EnableCpuMemArena();
+  if(!recognizer)recognizer=std::make_unique<Model>(*env,*options,AppDirectory()/(mode==OcrEnglish?L"models/rec-en.onnx":mode==OcrKorean?L"models/rec-ko.onnx":L"models/rec-ja.onnx"),true);
+  return *recognizer;
  }
 };
 // Bilinear BGR input follows the model's Paddle/RapidOCR preprocessing convention.
@@ -119,26 +124,37 @@ std::pair<std::string,float> Decode(const Ort::Value& output,const std::vector<s
 }
 }
 std::vector<TextLine> RecognizeBundled(const Image& image,int mode,std::stop_token stop,bool geometryOnly){
- static std::timed_mutex mutex;static std::unique_ptr<Engine> engine;
+ if(!ValidOcrMode(mode))throw AppError("ocr","Invalid OCR mode");
+ geometryOnly=geometryOnly||mode==OcrAuto||mode==OcrDirectVision;
+ static std::timed_mutex mutex;
  std::unique_lock lock(mutex,std::defer_lock);while(!lock.try_lock_for(std::chrono::milliseconds(20)))CheckStop(stop);CheckStop(stop);
- if(!engine)engine=std::make_unique<Engine>();auto* recognizer=geometryOnly?nullptr:&engine->Recognizer(mode);CheckStop(stop);
+ // Scope sessions to this OCR request; success, cancellation and failure all
+ // release weights, execution buffers and worker threads before network I/O.
+ auto engine=std::make_unique<Engine>();CheckStop(stop);
  Ort::RunOptions run;std::stop_callback cancel(stop,[&]{run.SetTerminate();});
  std::atomic<bool> timedOut=false;std::mutex timerMutex;std::condition_variable_any timerCv;
  std::jthread watchdog([&](std::stop_token done){std::unique_lock timerLock(timerMutex);timerCv.wait_for(timerLock,done,std::chrono::seconds(15),[]{return false;});if(!done.stop_requested()){timedOut=true;run.SetTerminate();}});
  try {
   float scale=std::min(1.f,1280.f/std::max(image.width,image.height));
   int w=std::max(32,int(std::round(image.width*scale/32))*32),h=std::max(32,int(std::round(image.height*scale/32))*32);
-  auto input=Tensor(image,{0,0,image.width,image.height},w,h,w,true);auto det=engine->detector->Run(input,w,h,run);auto boxes=Boxes(det,image);
-  std::vector<TextLine> lines;size_t rejected=0;
-  for(auto box:boxes){
-   CheckStop(stop);if(geometryOnly){lines.push_back({box," "});continue;}int contentWidth=std::max(8,int(std::ceil(48.f*Width(box)/Height(box))));
-   if(contentWidth>4096){++rejected;continue;}int width=std::max(320,contentWidth);
-   auto pixels=Tensor(image,box,width,48,contentWidth,false);auto output=recognizer->Run(pixels,width,48,run);auto [text,score]=Decode(output,recognizer->alphabet);
-   if(score<.65f||text.empty()){++rejected;continue;}lines.push_back({box,std::move(text)});
-  }
+  std::vector<RECT> boxes;
+  {auto input=Tensor(image,{0,0,image.width,image.height},w,h,w,true);auto det=engine->detector->Run(input,w,h,run);boxes=Boxes(det,image);}
+  // Detection and recognition never need their weights or tensors concurrently.
+  engine->detector.reset();CheckStop(stop);
+  std::vector<TextLine> lines;
+  if(geometryOnly){for(auto box:boxes)lines.push_back({box," "});return lines;}
+  if(boxes.empty())return lines;
+  auto recognize=[&](Model& model,RECT box){
+   CheckStop(stop);int contentWidth=std::max(8,int(std::ceil(48.f*Width(box)/Height(box))));
+   if(contentWidth>4096)return TextLine{box," ",0.f};int width=std::max(320,contentWidth);
+   auto pixels=Tensor(image,box,width,48,contentWidth,false);auto output=model.Run(pixels,width,48,run);auto [text,score]=Decode(output,model.alphabet);
+   return TextLine{box,std::move(text),score};
+  };
+  {auto& model=engine->Recognizer(mode);for(auto box:boxes)lines.push_back(recognize(model,box));}
+  size_t rejected=0;for(auto& line:lines)if(line.confidence<.65f||line.text.empty()){++rejected;line.text=" ";line.confidence=0.f;}
   if(timedOut)throw AppError("ocr","OCR time limit exceeded");CheckStop(stop);
   // Low confidence must not silently constrain vision translation to incomplete OCR IDs.
-  if(rejected>std::max<size_t>(2,boxes.size()/5))throw AppError("ocr","OCR confidence insufficient");
+   if(rejected>std::max<size_t>(2,boxes.size()/5))throw AppError("ocr","OCR confidence insufficient");
   return lines;
  }catch(const Ort::Exception&){CheckStop(stop);throw AppError("ocr",timedOut?"OCR time limit exceeded":"Bundled OCR inference failed");}
 }

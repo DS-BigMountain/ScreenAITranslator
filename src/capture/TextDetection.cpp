@@ -44,12 +44,25 @@ std::vector<TextRegion> GroupTextLines(std::vector<TextLine> lines,const Image& 
  const RECT bounds{0,0,image.width,image.height};
  for(auto& line:lines){RECT clipped{};IntersectRect(&clipped,&line.rect,&bounds);line.rect=clipped;}
  std::erase_if(lines,[](const TextLine& l){return !Valid(l.rect)||l.text.empty();});
+ // A detector may also return a small icon inside an expanded text line. It
+ // must not become a second protected region that hides the readable passage.
+ for(size_t i=0;i<lines.size();){
+  bool redundant=false;
+  for(size_t j=0;j<lines.size();++j){
+   if(i==j||lines[j].confidence<.65f||lines[i].confidence>=.65f)continue;
+   RECT overlap{};const auto a=lines[i].rect,b=lines[j].rect;
+   const bool unread=lines[i].text.find_first_not_of(" \t\r\n")==std::string::npos;
+   if(IntersectRect(&overlap,&a,&b)&&Width(overlap)*Height(overlap)>=(unread?.45f:.65f)*Width(a)*Height(a)&&Width(a)<Width(b)*.4f){redundant=true;break;}
+  }
+  if(redundant)lines.erase(lines.begin()+i);else ++i;
+ }
  // A list marker and its text can be detected as two slightly overlapping boxes.
  // Join only minor horizontal overlaps on the same baseline; columns remain separate.
  for(size_t i=0;i<lines.size();++i)for(size_t j=i+1;j<lines.size();){
   auto a=lines[i].rect,b=lines[j].rect;RECT overlap{};
   if(IntersectRect(&overlap,&a,&b)&&Height(overlap)>=.75f*std::min(Height(a),Height(b))&&Width(overlap)<.5f*std::min(Width(a),Width(b))){
    lines[i].text=a.left<b.left?lines[i].text+" "+lines[j].text:lines[j].text+" "+lines[i].text;
+   lines[i].confidence=std::min(lines[i].confidence,lines[j].confidence);
    UnionRect(&lines[i].rect,&a,&b);lines.erase(lines.begin()+j);
   }else ++j;
  }
@@ -61,18 +74,19 @@ std::vector<TextRegion> GroupTextLines(std::vector<TextLine> lines,const Image& 
    const auto last=region.lines.back();const int gap=line.rect.top-last.bottom;
    const float h=region.lineHeight;
    const int overlap=std::min(last.right,line.rect.right)-std::max(last.left,line.rect.left);
-   if(gap<0||gap>h*1.15f||gap>=bestGap||Height(line.rect)<h*.72f||Height(line.rect)>h*1.38f)continue;
-   if(std::abs(line.rect.left-last.left)>h*2||overlap<.65f*std::min(Width(last),Width(line.rect)))continue;
+   if(gap < -h*.25f||gap>h*.9f||gap>=bestGap||Height(line.rect)<h*.65f||Height(line.rect)>h*1.45f)continue;
+   if((std::abs(line.rect.left-last.left)>h*2&&std::abs(line.rect.right-last.right)>h)||overlap<.65f*std::min(Width(last),Width(line.rect)))continue;
    if(region.text.size()+line.text.size()+1>8192||HasSeparator(image,last,line.rect))continue;
    RECT joined{};UnionRect(&joined,&region.rect,&line.rect);bool crosses=false;
    for(const auto& other:lines){
     if(&other==&line||std::any_of(region.lines.begin(),region.lines.end(),[&](RECT r){return EqualRect(&r,&other.rect);}))continue;
-    RECT intersection{};if(IntersectRect(&intersection,&joined,&other.rect)){crosses=true;break;}
+    RECT intersection{};if(IntersectRect(&intersection,&joined,&other.rect)&&Height(intersection)>std::min(Height(other.rect),Height(line.rect))*.25f){crosses=true;break;}
    }
    if(crosses)continue;
    best=&region;bestGap=gap;
   }
-  if(!best){regions.push_back({0,line.rect,line.text,{line.rect},float(Height(line.rect))});continue;}
+  if(!best){regions.push_back({0,line.rect,line.text,{line.rect},float(Height(line.rect)),{},line.confidence});continue;}
+  best->confidence=std::min(best->confidence,line.confidence);
   best->text+='\n';best->text+=line.text;best->lines.push_back(line.rect);
   RECT merged{};UnionRect(&merged,&best->rect,&line.rect);best->rect=merged;
   std::vector<int> heights;for(auto r:best->lines)heights.push_back(Height(r));std::sort(heights.begin(),heights.end());best->lineHeight=float(heights[heights.size()/2]);
@@ -83,8 +97,8 @@ std::vector<TextRegion> GroupTextLines(std::vector<TextLine> lines,const Image& 
 static TextDetection DetectLocal(const Image& image,std::stop_token stop,int mode,bool geometryOnly) {
  CheckStop(stop);
  if(image.width<=0||image.height<=0||image.bgra.size()!=size_t(image.width)*image.height*4)return {{},"invalid-image"};
- if(mode==3)return {{},"direct-ai"};
- if(mode<0||mode>3)return {{},"invalid-mode"};
+ if(!ValidOcrMode(mode))return {{},"invalid-mode"};
+ if(!geometryOnly&&(mode==OcrAuto||mode==OcrDirectVision))return {{},"direct-ai"};
  try {
   auto lines=RecognizeBundled(image,mode,stop,geometryOnly);
   for(auto& line:lines){line.rect=TightGlyphBounds(line.rect,image);line.rect.left=std::max(0L,line.rect.left-1);line.rect.top=std::max(0L,line.rect.top-1);line.rect.right=std::min<LONG>(image.width,line.rect.right+1);line.rect.bottom=std::min<LONG>(image.height,line.rect.bottom+1);}
@@ -92,7 +106,7 @@ static TextDetection DetectLocal(const Image& image,std::stop_token stop,int mod
   size_t textBytes=0;for(const auto& r:regions)textBytes+=r.text.size();
   if(regions.size()>256||textBytes>128*1024)return {{},"too-many-regions"};
   if(regions.empty())return {{},"no-text"};
-  for(auto& r:regions){if(geometryOnly)r.text.clear();int x=std::min(999,MulDiv(r.rect.left,1000,image.width)),y=std::min(999,MulDiv(r.rect.top,1000,image.height));r.imageBox={x,y,std::max(1,MulDiv(r.rect.right,1000,image.width)-x),std::max(1,MulDiv(r.rect.bottom,1000,image.height)-y)};}
+  for(auto& r:regions){if(geometryOnly||r.text.find_first_not_of(" \t\r\n")==std::string::npos)r.text.clear();int x=std::min(999,MulDiv(r.rect.left,1000,image.width)),y=std::min(999,MulDiv(r.rect.top,1000,image.height));r.imageBox={x,y,std::max(1,MulDiv(r.rect.right,1000,image.width)-x),std::max(1,MulDiv(r.rect.bottom,1000,image.height)-y)};}
   return {std::move(regions),geometryOnly?"local-geometry-ai":"bundled-ocr"};
  }catch(const Cancelled&){throw;}
  catch(const std::exception&){CheckStop(stop);return {{},"ocr-unavailable"};}

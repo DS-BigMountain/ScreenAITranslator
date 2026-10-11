@@ -28,6 +28,8 @@
 !/README.md
 !/CHANGELOG.md
 *.log
+!/AGENTS.md
+!/tests/fixtures/upstream/SOURCES.md
 *.user
 *.pdb
 *.obj

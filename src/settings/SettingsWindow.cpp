@@ -1,5 +1,7 @@
 #include "SettingsWindow.h"
+#include "WinUIRuntime.h"
 #include "Store.h"
+#include "providers/Catalog.h"
 #undef GetCurrentTime
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -51,9 +53,17 @@ struct SettingsWindow::Impl {
  Hotkey hotkeys[4]{};
  bool updating{};
  bool focusPending{};
+ std::map<std::string,ConnectionProfile> profiles[2];
+ std::string activeProvider[2];
  template<class T> T Get(const wchar_t* name) const {return root.FindName(name).as<T>();}
  std::wstring Text(const wchar_t* name) const {return std::wstring(Get<TextBox>(name).Text());}
  bool On(const wchar_t* name) const {return Get<ToggleSwitch>(name).IsOn();}
+ ConnectionProfile ReadConnection(bool fallback) const {
+  ConnectionProfile profile;profile.baseUrl=Text(fallback?L"FallbackBaseUrl":L"BaseUrl");
+  if(fallback)profile.model=Utf8(Text(L"FallbackModel"));
+  else{auto control=Get<ComboBox>(L"Model");auto name=control.Text();if(name.empty()&&control.SelectedItem())name=winrt::unbox_value<winrt::hstring>(control.SelectedItem());profile.model=Utf8(std::wstring(name));profile.serviceRegion=Utf8(Text(L"ServiceRegion"));}
+  Secret secret{Utf8(std::wstring(Get<PasswordBox>(fallback?L"FallbackKey":L"Key").Password()))};profile.encryptedKey=ProtectSecret(secret.value);return profile;
+ }
  double Number(const wchar_t* name) const {
   auto control=Get<NumberBox>(name);auto value=control.Value();
   if(!std::isfinite(value))throw AppError("settings","请填写有效数值。");return value;
@@ -65,8 +75,9 @@ struct SettingsWindow::Impl {
 SettingsWindow::SettingsWindow()=default;
 SettingsWindow::~SettingsWindow(){Close();}
 xaml::FrameworkElement SettingsWindow::Content() const {return ui_?ui_->root:nullptr;}
-void SettingsWindow::Show(const Settings& s,const std::string& key,const PersistentState& state,SettingsCallbacks cb) {
- if(hwnd_){ShowWindow(hwnd_,SW_RESTORE);SetForegroundWindow(hwnd_);return;}
+void SettingsWindow::Show(const Settings& s,const std::string& key,const PersistentState& state,SettingsCallbacks cb,bool visible) {
+ WinUIRuntime::EnsureInitialized();
+ if(hwnd_){if(visible){ShowWindow(hwnd_,SW_RESTORE);SetForegroundWindow(hwnd_);}return;}
  settings_=s;callbacks_=std::move(cb);page_=std::clamp(state.tab,0,4);apiBusy_=false;
  WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.Settings";wc.lpfnWndProc=Proc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(wc.hInstance,MAKEINTRESOURCEW(101));wc.hIconSm=wc.hIcon;RegisterClassExW(&wc);
  POINT pt{};GetCursorPos(&pt);auto mon=MonitorFromPoint(pt,MONITOR_DEFAULTTOPRIMARY);MONITORINFO mi{sizeof(mi)};GetMonitorInfoW(mon,&mi);
@@ -75,7 +86,7 @@ void SettingsWindow::Show(const Settings& s,const std::string& key,const Persist
  if(state.window){auto r=*state.window;auto savedMon=MonitorFromRect(&r,MONITOR_DEFAULTTONULL);if(savedMon){mi.cbSize=sizeof(mi);GetMonitorInfoW(savedMon,&mi);width=std::min(std::max(width,Width(r)),Width(mi.rcWork));height=std::min(std::max(height,Height(r)),Height(mi.rcWork));x=std::clamp(r.left,mi.rcWork.left,mi.rcWork.right-width);y=std::clamp(r.top,mi.rcWork.top,mi.rcWork.bottom-height);}}
  hwnd_=CreateWindowExW(WS_EX_CONTROLPARENT,wc.lpszClassName,L"屏幕翻译",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,x,y,width,height,nullptr,nullptr,wc.hInstance,this);
  if(!hwnd_)throw AppError("settings","无法创建设置窗口");
- try{Build(key);Layout();ShowWindow(hwnd_,SW_SHOW);SetForegroundWindow(hwnd_);}catch(...){Close();throw;}
+ try{Build(key);Layout();if(visible){ShowWindow(hwnd_,SW_SHOW);SetForegroundWindow(hwnd_);}}catch(...){Close();throw;}
 }
 void SettingsWindow::Close() {
  if(ui_){ui_->updating=true;if(ui_->root)ui_->Get<PasswordBox>(L"Key").Password(L"");if(ui_->island){ui_->island.Content(nullptr);ui_->island.Close();}ui_.reset();}
@@ -88,6 +99,7 @@ void SettingsWindow::Layout() {
 }
 void SettingsWindow::Build(const std::string& key) {
  ui_=std::make_unique<Impl>();ui_->updating=true;
+ ui_->profiles[0]=settings_.connectionProfiles;ui_->profiles[1]=settings_.fallbackProfiles;ui_->activeProvider[0]=settings_.provider;ui_->activeProvider[1]=settings_.fallbackProvider;
  auto resource=FindResourceW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(201),RT_RCDATA);
  if(!resource)throw AppError("settings","界面资源缺失");
  auto loaded=LoadResource(GetModuleHandleW(nullptr),resource);auto bytes=static_cast<const char*>(LockResource(loaded));auto size=SizeofResource(GetModuleHandleW(nullptr),resource);
@@ -103,9 +115,14 @@ void SettingsWindow::Build(const std::string& key) {
  auto toggle=[&](const wchar_t* name,bool value){ui_->Get<ToggleSwitch>(name).IsOn(value);};
  auto number=[&](const wchar_t* name,double value){ui_->Get<NumberBox>(name).Value(value);};
  toggle(L"Startup",settings_.startup);toggle(L"Tray",settings_.tray);toggle(L"AutoHide",settings_.autoHide);number(L"HideSeconds",settings_.autoHideSeconds);
- ui_->Get<ComboBox>(L"Provider").SelectedIndex(settings_.provider=="deepseek"?0:1);text(L"BaseUrl",settings_.baseUrl);ui_->Get<PasswordBox>(L"Key").Password(Wide(key));
+ for(const auto& preset:ProviderPresets())for(auto name:{L"Provider",L"FallbackProvider"})ui_->Get<ComboBox>(name).Items().Append(winrt::box_value(preset.name));
+ for(size_t i=0;i<ProviderPresets().size();++i){if(settings_.provider==ProviderPresets()[i].id)ui_->Get<ComboBox>(L"Provider").SelectedIndex(int(i));if(settings_.fallbackProvider==ProviderPresets()[i].id)ui_->Get<ComboBox>(L"FallbackProvider").SelectedIndex(int(i));}
+ text(L"BaseUrl",settings_.baseUrl);ui_->Get<PasswordBox>(L"Key").Password(Wide(key));
+ text(L"ServiceRegion",Wide(settings_.serviceRegion));text(L"FallbackBaseUrl",settings_.fallbackBaseUrl);text(L"FallbackModel",Wide(settings_.fallbackModel));toggle(L"FallbackEnabled",settings_.fallbackEnabled);toggle(L"TranslateAll",settings_.translateAll);
+ {Secret fallback{UnprotectSecret(settings_.encryptedFallbackKey)};ui_->Get<PasswordBox>(L"FallbackKey").Password(Wide(fallback.value));}
+ ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex(settings_.proxyMode);text(L"ProxyAddress",settings_.proxyAddress);
  ui_->Get<ComboBox>(L"Model").Items().Append(winrt::box_value(Wide(settings_.model)));ui_->Get<ComboBox>(L"Model").SelectedIndex(0);number(L"Timeout",settings_.timeoutSeconds);ui_->Get<ComboBox>(L"ThinkingMode").SelectedIndex(settings_.thinkingHigh?1:0);
- ui_->Get<ComboBox>(L"Quality").SelectedIndex(settings_.quality);ui_->Get<ComboBox>(L"OcrMode").SelectedIndex(settings_.ocrMode);toggle(L"ContextEnabled",settings_.contextEnabled);number(L"ContextSize",settings_.contextSize);text(L"Prompt",Wide(settings_.prompt));
+ ui_->Get<ComboBox>(L"Quality").SelectedIndex(settings_.quality);ui_->Get<ComboBox>(L"OcrMode").SelectedIndex(OcrSelectionFromMode(settings_.ocrMode));toggle(L"ContextEnabled",settings_.contextEnabled);number(L"ContextSize",settings_.contextSize);text(L"Prompt",Wide(settings_.prompt));
  toggle(L"SpatialOverlay",settings_.spatialOverlay);auto fonts=ui_->Get<ComboBox>(L"Font");int selectedFont=-1;
  for(auto name:{L"Microsoft YaHei UI",L"Microsoft YaHei",L"SimSun",L"SimHei",L"KaiTi",L"FangSong",L"Segoe UI",L"Arial",L"Times New Roman",L"Consolas",L"Yu Gothic UI",L"Meiryo"}){if(settings_.font==name)selectedFont=int(fonts.Items().Size());fonts.Items().Append(winrt::box_value(name));}
  if(selectedFont<0){selectedFont=int(fonts.Items().Size());fonts.Items().Append(winrt::box_value(settings_.font));}fonts.SelectedIndex(selectedFont);fonts.Text(settings_.font);toggle(L"MatchTextColor",settings_.matchTextColor);toggle(L"AutoFont",settings_.autoFont);number(L"FontSize",settings_.fontSize);text(L"TextColor",Color(settings_.textColor));text(L"OutlineColor",Color(settings_.outlineColor));number(L"OutlineWidth",settings_.outlineWidth);number(L"Opacity",settings_.backgroundOpacity);
@@ -127,7 +144,17 @@ void SettingsWindow::Build(const std::string& key) {
  for(auto [name,action]:std::initializer_list<std::pair<const wchar_t*,SettingsAction>>{{L"Translate",SettingsAction::Translate},{L"TranslateFixed",SettingsAction::FixedTranslate},{L"Reselect",SettingsAction::ReselectRegion},{L"ClearRegion",SettingsAction::ClearRegion},{L"ClearContext",SettingsAction::ClearContext}}){button(name,[this,action]{if(callbacks_.action)callbacks_.action(action);if(action==SettingsAction::ClearRegion)Status(L"上次区域已清除。");if(action==SettingsAction::ClearContext)Status(L"上下文已清空。");});}
  ui_->Get<TextBox>(L"BaseUrl").RegisterPropertyChangedCallback(TextBox::TextProperty(),[this](auto const&,auto const&){InvalidateModels();});
  ui_->Get<PasswordBox>(L"Key").RegisterPropertyChangedCallback(PasswordBox::PasswordProperty(),[this](auto const&,auto const&){InvalidateModels();});
- ui_->Get<ComboBox>(L"Provider").RegisterPropertyChangedCallback(xaml::Controls::Primitives::Selector::SelectedIndexProperty(),[this](auto const&,auto const&){if(ui_->updating)return;InvalidateModels();auto provider=ui_->Get<ComboBox>(L"Provider").SelectedIndex();auto address=ui_->Text(L"BaseUrl");if(provider==1&&address==L"https://api.deepseek.com")ui_->Get<TextBox>(L"BaseUrl").Text(L"https://api.openai.com/v1");else if(provider==0&&address==L"https://api.openai.com/v1")ui_->Get<TextBox>(L"BaseUrl").Text(L"https://api.deepseek.com");});
+ for(bool fallback:{false,true})ui_->Get<ComboBox>(fallback?L"FallbackProvider":L"Provider").RegisterPropertyChangedCallback(xaml::Controls::Primitives::Selector::SelectedIndexProperty(),[this,fallback](auto const&,auto const&){
+  if(ui_->updating)return;auto index=ui_->Get<ComboBox>(fallback?L"FallbackProvider":L"Provider").SelectedIndex();if(index<0)return;const auto& preset=ProviderPresets().at(index);
+  if(ui_->activeProvider[fallback]==preset.id)return;
+  auto previous=ui_->ReadConnection(fallback);auto& profiles=ui_->profiles[fallback];auto found=profiles.find(preset.id);
+  ConnectionProfile next=found==profiles.end()?ConnectionProfile{preset.url,preset.model,{},{}}:found->second;
+  Secret secret{UnprotectSecret(next.encryptedKey)};profiles[ui_->activeProvider[fallback]]=std::move(previous);
+  ui_->updating=true;struct Reset{bool& value;~Reset(){value=false;}} reset{ui_->updating};
+  ui_->Get<PasswordBox>(fallback?L"FallbackKey":L"Key").Password(Wide(secret.value));ui_->Get<TextBox>(fallback?L"FallbackBaseUrl":L"BaseUrl").Text(next.baseUrl);
+  if(fallback)ui_->Get<TextBox>(L"FallbackModel").Text(Wide(next.model));else{auto model=ui_->Get<ComboBox>(L"Model");model.SelectedIndex(-1);model.Items().Clear();model.Text(Wide(next.model));ui_->Get<TextBox>(L"ServiceRegion").Text(Wide(next.serviceRegion));}
+  ui_->activeProvider[fallback]=preset.id;ui_->Get<TextBlock>(L"ApiResult").Text(L"已切换连接草稿。切回可恢复原配置；点击保存设置后写入磁盘。");
+ });
  auto dependent=[this]{ui_->Get<NumberBox>(L"HideSeconds").IsEnabled(ui_->On(L"AutoHide"));ui_->Get<NumberBox>(L"ContextSize").IsEnabled(ui_->On(L"ContextEnabled"));ui_->Get<NumberBox>(L"FontSize").IsEnabled(!ui_->On(L"AutoFont"));ui_->Get<TextBox>(L"TextColor").IsEnabled(!ui_->On(L"MatchTextColor"));};
  for(auto name:{L"AutoHide",L"ContextEnabled",L"AutoFont",L"MatchTextColor"})ui_->Get<ToggleSwitch>(name).Toggled([dependent](auto const&,auto const&){dependent();});
  dependent();ui_->updating=false;
@@ -135,7 +162,7 @@ void SettingsWindow::Build(const std::string& key) {
 void SettingsWindow::Status(const std::wstring& text){if(ui_&&ui_->root)ui_->Get<TextBlock>(L"Status").Text(text);}
 void SettingsWindow::ApiBusy(bool busy) {
  apiBusy_=busy;if(!ui_)return;
- for(auto name:{L"Provider",L"BaseUrl",L"Key",L"Model",L"Timeout",L"ThinkingMode",L"FetchModels",L"TestApi",L"Apply"})ui_->Get<Control>(name).IsEnabled(!busy);
+ for(auto name:{L"Provider",L"BaseUrl",L"Key",L"Model",L"Timeout",L"ThinkingMode",L"FetchModels",L"TestApi",L"Apply",L"ServiceRegion",L"FallbackEnabled",L"FallbackProvider",L"FallbackBaseUrl",L"FallbackModel",L"FallbackKey",L"ProxyMode",L"ProxyAddress"})ui_->Get<Control>(name).IsEnabled(!busy);
  auto progress=ui_->Get<ProgressRing>(L"ApiProgress");progress.IsActive(busy);progress.Visibility(busy?xaml::Visibility::Visible:xaml::Visibility::Collapsed);
 }
 void SettingsWindow::InvalidateModels() {
@@ -143,16 +170,24 @@ void SettingsWindow::InvalidateModels() {
  auto model=ui_->Get<ComboBox>(L"Model");model.SelectedItem(nullptr);model.SelectedIndex(-1);model.Items().Clear();model.Text(L"");ui_->Get<TextBlock>(L"ApiResult").Text(L"连接配置已改变，请输入模型名称或重新获取列表。");
 }
 Settings SettingsWindow::ReadApi(bool requireModel) const {
- auto value=settings_;value.provider=ui_->Get<ComboBox>(L"Provider").SelectedIndex()==0?"deepseek":"openai-compatible";value.baseUrl=ui_->Text(L"BaseUrl");value.timeoutSeconds=ui_->Integer(L"Timeout");value.thinkingHigh=ui_->Get<ComboBox>(L"ThinkingMode").SelectedIndex()==1;
+ auto value=settings_;value.provider=ProviderPresets().at(ui_->Get<ComboBox>(L"Provider").SelectedIndex()).id;value.baseUrl=ui_->Text(L"BaseUrl");value.timeoutSeconds=ui_->Integer(L"Timeout");value.thinkingHigh=ui_->Get<ComboBox>(L"ThinkingMode").SelectedIndex()==1;
+ value.serviceRegion=Utf8(ui_->Text(L"ServiceRegion"));value.proxyMode=ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex();value.proxyAddress=ui_->Text(L"ProxyAddress");value.translateAll=ui_->On(L"TranslateAll");
+ value.fallbackEnabled=ui_->On(L"FallbackEnabled");value.fallbackProvider=ProviderPresets().at(ui_->Get<ComboBox>(L"FallbackProvider").SelectedIndex()).id;value.fallbackBaseUrl=ui_->Text(L"FallbackBaseUrl");value.fallbackModel=Utf8(ui_->Text(L"FallbackModel"));
+ {Secret fallback{Utf8(std::wstring(ui_->Get<PasswordBox>(L"FallbackKey").Password()))};value.encryptedFallbackKey=ProtectSecret(fallback.value);if(value.fallbackEnabled&&fallback.value.empty())throw AppError("settings","请填写视觉连接密钥。");}
  auto model=ui_->Get<ComboBox>(L"Model");auto name=std::wstring(model.Text());
  if(name.empty()&&model.SelectedItem())name=std::wstring(winrt::unbox_value<winrt::hstring>(model.SelectedItem()));
- if(name.empty()&&requireModel)throw AppError("settings","请选择或输入支持图片的模型名称。");
- if(!name.empty())value.model=Utf8(name);return value;
+ if(value.provider=="deepl"||value.provider=="azure-translator")name=L"translate";
+ if(name.empty()&&requireModel)throw AppError("settings","请选择或输入模型名称。");
+ value.model=name.empty()?"model-list":Utf8(name);
+ value.connectionProfiles=ui_->profiles[0];value.fallbackProfiles=ui_->profiles[1];
+ value.connectionProfiles[value.provider]=ui_->ReadConnection(false);value.connectionProfiles[value.provider].model=value.model;
+ value.encryptedKey=value.connectionProfiles[value.provider].encryptedKey;
+ value.fallbackProfiles[value.fallbackProvider]=ui_->ReadConnection(true);return value;
 }
 void SettingsWindow::StartApi(bool fetch) {
  if(apiBusy_||!callbacks_.api)return;
  auto value=ReadApi(!fetch);Secret secret{Utf8(std::wstring(ui_->Get<PasswordBox>(L"Key").Password()))};if(secret.value.empty())throw AppError("settings","请先填写 API 密钥。");
- ApiBusy(true);ui_->Get<TextBlock>(L"ApiResult").Text(fetch?L"正在获取模型列表…":L"正在测试图片识别与翻译…");
+ ApiBusy(true);ui_->Get<TextBlock>(L"ApiResult").Text(fetch?L"正在获取模型列表…":L"正在进行连接和翻译自检…");
  try{callbacks_.api(fetch,value,secret.value);}catch(...){ApiFinished({},L"请求未完成，请检查连接配置。",false);throw;}
 }
 void SettingsWindow::ApiFinished(const std::vector<std::string>& models,const std::wstring& message,bool fetched) {
@@ -164,7 +199,7 @@ void SettingsWindow::Save() {
  if(apiBusy_)return;
  try{
   auto next=ReadApi(true);next.startup=ui_->On(L"Startup");next.tray=ui_->On(L"Tray");next.autoHide=ui_->On(L"AutoHide");next.autoHideSeconds=ui_->Integer(L"HideSeconds");std::copy(std::begin(ui_->hotkeys),std::end(ui_->hotkeys),std::begin(next.hotkeys));
-  next.quality=ui_->Get<ComboBox>(L"Quality").SelectedIndex();next.ocrMode=ui_->Get<ComboBox>(L"OcrMode").SelectedIndex();next.contextEnabled=ui_->On(L"ContextEnabled");next.contextSize=ui_->Integer(L"ContextSize");next.prompt=Utf8(ui_->Text(L"Prompt"));
+  next.quality=ui_->Get<ComboBox>(L"Quality").SelectedIndex();next.ocrMode=OcrModeFromSelection(ui_->Get<ComboBox>(L"OcrMode").SelectedIndex());next.contextEnabled=ui_->On(L"ContextEnabled");next.contextSize=ui_->Integer(L"ContextSize");next.prompt=Utf8(ui_->Text(L"Prompt"));
   next.spatialOverlay=ui_->On(L"SpatialOverlay");next.font=std::wstring(ui_->Get<ComboBox>(L"Font").Text());next.matchTextColor=ui_->On(L"MatchTextColor");next.autoFont=ui_->On(L"AutoFont");next.fontSize=static_cast<float>(ui_->Number(L"FontSize"));next.textColor=ParseColor(ui_->Text(L"TextColor"));next.outlineColor=ParseColor(ui_->Text(L"OutlineColor"));next.outlineWidth=static_cast<float>(ui_->Number(L"OutlineWidth"));next.backgroundOpacity=static_cast<float>(ui_->Number(L"Opacity"));
   ValidateSettings(next);Secret secret{Utf8(std::wstring(ui_->Get<PasswordBox>(L"Key").Password()))};auto error=callbacks_.apply?callbacks_.apply(next,secret.value):L"保存服务不可用。";
   if(!error.empty()){Status(error);return;}settings_=next;Status(L"设置已保存。关闭窗口后程序继续在后台运行。");

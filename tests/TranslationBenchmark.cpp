@@ -32,8 +32,9 @@ void Render(const Image& image,const std::vector<PositionedText>& items,const st
 Json Rectangle(RECT r){return Json::array({r.left,r.top,r.right,r.bottom});}
 }
 int wmain(int argc,wchar_t** argv){
- if(argc<7||std::wstring(argv[1])!=L"--saved-settings"){
-  std::cerr<<"Usage: TranslationBenchmark --saved-settings OUTPUT_DIR ROUNDS TIMEOUT_SECONDS_OR_0 IMAGE1 IMAGE2 [IMAGE3 ...]\n";return 2;
+ const bool ocrOnly=argc>1&&std::wstring(argv[1])==L"--saved-settings-ocr";
+ if(argc<6||(!ocrOnly&&std::wstring(argv[1])!=L"--saved-settings")){
+  std::cerr<<"Usage: TranslationBenchmark --saved-settings[-ocr] OUTPUT_DIR ROUNDS TIMEOUT_SECONDS_OR_0 IMAGE1 [IMAGE2 ...]\n";return 2;
  }
  std::string key;struct Wipe{std::string& value;~Wipe(){if(!value.empty())SecureZeroMemory(value.data(),value.size());}} wipe{key};
  try{
@@ -46,20 +47,23 @@ int wmain(int argc,wchar_t** argv){
   if(std::filesystem::exists(output/L"trials.jsonl"))throw AppError("benchmark","Output already has trials; choose a new directory");
   std::vector<Image> images;Json inputs=Json::array();for(int i=5;i<argc;++i){images.push_back(ReadImage(argv[i]));inputs.push_back({{"image",i-4},{"file",Utf8(std::filesystem::path(argv[i]).filename().wstring())},{"width",images.back().width},{"height",images.back().height}});}
   SYSTEM_INFO cpu{};GetNativeSystemInfo(&cpu);
-  WriteJson(output/L"metadata.json",{{"provider",settings.provider},{"model",settings.model},{"quality",settings.quality},{"thinking_high",settings.thinkingHigh},{"timeout_seconds",settings.timeoutSeconds},{"saved_timeout_seconds",savedTimeout},{"context_enabled",false},{"rounds",rounds},{"logical_processors",cpu.dwNumberOfProcessors},{"inputs",inputs},{"timing_definition","Image already in memory; JPEG/base64 + OCR when applicable + API including retries + BuildOverlay. PNG export and disk I/O excluded. Original image provided to both paths. Alternating order by image and round; first OCR run is process-cold."}});
+  WriteJson(output/L"metadata.json",{{"provider",settings.provider},{"model",settings.model},{"quality",settings.quality},{"thinking_high",settings.thinkingHigh},{"timeout_seconds",settings.timeoutSeconds},{"saved_timeout_seconds",savedTimeout},{"context_enabled",false},{"rounds",rounds},{"logical_processors",cpu.dwNumberOfProcessors},{"inputs",inputs},{"timing_definition","Image already in memory; OCR when applicable + JPEG/base64 only for vision + API including retries + BuildOverlay. OCR automatic routing uses text only when reliable; request_mode records the actual modality. PNG export and disk I/O excluded. Alternating order by image and round; first OCR run is process-cold."}});
   std::ofstream records(output/L"trials.jsonl");bool firstOcr=true;std::vector<bool> preview(images.size()*2,false);int failed=0;
-  for(int round=1;round<=rounds;++round)for(size_t i=0;i<images.size();++i)for(int slot=0;slot<2;++slot){
-   const bool ocr=((round+int(i)+slot)%2==0);const auto& image=images[i];
-   const std::string pathName=ocr?"ocr_image_ai":"direct_ai";
+  for(int round=1;round<=rounds;++round)for(size_t i=0;i<images.size();++i)for(int slot=0;slot<(ocrOnly?1:2);++slot){
+   const bool ocr=ocrOnly||((round+int(i)+slot)%2==0);const auto& image=images[i];
+   const std::string pathName=ocr?"ocr_auto_ai":"direct_ai";
    std::string stem="image"+std::to_string(i+1)+"-round"+std::to_string(round)+"-"+pathName;
    Json row={{"image",i+1},{"round",round},{"path",pathName},{"order_in_pair",slot+1},{"ocr_process_cold",ocr&&firstOcr},{"attempts",Json::array()}};
    std::cout<<"START "<<stem<<" timeout="<<settings.timeoutSeconds<<"s\n"<<std::flush;
    auto start=BenchClock::now();double preprocess=0,ocrMs=0,apiMs=0,layoutMs=0;auto stage=start;std::string phase="preprocess";TextDetection detected;
    try{
-    auto encoded=EncodeJpeg(image,settings.quality,{});auto data=Base64(encoded);preprocess=Milliseconds(stage);row["jpeg_bytes"]=encoded.size();
-    phase="ocr";stage=BenchClock::now();if(ocr){detected=DetectText(image);ocrMs=Milliseconds(stage);firstOcr=false;row["ocr_status"]=detected.status;row["ocr_regions"]=detected.regions.size();
-     if(detected.regions.empty())throw AppError("benchmark","Local OCR unavailable; refusing to label a direct-AI fallback as OCR");
+    phase="ocr";stage=BenchClock::now();if(ocr){detected=DetectText(image,{},settings.ocrMode);ocrMs=Milliseconds(stage);firstOcr=false;row["ocr_status"]=detected.status;row["ocr_regions"]=detected.regions.size();
+     if(detected.regions.empty()){detected=DetectTextGeometry(image);ocrMs=Milliseconds(stage);row["ocr_status"]=detected.status;row["ocr_regions"]=detected.regions.size();}
     }
+    phase="preprocess";stage=BenchClock::now();std::string data;row["jpeg_bytes"]=0;
+    const bool textOnly=CanTranslateText(detected.regions);row["request_mode"]=textOnly?"text":"vision";
+    if(!textOnly){auto encoded=EncodeJpeg(image,settings.quality,{});data=Base64(encoded);row["jpeg_bytes"]=encoded.size();}
+    preprocess=Milliseconds(stage);
     CompatibleProvider provider(settings.provider=="deepseek",[&](const Settings& options,const std::string& secret,const std::string& body,Clock::time_point deadline,std::stop_token stop){
      const auto before=BenchClock::now();Json attempt={{"request_bytes",body.size()}};
      try{auto response=SendHttp(options,secret,body,deadline,stop);attempt["ms"]=Milliseconds(before);attempt["http_status"]=response.status;
@@ -67,6 +71,7 @@ int wmain(int argc,wchar_t** argv){
        const auto& usage=envelope["usage"];for(const auto* field:{"prompt_tokens","completion_tokens","total_tokens","prompt_cache_hit_tokens","prompt_cache_miss_tokens"})if(usage.contains(field)&&usage[field].is_number())attempt[field]=usage[field];
        for(const auto* field:{"prompt_tokens_details","completion_tokens_details"})if(usage.contains(field)&&usage[field].is_object())for(auto it=usage[field].begin();it!=usage[field].end();++it)if(it.value().is_number())attempt[std::string(field)+"."+it.key()]=it.value();
       }
+      if(envelope.is_object()&&envelope.contains("choices")){try{auto parsed=Json::parse(envelope["choices"][0]["message"]["content"].get<std::string>());attempt["returned_regions"]=Json::array();for(const auto& segment:parsed.at("segments")){Json fields=Json::array();for(auto it=segment.begin();it!=segment.end();++it)fields.push_back(it.key());attempt["returned_regions"].push_back({{"id",segment.value("source_id",0)},{"fields",fields},{"original_length",segment.value("original_text",std::string{}).size()},{"translated_length",segment.value("translated_text",std::string{}).size()}});}}catch(...){}}
       row["attempts"].push_back(attempt);return response;
      }catch(...){attempt["ms"]=Milliseconds(before);attempt["transport_error"]=true;row["attempts"].push_back(attempt);throw;}
     });

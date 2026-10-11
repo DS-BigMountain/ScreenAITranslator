@@ -1,10 +1,13 @@
 #pragma once
 #include "common/Types.h"
 #include "capture/TextDetection.h"
+#include "providers/Catalog.h"
 #include <nlohmann/json.hpp>
 namespace sat {
-TranslationResult ParseTranslation(const std::string& json, const std::vector<TextRegion>& regions = {});
-nlohmann::json TranslationSchema(bool located = false);
+bool CanTranslateText(const std::vector<TextRegion>& regions);
+Settings SelectTranslationConnection(const Settings& options, const std::vector<TextRegion>& regions);
+TranslationResult ParseTranslation(const std::string& json, const std::vector<TextRegion>& regions = {}, bool textOnly = false);
+nlohmann::json TranslationSchema(bool located = false, bool textOnly = false);
 nlohmann::json BuildRequest(const std::string& imageBase64, const std::vector<ContextItem>& context, const Settings& options, bool strict, const std::vector<TextRegion>& regions = {});
 class ITranslationProvider {
 public:
@@ -17,12 +20,15 @@ std::unique_ptr<ITranslationProvider> CreateProvider(const std::string& provider
 std::vector<std::string> FetchModels(const Settings& options, const std::string& apiKey, std::stop_token stop);
 // Uploads only an internally generated test image; never captures the desktop.
 TranslationResult TestVisionApi(const Settings& options, const std::string& apiKey, std::stop_token stop);
+TranslationResult TestTextApi(const Settings& options, const std::string& apiKey, std::stop_token stop);
 class TranslationContext {
  std::vector<ContextItem> items_;
- std::chrono::steady_clock::time_point last_{};
+ ULONGLONG expires_{};
 public:
  void Clear();
  void Add(const TranslationResult& result, int limit);
  std::vector<ContextItem> Get(bool enabled, int limit);
+ ULONGLONG ExpiresAt() const { return expires_; }
+ void Restore(std::vector<ContextItem> items,ULONGLONG expires);
 };
 }

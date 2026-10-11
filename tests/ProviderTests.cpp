@@ -56,6 +56,10 @@ void LocatedTests() {
  auto invalid=response;invalid["segments"][0]["source_id"]=3;Reject([&]{ParseTranslation(invalid.dump(),regions);});
  invalid=response;invalid["segments"][0]["source_id"]=1;Reject([&]{ParseTranslation(invalid.dump(),regions);});
  invalid=response;invalid["segments"][0]["bbox"]={{"x",0}};Reject([&]{ParseTranslation(invalid.dump(),regions);});
+ auto noText=regions;noText[1].text.clear();auto empty=response;empty["segments"][0]["original_text"]="";empty["segments"][0]["translated_text"]="";
+ Require(ParseTranslation(empty.dump(),noText).segments.size()==1,"geometry-only non-text sentinel must not invalidate an otherwise complete page");
+ Reject([&]{ParseTranslation(empty.dump(),regions);});
+ empty["segments"].push_back(empty["segments"][0]);Reject([&]{ParseTranslation(empty.dump(),noText);});
  int calls=0;CompatibleProvider provider(false,[&](const Settings&,const std::string&,const std::string& body,Clock::time_point,std::stop_token){++calls;Require(Json::parse(body)["messages"][0]["content"].get<std::string>().find("source_id")!=std::string::npos,"provider omitted located protocol");return HttpResponse{200,Envelope(response.dump())};});
  Require(provider.TranslateLocated("aW1n",{},Settings{},"test-key",{},regions).segments[1].sourcePixels->top==220&&calls==1,"located provider did not retain geometry");
 }
@@ -81,8 +85,40 @@ void RequestTests() {
  Require(memory.Get(false, 8).empty(), "context toggle");
  memory.Clear(); Require(memory.Get(true, 8).empty(), "context clear");
 }
+void TextTranslationTests() {
+ auto recognized=DetectText(VisionTestImage(),{},1);
+ Require(CanTranslateText(recognized.regions), "clean image reaches the text path through real OCR");
+ std::vector<TextRegion> regions{{1,{10,20,200,40},"HELLO 4826",{{10,20,200,40}},20,{},.98f},
+   {2,{10,60,200,80},"WORLD",{{10,60,200,80}},20,{},.95f}};
+ Require(CanTranslateText(regions), "reliable OCR selects text path");
+ auto request=BuildRequest("",{},Settings{},true,regions);
+ Require(request["messages"][1]["content"].is_string(), "text request is compatible with text-only APIs");
+ Require(request.dump().find("image_url")==std::string::npos, "text path must not upload screenshot");
+ auto data=Json::parse(request["messages"][1]["content"].get<std::string>());
+ Require(data["source_regions"][0]["original_text"]=="HELLO 4826"&&!data["source_regions"][0].contains("bbox"), "text path preserves source and omits coordinates");
+ auto properties=request["response_format"]["json_schema"]["schema"]["properties"]["segments"]["items"]["properties"];
+ Require(properties.size()==2&&properties.contains("source_id")&&properties.contains("translated_text"), "compact output schema");
+ Require(BuildRequest("aW1n",{},Settings{},true,regions)==request, "provided image is also excluded from text requests");
+ Json response={{"source_language","en"},{"segments",Json::array({{{"source_id",2},{"translated_text","世界"}},{{"source_id",1},{"translated_text","你好 4826"}}})}};
+ auto result=ParseTranslation(response.dump(),regions,true);
+ Require(result.segments[0].original=="HELLO 4826"&&result.segments[0].sourcePixels->top==20&&result.segments[1].original=="WORLD", "compact response restores originals and geometry by ID");
+ TranslationContext context;context.Add(result,8);Require(context.Get(true,8)[0].original=="HELLO 4826", "text response retains original for subsequent context");
+ auto invalid=response;invalid["segments"][0]["source_id"]=1;Reject([&]{ParseTranslation(invalid.dump(),regions,true);});
+ invalid=response;invalid["segments"][0]["source_id"]=3;Reject([&]{ParseTranslation(invalid.dump(),regions,true);});
+ invalid=response;invalid["segments"][0]["original_text"]="invented";Reject([&]{ParseTranslation(invalid.dump(),regions,true);});
+ auto low=regions;low[1].confidence=.84f;Require(!CanTranslateText(low), "one low-confidence passage requires vision");
+ Require(BuildRequest("aW1n",{},Settings{},true,low)["messages"][1]["content"].is_array(), "low-confidence path includes vision input");
+ Reject([&]{BuildRequest("",{},Settings{},true,low);},"Preprocessing");
+ low=regions;low[1].text.clear();Require(!CanTranslateText(low), "geometry-only regions require vision");
+ Require(!CanTranslateText({}), "missing OCR requires vision");
+ int calls=0;CompatibleProvider provider(true,[&](const Settings&,const std::string&,const std::string& body,Clock::time_point,std::stop_token){
+  ++calls;Require(Json::parse(body)["messages"][1]["content"].is_string(), "provider sent text payload");return HttpResponse{200,Envelope(response.dump())};
+ });
+ auto translated=provider.TranslateLocated("",{},Settings{},"test-key",{},regions);
+ Require(calls==1&&translated.requestCount==1&&translated.segments[0].original=="HELLO 4826", "production provider parses compact response in one request");
+}
 void RetryTests() {
- Settings options; int calls{};
+ Settings options; options.provider="openai-compatible"; int calls{};
  auto valid = Envelope(ValidResult());
  CompatibleProvider repair(false, [&](const Settings&, const std::string&, const std::string&, Clock::time_point, std::stop_token) { return HttpResponse{200, ++calls == 1 ? Envelope("SENSITIVE") : valid}; });
  Require(repair.Translate("aW1n", {}, options, "test-key", {}).segments.size() == 1 && calls == 2, "one invalid JSON retry succeeds");
@@ -96,6 +132,14 @@ void RetryTests() {
   return calls == 1 ? HttpResponse{400, R"({"error":{"message":"response_format json_schema is not supported"}})"} : HttpResponse{200, valid};
  });
  Require(fallback.Translate("aW1n", {}, options, "test-key", {}).segments.size() == 1 && calls == 2, "known unsupported response fallback");
+ Require(fallback.Translate("aW1n", {}, options, "test-key", {}).requestCount == 1 && calls == 3, "known schema limitation avoids repeated probe");
+ CompatibleProvider nextProvider(false,[&](const Settings&,const std::string&,const std::string& body,Clock::time_point,std::stop_token){
+  Require(Json::parse(body)["response_format"]["type"]=="json_object", "schema capability survives provider recreation");return HttpResponse{200,valid};
+ });
+ nextProvider.Translate("aW1n",{},options,"test-key",{});
+ auto other=options;other.model="other-model";Require(!NeedsJsonObject(other,false)&&!NeedsJsonObject(options,true), "schema cache separates model and modality");
+ other=options;other.baseUrl=L"https://another.example";Require(!NeedsJsonObject(other,false), "schema cache separates endpoints");
+ schemaFallbacks.front().expires=Clock::now();Require(!NeedsJsonObject(options,false), "schema capability is periodically rechecked");
  for (int status : {400,401,403,429,500}) {
   calls = 0;
   CompatibleProvider failure(false, [&](const Settings&, const std::string&, const std::string&, Clock::time_point, std::stop_token) { ++calls; return HttpResponse{status, R"({"error":{"message":"SENSITIVE unrelated error"}})"}; });
@@ -112,7 +156,8 @@ void RetryTests() {
    ++modeCalls;auto request=Json::parse(body);
    if(deepseekMode){Require(request["thinking"]["type"]==(high?"enabled":"disabled"),"DeepSeek thinking toggle");if(!high)Require(!request.contains("reasoning_effort"),"DeepSeek disabled mode has no conflicting effort");}
    else Require(!request.contains("thinking"),"compatible provider excludes DeepSeek extension");
-   if(high||!deepseekMode)Require(request["reasoning_effort"]==(high?"high":"none"),"explicit thinking effort");
+   if(high)Require(request["reasoning_effort"]=="high","explicit thinking effort");
+   else Require(!request.contains("reasoning_effort"),"omit unsupported generic reasoning-off field");
    if(high)Require(!request.contains("temperature"),"high mode omits unsupported sampling parameter");
    return HttpResponse{200,modeCalls==1?Envelope("malformed"):valid};
   });
@@ -133,16 +178,18 @@ public:
  unsigned short port{};
  std::atomic<bool> received{};
  std::atomic<bool> headersSent{};
- std::string requestBody, requestLine;
- LocalServer(int delayMs, int status = 200, bool delayBody = false, std::string responseBody = {}) {
+ std::atomic<int> requests{};
+ std::string requestBody, requestLine, requestHeaders;
+ LocalServer(int delayMs, int status = 200, bool delayBody = false, std::string responseBody = {}, int requestLimit = 1) {
   listener_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if(listener_ == INVALID_SOCKET) throw std::runtime_error("socket");
   sockaddr_in address{}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   if(bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) || listen(listener_,1)) throw std::runtime_error("bind");
   int length = sizeof(address); getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length); port = ntohs(address.sin_port);
-  worker_ = std::jthread([this, delayMs, status, delayBody, responseBody = std::move(responseBody)] {
+  worker_ = std::jthread([this, delayMs, status, delayBody, requestLimit, responseBody = std::move(responseBody)] {
    SOCKET client = accept(listener_, nullptr, nullptr); if(client == INVALID_SOCKET) return;
    DWORD timeout = 3000; setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<const char*>(&timeout),sizeof(timeout));
+   for (int index=0; index<requestLimit; ++index) {
    std::string data; std::array<char,16384> chunk{}; size_t headerEnd = std::string::npos; size_t wanted = 0;
    for (;;) {
     int count = recv(client,chunk.data(),static_cast<int>(chunk.size()),0); if(count <= 0) break;
@@ -155,18 +202,21 @@ public:
     }
     if(headerEnd != std::string::npos && data.size() >= headerEnd+4+wanted) break;
    }
-   if(headerEnd != std::string::npos) requestBody=data.substr(headerEnd+4);
+   if(headerEnd != std::string::npos) {requestBody=data.substr(headerEnd+4);requestHeaders=data.substr(0,headerEnd);}
    requestLine=data.substr(0,data.find("\r\n"));
-   received = true;
+   if (headerEnd == std::string::npos) break;
+   received = true; ++requests;
    if (!delayBody) std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
    auto body = responseBody.empty() ? Envelope(ValidResult()) : responseBody;
-   std::string response = "HTTP/1.1 " + std::to_string(status) + " Test\r\nContent-Type: application/json\r\nConnection: close\r\n";
+   std::string response = "HTTP/1.1 " + std::to_string(status) + " Test\r\nContent-Type: application/json\r\nConnection: " + (requestLimit>1?"keep-alive":"close") + "\r\n";
    if(status == 307) response += "Location: https://example.invalid/never-follow\r\n";
    response += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
    send(client,response.data(),static_cast<int>(response.size()),0);
    headersSent = true;
    if (delayBody) std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-   send(client,body.data(),static_cast<int>(body.size()),0); closesocket(client);
+   send(client,body.data(),static_cast<int>(body.size()),0);
+   }
+   closesocket(client);
   });
  }
  ~LocalServer() { closesocket(listener_); if(worker_.joinable()) worker_.join(); }
@@ -174,6 +224,11 @@ public:
 void NetworkTests() {
  WSADATA data{}; if(WSAStartup(MAKEWORD(2,2),&data)) throw std::runtime_error("WSAStartup");
  Settings options; options.provider="openai-compatible";
+ {
+  LocalServer server(0,200,false,{},2);options.baseUrl=L"http://127.0.0.1:"+std::to_wstring(server.port);options.timeoutSeconds=3;
+  for(int i=0;i<2;++i)Require(CreateProvider(options.provider)->Translate("aW1n",{},options,"test-key",{}).requestCount==1,"one request per reused connection");
+  Require(server.requests==2,"successive translations reuse one TCP connection");
+ }
  {
   LocalServer server(0); options.baseUrl=L"http://127.0.0.1:"+std::to_wstring(server.port)+L"/v1";
   auto result=CreateProvider(options.provider)->Translate("aW1n",{},options,"test-key",{});
@@ -277,8 +332,9 @@ void DiagnosticTests() {
  WSACleanup();
 }
 }
+#include "ProviderServicesTests.inc"
 int main() {
- try { ParserTests(); LocatedTests(); RequestTests(); RetryTests(); NetworkTests(); DiagnosticTests(); std::cout << "Provider tests passed: " << checks << " checks\n"; return 0; }
+ try { ParserTests(); LocatedTests(); RequestTests(); TextTranslationTests(); RetryTests(); ServiceTests(); NetworkTests(); DiagnosticTests(); std::cout << "Provider tests passed: " << checks << " checks\n"; return 0; }
  catch(const std::exception& error) { std::cerr << "Provider test failed: " << error.what() << '\n'; return 1; }
 }
 

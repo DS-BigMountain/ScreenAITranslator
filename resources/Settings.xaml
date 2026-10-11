@@ -32,7 +32,7 @@
       <NavigationViewItem Content="显示效果" Icon="Font" Tag="4"/>
     </NavigationView.MenuItems>
     <NavigationView.PaneFooter>
-      <TextBlock Text="1.3.0" Margin="20,16,0,24" Style="{StaticResource Note}"/>
+      <TextBlock Text="1.4.0" Margin="20,16,0,24" Style="{StaticResource Note}"/>
     </NavigationView.PaneFooter>
     <Grid Padding="32,26,32,20" RowSpacing="20">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -84,29 +84,45 @@
           </StackPanel>
           <StackPanel x:Name="Page2" Spacing="16" Visibility="Collapsed">
             <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
-              <ComboBox x:Name="Provider" Header="服务提供方" HorizontalAlignment="Stretch"><ComboBoxItem Content="DeepSeek"/><ComboBoxItem Content="OpenAI Compatible"/></ComboBox>
+              <ComboBox x:Name="Provider" Header="服务提供方" HorizontalAlignment="Stretch"/>
               <TextBox x:Name="BaseUrl" Header="API 地址" PlaceholderText="https://api.example.com/v1" MaxLength="2048"/>
               <PasswordBox x:Name="Key" Header="API 密钥" PasswordRevealMode="Peek" MaxLength="4096"/>
-              <ComboBox x:Name="Model" Header="视觉模型" IsEditable="True" HorizontalAlignment="Stretch" PlaceholderText="输入模型名称，或获取列表后选择"/>
+              <ComboBox x:Name="Model" Header="模型" IsEditable="True" HorizontalAlignment="Stretch" PlaceholderText="填写账号可用的模型或部署 ID"/>
+              <TextBox x:Name="ServiceRegion" Header="Azure Translator 资源区域（其他服务留空）"/>
               <Grid ColumnSpacing="20"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
                 <NumberBox x:Name="Timeout" Header="请求超时（秒）" Minimum="1" Maximum="300" SpinButtonPlacementMode="Compact"/>
-                <ComboBox x:Name="ThinkingMode" Grid.Column="1" Header="思考模式" HorizontalAlignment="Stretch"><ComboBoxItem Content="关闭"/><ComboBoxItem Content="high"/></ComboBox>
+                <ComboBox x:Name="ThinkingMode" Grid.Column="1" Header="思考模式" HorizontalAlignment="Stretch"><ComboBoxItem Content="低延迟 / 服务默认"/><ComboBoxItem Content="high"/></ComboBox>
               </Grid>
               <StackPanel Orientation="Horizontal" Spacing="12">
                 <Button x:Name="FetchModels" Content="获取模型列表"/>
                 <Button x:Name="TestApi" Content="测试连接"/>
                 <ProgressRing x:Name="ApiProgress" IsActive="False" Width="24" Height="24" Visibility="Collapsed"/>
               </StackPanel>
-              <TextBlock x:Name="ApiResult" Text="请选择支持图片输入的模型。" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+              <TextBlock x:Name="ApiResult" Text="OCR 文字由当前服务翻译；图片输入需要视觉模型。DeepL 和 Azure 无需选择模型。" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
             </StackPanel></Border>
-            <TextBlock Text="测试连接使用内置测试图片，不上传桌面截图；将产生一次模型请求。密钥通过 Windows 用户凭据保护后保存在本机。" Style="{StaticResource Note}"/>
+            <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
+              <ToggleSwitch x:Name="FallbackEnabled" Header="OCR 不可靠时使用独立视觉连接"/>
+              <ComboBox x:Name="FallbackProvider" Header="视觉服务提供方" HorizontalAlignment="Stretch"/>
+              <TextBox x:Name="FallbackBaseUrl" Header="视觉 API 地址"/>
+              <TextBox x:Name="FallbackModel" Header="支持图片输入的模型"/>
+              <PasswordBox x:Name="FallbackKey" Header="视觉 API 密钥" PasswordRevealMode="Peek" MaxLength="4096"/>
+              <TextBlock Text="专用翻译服务只能翻译 OCR 文字，需配置视觉连接以处理识别失败的图片。未配置时会明确报告错误。" Style="{StaticResource Note}"/>
+            </StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
+              <ComboBox x:Name="ProxyMode" Header="网络连接方式" HorizontalAlignment="Stretch"><ComboBoxItem Content="系统代理"/><ComboBoxItem Content="直接连接"/><ComboBoxItem Content="自定义 HTTP 代理"/></ComboBox>
+              <TextBox x:Name="ProxyAddress" Header="代理地址（主机:端口）" PlaceholderText="127.0.0.1:7890"/>
+              <TextBlock Text="此网络设置同时用于主连接、视觉连接和模型列表。自定义代理不支持 SOCKS 或用户名密码认证。" Style="{StaticResource Note}"/>
+            </StackPanel></Border>
+            <TextBlock Text="连接自检使用内置小样本，不上传桌面截图，可能产生多次计费请求。自检验证协议连通性；复杂页面效果需使用实际图片评估。密钥通过 Windows 用户凭据保护。" Style="{StaticResource Note}"/>
           </StackPanel>
           <StackPanel x:Name="Page3" Spacing="16" Visibility="Collapsed">
             <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
               <ComboBox x:Name="Quality" Header="截图分辨率" HorizontalAlignment="Stretch"><ComboBoxItem Content="速度优先 · 1280 px"/><ComboBoxItem Content="均衡 · 1600 px"/><ComboBoxItem Content="质量优先 · 2200 px"/></ComboBox>
-              <ComboBox x:Name="OcrMode" Header="原文识别" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动（英文／日文）"/><ComboBoxItem Content="英文"/><ComboBoxItem Content="日文"/><ComboBoxItem Content="AI 直译（其他语言）"/></ComboBox>
-              <TextBlock Text="英日识别模型已内置，无需安装系统语言包。其他语言可选择 AI 直译；本地识别失败时自动回退。" Style="{StaticResource Note}"/>
+              <ComboBox x:Name="OcrMode" Header="原文语言" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动识别"/><ComboBoxItem Content="英语"/><ComboBoxItem Content="日语"/><ComboBoxItem Content="韩语"/></ComboBox>
+              <TextBlock Text="请选择图片中的语言，译文仍为中文。英语、日语和韩语使用内置 OCR，无需系统语言包。自动识别由视觉模型判断语种并翻译，支持范围取决于模型，需要支持图片的连接。" Style="{StaticResource Note}"/>
               <ToggleSwitch x:Name="ContextEnabled" Header="使用最近翻译上下文"/>
+              <ToggleSwitch x:Name="TranslateAll" Header="完整翻译所有已识别文字"/>
+              <TextBlock Text="开启后优先保证区域完整性，模型漏返区域会触发一次重试。专用翻译服务始终翻译全部输入；自定义提示词仅作用于通用大模型。" Style="{StaticResource Note}"/>
               <NumberBox x:Name="ContextSize" Header="上下文数量" Minimum="5" Maximum="10" SpinButtonPlacementMode="Compact"/>
               <TextBlock Text="上下文仅保存在内存中，用于保持专有名词及语义的一致性。" Style="{StaticResource Note}"/>
               <Button x:Name="ClearContext" Content="清空上下文"/>

@@ -12,6 +12,8 @@
 #include <memory>
 #include <functional>
 #include <filesystem>
+#include <map>
+#include "OcrLanguage.h"
 
 namespace sat {
 struct Box { int x{}, y{}, width{}, height{}; };
@@ -23,13 +25,17 @@ struct Segment {
  float sourceLineHeight{};
  int sourceId{};
 };
-struct TranslationResult { std::string language; std::vector<Segment> segments; std::vector<RECT> protectedRegions; };
+struct TranslationResult { std::string language; std::vector<Segment> segments; std::vector<RECT> protectedRegions; int requestCount{}; };
 struct ContextItem { std::string original, translated; };
 enum class CaptureBackend { Synthetic, Dxgi, GdiFallback };
 struct Image { int width{}, height{}; std::vector<unsigned char> bgra; CaptureBackend backend{CaptureBackend::Synthetic}; };
 struct Monitor { std::wstring id; RECT rect{}; UINT dpi{96}; };
 struct FixedRegion { std::wstring monitorId; double x{}, y{}, width{}, height{}; int monitorWidth{}, monitorHeight{}; };
 struct Hotkey { UINT modifiers{}, key{}; };
+struct ConnectionProfile {
+ std::wstring baseUrl;
+ std::string model, encryptedKey, serviceRegion;
+};
 struct Settings {
  bool startup{true}, tray{true}, autoHide{false};
  int autoHideSeconds{10};
@@ -40,8 +46,16 @@ struct Settings {
  int timeoutSeconds{20};
  bool thinkingHigh{false};
  std::string encryptedKey;
+ std::string serviceRegion;
+ int proxyMode{0}; // 0 Windows system proxy, 1 direct, 2 explicit HTTP CONNECT proxy
+ std::wstring proxyAddress;
+ bool fallbackEnabled{false};
+ std::string fallbackProvider{"openai-compatible"},fallbackModel,encryptedFallbackKey;
+ std::wstring fallbackBaseUrl{L"https://api.openai.com/v1"};
+ std::map<std::string,ConnectionProfile> connectionProfiles, fallbackProfiles;
+ bool translateAll{true};
  int quality{1};
- int ocrMode{0}; // 0 auto English/Japanese, 1 English, 2 Japanese, 3 direct AI
+ int ocrMode{OcrAuto};
  bool contextEnabled{true}; int contextSize{8};
  std::string prompt{"请准确翻译画面中的所有可见文字为简体中文。优先忠实原意，不进行文学化润色，不添加原文不存在的信息。角色名、专有名词应尽量保持一致。默认翻译所有字幕、对话、按钮和 UI 文本。"};
  std::wstring font{L"Microsoft YaHei UI"};

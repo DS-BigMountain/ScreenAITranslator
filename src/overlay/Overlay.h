@@ -17,7 +17,7 @@ struct OverlayBlock {
  std::vector<PositionedText> positioned;
  RECT monitorArea{},workArea{};
 };
-std::vector<OverlayBlock> BuildOverlay(const TranslationResult&,const Image& roi,RECT screenRoi,const Monitor&,const Settings&);
+std::vector<OverlayBlock> BuildOverlay(const TranslationResult&,Image roi,RECT screenRoi,const Monitor&,const Settings&);
 class Overlay {
  struct DragState { POINT start{};RECT region{},view{};std::optional<RECT> reading;bool moved{}; };
  struct WindowData { Overlay* owner;HWND hwnd{};bool pressed{},dragPreview{},progressFrame{};OverlayBlock block;Settings settings;UINT dpi{96};float scroll{};int mode{};std::optional<OverlayBlock> reading;std::optional<DragState> drag; };

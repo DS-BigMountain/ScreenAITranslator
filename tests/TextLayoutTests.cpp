@@ -49,6 +49,10 @@ void AppearanceRegression(){
 }
 void UnitTests(){
  Image image{900,700,std::vector<unsigned char>(900*700*4,255)};
+ auto confidence=GroupTextLines({{{40,100,820,122},"first",.98f},{{40,140,820,162},"second",.78f}},image);
+ Require(confidence.size()==1&&confidence[0].confidence==.78f&&!CanTranslateText(confidence),"paragraph merging lost the weakest OCR confidence");
+ auto inlineConfidence=GroupTextLines({{{133,661,167,690},"1",.74f},{{153,662,346,688},"List text",.99f}},image);
+ Require(inlineConfidence.size()==1&&inlineConfidence[0].confidence==.74f,"inline merging lost the weakest OCR confidence");
  auto regions=GroupTextLines({{{40,100,820,122},"line one"},{{20,140,820,162},"line two"},{{40,210,800,232},"separate passage"},{{40,300,400,322},"left column"},{{490,300,850,322},"right column"}},image);
  Require(regions.size()==4&&regions[0].lines.size()==2,"paragraph grouping or column isolation failed");
  Require(regions[0].lineHeight==22,"paragraph height used as font height");
@@ -72,6 +76,9 @@ void UnitTests(){
   Require(overflow[0].fontSize>=std::min(a.fontSize,12*dpi/96.f),"font fell below readability floor");
  }
  settings.autoFont=false;settings.fontSize=70;auto fixed=LayoutPositioned(result,image,settings,96);Require(fixed[0].fontSize==70,"fixed font changed");
+ {auto headline=result;headline.protectedRegions.clear();auto& s=headline.segments[0];s.sourcePixels=RECT{40,100,301,156};s.sourceLines={{40,100,301,125},{40,127,239,156}};s.sourceLineHeight=28;s.translated="北爱尔兰事务大臣将\n禁止德鲁姆克里\n游行";Settings automatic;
+  auto wrapped=LayoutPositioned(headline,image,automatic,96);s.translated="北爱尔兰事务大臣将禁止德鲁姆克里游行";auto continuous=LayoutPositioned(headline,image,automatic,96);
+  Require(!wrapped[0].overflow&&wrapped[0].contentHeight==continuous[0].contentHeight,"model hard wraps clipped a short translated title");}
  auto duplicate=result;duplicate.segments.push_back(duplicate.segments[0]);auto ambiguous=LayoutPositioned(duplicate,image,settings,96);Require(ambiguous[0].suppressed&&ambiguous[1].suppressed,"overlapping regions erased neighboring text");
  result.segments[0].sourcePixels.reset();result.segments[0].sourceLineHeight=0;result.segments[0].box={100,370,800,300};settings.autoFont=true;
  auto fallback=LayoutPositioned(result,image,settings,96);Require(fallback[0].sourceRect.top==259&&fallback[0].eraseHeight==210,"fallback changed source removal geometry");
@@ -79,8 +86,8 @@ void UnitTests(){
  Require(DetectText(Image{}).status=="invalid-image","invalid image not rejected");
 }
 void ScreenshotRegression(){
- auto image=ReadImage(L"test-fixtures/news-ja.png");auto detected=DetectText(image);
- if(detected.regions.empty()){RecognizeBundled(image,0,{});throw std::runtime_error("Bundled screenshot OCR must not be skipped");}
+ auto image=ReadImage(L"test-fixtures/news-ja.png");auto detected=DetectText(image,{},OcrJapanese);
+ if(detected.regions.empty()){RecognizeBundled(image,OcrJapanese,{});throw std::runtime_error("Bundled screenshot OCR must not be skipped");}
  const auto main=std::find_if(detected.regions.begin(),detected.regions.end(),[](const TextRegion& r){return r.rect.top>=250&&r.rect.top<270;});
  Require(main!=detected.regions.end()&&main->lines.size()==6&&main->rect.bottom>=473&&main->rect.bottom<480,"news paragraph geometry was not recovered");
  const auto prize=std::find_if(detected.regions.begin(),detected.regions.end(),[](const TextRegion& r){return r.rect.top>=510&&r.rect.top<530;});
@@ -92,12 +99,36 @@ void ScreenshotRegression(){
  std::filesystem::create_directories("test-output/news-regression");Render(image,layout,"test-output/news-regression/partial.png",false);
  std::cout<<"Screenshot OCR regression: PASS (six-line paragraph, terminal glyph, unchanged surrounding pixels)\n";
 }
+void UserScreenshotRegression(){
+ for(const auto* name:{L"bbc-headlines-en",L"asahi-article-ja",L"bbc-article-en",L"asahi-election-ja",L"asahi-grid-ja"}){
+  auto image=ReadImage((std::filesystem::path(L"test-fixtures/user")/(std::wstring(name)+L".png")).c_str());auto detected=DetectText(image,{},OcrJapanese);
+  Require(detected.status=="bundled-ocr"&&detected.regions.size()>=15,"real screenshot OCR coverage regressed");
+  nlohmann::json translations=nlohmann::json::object();if(std::wstring(name)==L"bbc-headlines-en"){std::ifstream file("test-fixtures/user/bbc-headlines-en-translations.json");file>>translations;}
+  TranslationResult result;for(const auto& r:detected.regions){Segment s;s.original=r.text;s.translated=translations.value(std::to_string(r.id),r.text.empty()?"未识别区域":r.text);s.sourceId=r.id;s.sourcePixels=r.rect;s.sourceLines=r.lines;s.sourceLineHeight=r.lineHeight;result.segments.push_back(s);result.protectedRegions.push_back(r.rect);}
+  auto items=LayoutPositioned(result,image,Settings{},96);size_t suppressed=0;for(const auto& item:items)suppressed+=item.suppressed;
+  if(std::wstring(name)==L"bbc-headlines-en"){
+   Require(suppressed==0,"BBC headlines or category labels hidden by geometry conflicts");
+   Require(translations.size()==detected.regions.size()&&std::none_of(items.begin(),items.end(),[](const auto& item){return item.overflow;}),"saved real BBC translations overflow or lose region mapping");
+   for(const auto* anchor:{"Trump announces deal","curb fuel prices","Drumcree parade","Hurricane Isaias","cockroach","watch it","election defeat","Australian surfer","Northern Ireland","Business"}){
+    auto found=std::find_if(detected.regions.begin(),detected.regions.end(),[&](const auto& r){return r.text.find(anchor)!=std::string::npos;});Require(found!=detected.regions.end(),"BBC text anchor missing");
+   }
+  }
+  if(std::wstring(name)==L"bbc-article-en"||std::wstring(name)==L"asahi-grid-ja")Require(suppressed==0,"dense article contains hidden paragraphs");
+  auto output=std::filesystem::path(L"test-output/user-regression")/name;std::filesystem::create_directories(output);Render(image,items,output/L"layout.png",false);
+  const auto* pixels=image.bgra.data();RECT area{0,0,image.width,image.height};
+  auto blocks=BuildOverlay(result,std::move(image),area,Monitor{L"offscreen",area,96},Settings{});
+  Require(blocks.size()==1&&blocks[0].image&&blocks[0].image->bgra.data()==pixels,"overlay duplicated the captured pixel buffer");
+  Require(blocks[0].positioned.size()==items.size()&&!blocks[0].text.empty(),"moving the screenshot lost overlay views");
+  std::weak_ptr<const Image> retained=blocks[0].image;blocks.clear();Require(retained.expired(),"closed overlay retained its screenshot");
+  std::cout<<"User fixture "<<Utf8(name)<<": "<<detected.regions.size()<<" regions, "<<suppressed<<" suppressed\n";
+ }
+}
 }
 int wmain(int argc,wchar_t** argv){try{
  ComScope com;UnitTests();AppearanceRegression();
- if(argc==1)ScreenshotRegression();
+ if(argc==1){ScreenshotRegression();UserScreenshotRegression();}
  if(argc>=3){
-  auto image=ReadImage(argv[1]);auto detected=DetectText(image);std::cout<<"OCR: "<<detected.status<<", regions: "<<detected.regions.size()<<"\n";Require(!detected.regions.empty(),"OCR fixture produced no regions");
+  auto image=ReadImage(argv[1]);auto detected=DetectText(image,{},OcrJapanese);std::cout<<"OCR: "<<detected.status<<", regions: "<<detected.regions.size()<<"\n";Require(!detected.regions.empty(),"OCR fixture produced no regions");
   std::filesystem::path output=argv[2];std::filesystem::create_directories(output);
   nlohmann::json translations=nlohmann::json::object();if(argc>=4){std::ifstream file(argv[3]);file>>translations;}
   TranslationResult result;for(const auto& r:detected.regions){Segment s;s.original=r.text;s.translated=translations.value(std::to_string(r.id),r.text);s.sourcePixels=r.rect;s.sourceLines=r.lines;s.sourceLineHeight=r.lineHeight;s.sourceId=r.id;result.segments.push_back(s);result.protectedRegions.push_back(r.rect);}
