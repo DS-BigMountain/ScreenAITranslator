@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.4.0"
+  #define AppVersion "1.4.1"
 #endif
 #ifndef AppStage
   #define AppStage "..\build\package-stage\Release"
@@ -10,12 +10,15 @@
 #ifndef PackageName
   #define PackageName "ScreenAITranslator-Setup-" + AppVersion
 #endif
+#ifndef AppIconName
+  #error AppIconName must identify the icon included in AppStage
+#endif
 
 [Setup]
 AppId={{2B5E7B5E-E962-42F0-A42D-6A5843E925FA}
 AppName=屏幕翻译
 AppVersion={#AppVersion}
-AppVerName=屏幕翻译 {#AppVersion}
+AppVerName=屏幕翻译 V{#AppVersion}
 AppPublisher=Screen AI Translator
 DefaultDirName={localappdata}\Programs\ScreenAITranslator
 DefaultGroupName=Screen AI Translator
@@ -29,7 +32,7 @@ OutputBaseFilename={#PackageName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\ScreenAITranslator.exe
+UninstallDisplayIcon={app}\{#AppIconName}
 VersionInfoVersion={#AppVersion}
 CloseApplications=yes
 RestartApplications=no
@@ -47,9 +50,9 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: unchecked
 Source: "{#AppStage}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Screen AI Translator\Screen AI Translator"; Filename: "{app}\ScreenAITranslator.exe"; WorkingDir: "{app}"
+Name: "{autoprograms}\Screen AI Translator\Screen AI Translator"; Filename: "{app}\ScreenAITranslator.exe"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppIconName}"; AppUserModelID: "ScreenAITranslator.Desktop"
 Name: "{autoprograms}\Screen AI Translator\卸载屏幕翻译"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Screen AI Translator"; Filename: "{app}\ScreenAITranslator.exe"; Tasks: desktopicon
+Name: "{autodesktop}\Screen AI Translator"; Filename: "{app}\ScreenAITranslator.exe"; Tasks: desktopicon; IconFilename: "{app}\{#AppIconName}"; AppUserModelID: "ScreenAITranslator.Desktop"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ScreenAITranslator"; ValueData: """{app}\ScreenAITranslator.exe"" --background"; Tasks: startup; Flags: uninsdeletevalue

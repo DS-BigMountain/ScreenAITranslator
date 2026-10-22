@@ -17,7 +17,7 @@ Windows 原生屏幕翻译工具。框选屏幕区域后，程序识别原文位
 
 从 [GitHub Releases](https://github.com/DS-BigMountain/ScreenAITranslator/releases/latest) 下载安装包或便携包。安装版提供简体中文安装向导；便携版完整解压后运行 `ScreenAITranslator.exe`。
 
-资源包包含 WinUI 3 运行时、ONNX Runtime、本地 OCR 模型及第三方许可证，不需要另外安装 Python、PaddlePaddle 或 GPU 环境。程序必须与配套运行时及 `models` 目录共同使用，不能只复制主程序 EXE。
+资源包包含 WinUI 3 运行时、ONNX Runtime、本地 OCR 模型、图标文件及第三方许可证，不需要另外安装 Python、PaddlePaddle 或 GPU 环境。程序必须与配套运行时、图标文件及 `models` 目录共同使用，不能只复制主程序 EXE。
 
 ## 使用流程
 

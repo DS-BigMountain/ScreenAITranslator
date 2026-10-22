@@ -56,8 +56,8 @@ void TestSettings(){
  password.Password(L"changed-key");pump();Require(model.Items().Size()==0&&model.Text().empty(),"credential changes retain stale model choices");password.Password(L"test-only-key");pump();model.Text(L"test-vision");click(L"Apply");Require(saved==2,"manual model cannot be saved");
  auto textColor=root.FindName(L"TextColor").as<TextBox>();textColor.Text(L"wrong");click(L"Apply");Require(saved==2,"invalid color reached persistence callback");textColor.Text(L"FFFFFF");
  reject=true;click(L"Apply");Require(saved==3&&root.FindName(L"Status").as<TextBlock>().Text()==L"保存被测试拒绝","save failure was not retained in the interface");reject=false;
- nav.SelectedItem(nav.MenuItems().GetAt(0));click(L"Translate");click(L"TranslateFixed");click(L"Reselect");click(L"ClearRegion");Require(actions==4,"translation actions disconnected");
- nav.SelectedItem(nav.MenuItems().GetAt(3));click(L"ClearContext");Require(actions==5,"clear context disconnected");
+ nav.SelectedItem(nav.MenuItems().GetAt(0));click(L"Translate");click(L"TranslateFixed");Require(actions==2,"translation actions disconnected");
+ nav.SelectedItem(nav.MenuItems().GetAt(3));click(L"ClearContext");Require(actions==3,"clear context disconnected");
  nav.SelectedItem(nav.MenuItems().GetAt(2));window.Show(options,"different-key",state,cb);Require(password.Password()==L"test-only-key","reopening visible window discarded unsaved input");
  // 关闭后释放控件引用，验证再次创建窗口的资源生命周期。
  font=nullptr;match=nullptr;ocr=nullptr;model=nullptr;password=nullptr;thinking=nullptr;textColor=nullptr;nav=nullptr;root=nullptr;

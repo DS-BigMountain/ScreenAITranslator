@@ -84,7 +84,9 @@ class App {
  void UpdateTray(){
   NOTIFYICONDATAW ni{sizeof(ni)};ni.hWnd=window_;ni.uID=1;
   if(!settings_.tray){if(trayAdded_)Shell_NotifyIconW(NIM_DELETE,&ni);trayAdded_=false;return;}
-  ni.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;ni.uCallbackMessage=TrayMessage;ni.hIcon=LoadIconW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(101));if(!ni.hIcon)ni.hIcon=LoadIconW(nullptr,IDI_APPLICATION);std::wstring tip=std::wstring(L"屏幕翻译 · ")+StageName(stage_);wcsncpy_s(ni.szTip,tip.c_str(),_TRUNCATE);
+  ni.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;ni.uCallbackMessage=TrayMessage;
+  ni.hIcon=static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(102),IMAGE_ICON,GetSystemMetrics(SM_CXSMICON),GetSystemMetrics(SM_CYSMICON),LR_SHARED));
+  if(!ni.hIcon)ni.hIcon=LoadIconW(nullptr,IDI_APPLICATION);std::wstring tip=std::wstring(L"屏幕翻译 · ")+StageName(stage_);wcsncpy_s(ni.szTip,tip.c_str(),_TRUNCATE);
   if(Shell_NotifyIconW(trayAdded_?NIM_MODIFY:NIM_ADD,&ni))trayAdded_=true;
  }
  void ContextChanged(){KillTimer(window_,ContextTimer);context_.Clear();}
@@ -182,7 +184,7 @@ class App {
   usedResources_=true;KillTimer(window_,IdleTimer);
   SettingsCallbacks cb;cb.apply=[this](const Settings& s,const std::string& k){return Apply(s,k);};cb.closed=[this](RECT r,int tab){if(apiActive_)Cancel();state_.window=r;state_.tab=tab;SaveState();ArmIdle();};
   cb.api=[this](bool fetch,const Settings& s,const std::string& secret){ApiOperation(fetch,s,secret);};
-  cb.action=[this](SettingsAction action){switch(action){case SettingsAction::ClearContext:ContextChanged();break;case SettingsAction::ClearRegion:Cancel();sessionRegion_.reset();ContextChanged();SaveState();break;case SettingsAction::ReselectRegion:Begin(true,true);break;case SettingsAction::Translate:Begin(false);break;case SettingsAction::FixedTranslate:Begin(true);break;}};
+  cb.action=[this](SettingsAction action){switch(action){case SettingsAction::ClearContext:ContextChanged();break;case SettingsAction::Translate:Begin(false);break;case SettingsAction::FixedTranslate:Begin(true);break;}};
   settingsWindow_.Show(settings_,key_,state_,std::move(cb),visible);if(!recovery_.empty())settingsWindow_.Status(recovery_);
  }
  void TrayMenu(){
