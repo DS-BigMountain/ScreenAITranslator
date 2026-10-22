@@ -1,4 +1,5 @@
 #include "SettingsWindow.h"
+#include "common/Platform.h"
 #include "WinUIRuntime.h"
 #include "Store.h"
 #include "providers/Catalog.h"
@@ -9,6 +10,7 @@
 #include <winrt/Windows.System.h>
 #include <winrt/Microsoft.UI.h>
 #include <winrt/Microsoft.UI.Content.h>
+#include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
@@ -19,6 +21,10 @@
 #include <winrt/Microsoft.UI.Interop.h>
 #include <algorithm>
 #include <cmath>
+#include <shellapi.h>
+#include <propsys.h>
+#include <propkey.h>
+#include <propvarutil.h>
 
 namespace sat {
 namespace xaml=winrt::Microsoft::UI::Xaml;
@@ -46,6 +52,7 @@ struct Secret {
  std::string value;
  ~Secret(){if(!value.empty())SecureZeroMemory(value.data(),value.size());}
 };
+const PROPERTYKEY TaskbarProperties[]{PKEY_AppUserModel_ID,PKEY_AppUserModel_RelaunchIconResource,PKEY_AppUserModel_RelaunchCommand,PKEY_AppUserModel_RelaunchDisplayNameResource};
 }
 struct SettingsWindow::Impl {
  xaml::Hosting::DesktopWindowXamlSource island{nullptr};
@@ -79,18 +86,40 @@ void SettingsWindow::Show(const Settings& s,const std::string& key,const Persist
  WinUIRuntime::EnsureInitialized();
  if(hwnd_){if(visible){ShowWindow(hwnd_,SW_RESTORE);SetForegroundWindow(hwnd_);}return;}
  settings_=s;callbacks_=std::move(cb);page_=std::clamp(state.tab,0,4);apiBusy_=false;
- WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.Settings";wc.lpfnWndProc=Proc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(wc.hInstance,MAKEINTRESOURCEW(101));wc.hIconSm=wc.hIcon;RegisterClassExW(&wc);
+ WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SAT.Settings";wc.lpfnWndProc=Proc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(wc.hInstance,MAKEINTRESOURCEW(101));wc.hIconSm=static_cast<HICON>(LoadImageW(wc.hInstance,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetrics(SM_CXSMICON),GetSystemMetrics(SM_CYSMICON),LR_SHARED));RegisterClassExW(&wc);
  POINT pt{};GetCursorPos(&pt);auto mon=MonitorFromPoint(pt,MONITOR_DEFAULTTOPRIMARY);MONITORINFO mi{sizeof(mi)};GetMonitorInfoW(mon,&mi);
  auto dpi=GetDpiForSystem();int width=std::min(MulDiv(1040,dpi,96),Width(mi.rcWork)),height=std::min(MulDiv(820,dpi,96),Height(mi.rcWork));
  int x=mi.rcWork.left+(Width(mi.rcWork)-width)/2,y=mi.rcWork.top+(Height(mi.rcWork)-height)/2;
  if(state.window){auto r=*state.window;auto savedMon=MonitorFromRect(&r,MONITOR_DEFAULTTONULL);if(savedMon){mi.cbSize=sizeof(mi);GetMonitorInfoW(savedMon,&mi);width=std::min(std::max(width,Width(r)),Width(mi.rcWork));height=std::min(std::max(height,Height(r)),Height(mi.rcWork));x=std::clamp(r.left,mi.rcWork.left,mi.rcWork.right-width);y=std::clamp(r.top,mi.rcWork.top,mi.rcWork.bottom-height);}}
  hwnd_=CreateWindowExW(WS_EX_CONTROLPARENT,wc.lpszClassName,L"屏幕翻译",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,x,y,width,height,nullptr,nullptr,wc.hInstance,this);
  if(!hwnd_)throw AppError("settings","无法创建设置窗口");
- try{Build(key);Layout();if(visible){ShowWindow(hwnd_,SW_SHOW);SetForegroundWindow(hwnd_);}}catch(...){Close();throw;}
+ try{Build(key);UpdateIcons();Layout();if(visible){ShowWindow(hwnd_,SW_SHOW);SetForegroundWindow(hwnd_);}}catch(...){Close();throw;}
+}
+void SettingsWindow::UpdateIcons() {
+ auto dpi=GetDpiForWindow(hwnd_);auto instance=GetModuleHandleW(nullptr);
+ auto large=static_cast<HICON>(LoadImageW(instance,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_SHARED));
+ auto smallIcon=static_cast<HICON>(LoadImageW(instance,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_SHARED));
+ if(!large||!smallIcon)throw AppError("settings","应用图标资源缺失。");
+ std::wstring executable(32768,0);auto length=GetModuleFileNameW(nullptr,executable.data(),static_cast<DWORD>(executable.size()));
+ if(!length||length>=executable.size())throw AppError("settings","无法定位程序路径。");executable.resize(length);
+ auto iconPath=std::filesystem::path(executable).parent_path()/Wide(SAT_APP_ICON_NAME);
+ if(!std::filesystem::is_regular_file(iconPath))throw AppError("settings","任务栏图标文件缺失，请完整解压或重新安装程序。");
+ ComPtr<IPropertyStore> properties;CheckHR(SHGetPropertyStoreForWindow(hwnd_,IID_PPV_ARGS(&properties)),"settings");
+ auto property=[&](const PROPERTYKEY& key,const std::wstring& text){PROPVARIANT value{};CheckHR(InitPropVariantFromString(text.c_str(),&value),"settings");auto result=properties->SetValue(key,value);PropVariantClear(&value);CheckHR(result,"settings");};
+ property(PKEY_AppUserModel_RelaunchIconResource,iconPath.wstring()+L",0");
+ property(PKEY_AppUserModel_RelaunchCommand,L"\""+executable+L"\"");
+ property(PKEY_AppUserModel_RelaunchDisplayNameResource,L"@"+executable+L",-301");
+ property(PKEY_AppUserModel_ID,L"ScreenAITranslator.Desktop");
+ auto appWindow=winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd_));
+ appWindow.SetTaskbarIcon(iconPath.wstring());
+ appWindow.SetTitleBarIcon(winrt::Microsoft::UI::GetIconIdFromIcon(smallIcon));
+ // Set both per-window icon slots after XAML hosting has been initialized.
+ SendMessageW(hwnd_,WM_SETICON,ICON_BIG,reinterpret_cast<LPARAM>(large));
+ SendMessageW(hwnd_,WM_SETICON,ICON_SMALL,reinterpret_cast<LPARAM>(smallIcon));
 }
 void SettingsWindow::Close() {
  if(ui_){ui_->updating=true;if(ui_->root)ui_->Get<PasswordBox>(L"Key").Password(L"");if(ui_->island){ui_->island.Content(nullptr);ui_->island.Close();}ui_.reset();}
- if(hwnd_)DestroyWindow(hwnd_);hwnd_=nullptr;
+ if(hwnd_){ComPtr<IPropertyStore> properties;if(SUCCEEDED(SHGetPropertyStoreForWindow(hwnd_,IID_PPV_ARGS(&properties)))){PROPVARIANT empty{};for(const auto& key:TaskbarProperties)properties->SetValue(key,empty);}DestroyWindow(hwnd_);}hwnd_=nullptr;
 }
 void SettingsWindow::Layout() {
  if(!ui_||!ui_->island)return;RECT r{};GetClientRect(hwnd_,&r);
@@ -141,7 +170,7 @@ void SettingsWindow::Build(const std::string& key) {
  auto button=[&](const wchar_t* name,std::function<void()> action){auto control=ui_->Get<Button>(name);xaml::Automation::AutomationProperties::SetAutomationId(control,name);control.Click([this,action](auto const&,auto const&){try{action();}catch(const AppError& e){Status(Wide(e.what()));}catch(const winrt::hresult_error&){Status(L"界面操作未完成。");}catch(...){Status(L"操作未完成，请检查设置。");}});};
  button(L"Apply",[this]{Save();});button(L"Close",[this]{PostMessageW(hwnd_,WM_CLOSE,0,0);});
  button(L"FetchModels",[this]{StartApi(true);});button(L"TestApi",[this]{StartApi(false);});
- for(auto [name,action]:std::initializer_list<std::pair<const wchar_t*,SettingsAction>>{{L"Translate",SettingsAction::Translate},{L"TranslateFixed",SettingsAction::FixedTranslate},{L"Reselect",SettingsAction::ReselectRegion},{L"ClearRegion",SettingsAction::ClearRegion},{L"ClearContext",SettingsAction::ClearContext}}){button(name,[this,action]{if(callbacks_.action)callbacks_.action(action);if(action==SettingsAction::ClearRegion)Status(L"上次区域已清除。");if(action==SettingsAction::ClearContext)Status(L"上下文已清空。");});}
+ for(auto [name,action]:std::initializer_list<std::pair<const wchar_t*,SettingsAction>>{{L"Translate",SettingsAction::Translate},{L"TranslateFixed",SettingsAction::FixedTranslate},{L"ClearContext",SettingsAction::ClearContext}}){button(name,[this,action]{if(callbacks_.action)callbacks_.action(action);if(action==SettingsAction::ClearContext)Status(L"上下文已清空。");});}
  ui_->Get<TextBox>(L"BaseUrl").RegisterPropertyChangedCallback(TextBox::TextProperty(),[this](auto const&,auto const&){InvalidateModels();});
  ui_->Get<PasswordBox>(L"Key").RegisterPropertyChangedCallback(PasswordBox::PasswordProperty(),[this](auto const&,auto const&){InvalidateModels();});
  for(bool fallback:{false,true})ui_->Get<ComboBox>(fallback?L"FallbackProvider":L"Provider").RegisterPropertyChangedCallback(xaml::Controls::Primitives::Selector::SelectedIndexProperty(),[this,fallback](auto const&,auto const&){
@@ -212,7 +241,7 @@ LRESULT CALLBACK SettingsWindow::Proc(HWND h,UINT m,WPARAM w,LPARAM l) {
  case WM_APP+43:if(self->ui_){auto& ui=*self->ui_;if(ui.root.IsLoaded())ui.island.NavigateFocus(xaml::Hosting::XamlSourceFocusNavigationRequest(static_cast<xaml::Hosting::XamlSourceFocusNavigationReason>(w)));ui.focusPending=false;}return 0;
  case WM_GETMINMAXINFO:{auto info=reinterpret_cast<MINMAXINFO*>(l);auto dpi=GetDpiForWindow(h);info->ptMinTrackSize={MulDiv(860,dpi,96),MulDiv(580,dpi,96)};return 0;}
  case WM_SETFOCUS:if(self->ui_&&self->ui_->root.IsLoaded())self->ui_->island.NavigateFocus(xaml::Hosting::XamlSourceFocusNavigationRequest(xaml::Hosting::XamlSourceFocusNavigationReason::Restore));return 0;
- case WM_DPICHANGED:{auto r=reinterpret_cast<RECT*>(l);SetWindowPos(h,nullptr,r->left,r->top,Width(*r),Height(*r),SWP_NOZORDER|SWP_NOACTIVATE);self->Layout();return 0;}
+ case WM_DPICHANGED:{auto r=reinterpret_cast<RECT*>(l);SetWindowPos(h,nullptr,r->left,r->top,Width(*r),Height(*r),SWP_NOZORDER|SWP_NOACTIVATE);self->UpdateIcons();self->Layout();return 0;}
  case WM_CLOSE:{RECT r{};GetWindowRect(h,&r);if(self->callbacks_.closed)self->callbacks_.closed(r,self->page_);self->Close();return 0;}
  case WM_NCDESTROY:self->hwnd_=nullptr;SetWindowLongPtrW(h,GWLP_USERDATA,0);break;
  }}catch(...){self->Status(L"窗口操作未完成。");}return DefWindowProcW(h,m,w,l);

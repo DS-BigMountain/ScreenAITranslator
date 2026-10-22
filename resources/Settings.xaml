@@ -32,7 +32,7 @@
       <NavigationViewItem Content="显示效果" Icon="Font" Tag="4"/>
     </NavigationView.MenuItems>
     <NavigationView.PaneFooter>
-      <TextBlock Text="1.4.0" Margin="20,16,0,24" Style="{StaticResource Note}"/>
+      <TextBlock Text="V1.4.1" Margin="20,16,0,24" Style="{StaticResource Note}"/>
     </NavigationView.PaneFooter>
     <Grid Padding="32,26,32,20" RowSpacing="20">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -49,16 +49,6 @@
                   <Button x:Name="TranslateFixed" Content="翻译上次区域" MinWidth="136" Height="40"/>
                 </StackPanel>
                 <TextBlock Text="拖动译文框边框可调整位置。拖动期间内容透明，松开后按新位置重新翻译。" Style="{StaticResource Note}"/>
-              </StackPanel>
-            </Border>
-            <Border Style="{StaticResource Card}">
-              <StackPanel Spacing="16">
-                <TextBlock Text="上次区域" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock Text="跟随本次运行中最后一次框选或拖动的位置；退出程序后清空。" Style="{StaticResource Note}"/>
-                <StackPanel Orientation="Horizontal" Spacing="12">
-                  <Button x:Name="Reselect" Content="重新选择区域"/>
-                  <Button x:Name="ClearRegion" Content="清除上次区域"/>
-                </StackPanel>
               </StackPanel>
             </Border>
             <Border Style="{StaticResource Card}">

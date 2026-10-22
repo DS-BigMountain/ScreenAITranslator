@@ -7,7 +7,7 @@ param(
     [switch]$BootstrapInno,
     [switch]$SkipBuild,
     [switch]$SkipTests,
-    [ValidatePattern('^\d+\.\d+\.\d+(?:\.\d+)?$')][string]$ReleaseVersion,
+    [ValidatePattern('^V?\d+\.\d+\.\d+$')][string]$ReleaseVersion,
     [ValidatePattern('^[A-Za-z0-9-]+$')][string]$BuildLabel,
     [string]$InnoCompiler
 )
@@ -29,18 +29,23 @@ if (!$SkipTests) { Invoke-Checked 'ctest' @('--test-dir', $buildRoot, '-C', $Con
 $appBinary = Join-Path $buildRoot "$Configuration/ScreenAITranslator.exe"
 if (!(Test-Path -LiteralPath $appBinary)) { throw "Application binary missing: $appBinary" }
 $appVersion = (Get-Item -LiteralPath $appBinary).VersionInfo.ProductVersion
+$iconSource = Join-Path $projectRoot 'resources/app.ico'
+$iconHash = (Get-FileHash -LiteralPath $iconSource -Algorithm SHA256).Hash.ToLowerInvariant()
+$iconName = "ScreenAITranslator-icon-$($iconHash.Substring(0,16)).ico"
+$builtIcon = Join-Path (Split-Path -Parent $appBinary) $iconName
+if (!(Test-Path -LiteralPath $builtIcon) -or (Get-FileHash -LiteralPath $builtIcon -Algorithm SHA256).Hash.ToLowerInvariant() -ne $iconHash) { throw 'Built taskbar icon is missing or differs from source. Rebuild before packaging.' }
 if ($appVersion -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') { throw 'Application version is missing or invalid.' }
 $suffix = if ($Preview) { '-WinUI3-preview' } else { '' }
 if ($BuildLabel) { $suffix += "-$BuildLabel" }
-if ($ReleaseVersion -and $ReleaseVersion -ne $appVersion) { throw 'Requested release version does not match the application binary. Version numbers are not changed automatically.' }
+if ($ReleaseVersion -and $ReleaseVersion.TrimStart('V') -ne $appVersion) { throw 'Requested release version does not match the application binary. Version numbers are not changed automatically.' }
 $distributionRoot = Join-Path $projectRoot '__release_packages__/临时'
-if ($ReleaseVersion) { $distributionRoot = Join-Path $projectRoot "__release_packages__/$ReleaseVersion" }
+if ($ReleaseVersion) { $distributionRoot = Join-Path $projectRoot "__release_packages__/V$($ReleaseVersion.TrimStart('V'))" }
 else {
     $buildTime = [TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('China Standard Time')).ToString('yyyyMMdd-HHmmss-fff')
     $distributionRoot = Join-Path $distributionRoot $buildTime
 }
-$portableZipPath = Join-Path $distributionRoot "ScreenAITranslator-$appVersion$suffix-portable.zip"
-$setupName = "ScreenAITranslator-Setup-$appVersion$suffix"
+$portableZipPath = Join-Path $distributionRoot "ScreenAITranslator-V$appVersion$suffix-portable.zip"
+$setupName = "ScreenAITranslator-Setup-V$appVersion$suffix"
 $setupPath = Join-Path $distributionRoot "$setupName.exe"
 $plannedOutputs = @($portableZipPath)
 if ($Package) { $plannedOutputs += $setupPath }
@@ -58,6 +63,7 @@ if (Test-Path -LiteralPath $stageRoot) {
 New-Item -ItemType Directory -Force -Path $stageRoot, $distributionRoot, (Join-Path $stageRoot 'licenses') | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'ocr-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
 Copy-Item -LiteralPath $appBinary -Destination (Join-Path $stageRoot 'ScreenAITranslator.exe')
+Copy-Item -LiteralPath $builtIcon -Destination (Join-Path $stageRoot $iconName)
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'winui-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party/nlohmann/LICENSE.MIT') -Destination (Join-Path $stageRoot 'licenses/nlohmann-json-LICENSE.txt')
 foreach ($name in @('Foundation.1.8.260803002', 'InteractiveExperiences.1.8.260708001', 'WinUI.1.8.260803003')) {
@@ -101,7 +107,7 @@ if ($Package) {
         elseif ($BootstrapInno) { $InnoCompiler = & (Join-Path $PSScriptRoot 'Get-InnoSetup.ps1') }
         else { throw 'Inno Setup compiler not found. Use -BootstrapInno or -InnoCompiler <absolute ISCC.exe path>.' }
     }
-    Invoke-Checked $InnoCompiler @('/Qp', "/DAppVersion=$appVersion", "/DAppStage=$stageRoot", "/DPackageOutput=$distributionRoot", "/DPackageName=$setupName", (Join-Path $projectRoot 'installer/setup.iss'))
+    Invoke-Checked $InnoCompiler @('/Qp', "/DAppVersion=$appVersion", "/DAppStage=$stageRoot", "/DAppIconName=$iconName", "/DPackageOutput=$distributionRoot", "/DPackageName=$setupName", (Join-Path $projectRoot 'installer/setup.iss'))
     if (!(Test-Path -LiteralPath $setupPath)) { throw 'Installer compiler did not produce the expected setup EXE.' }
     $signature = Get-AuthenticodeSignature -LiteralPath $setupPath
     if ($signature.Status -notin @('Valid', 'NotSigned')) { throw "Installer signature verification failed: $($signature.Status)" }

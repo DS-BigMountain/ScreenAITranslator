@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenAITranslator VERSION 1.4.0 LANGUAGES CXX RC)
+project(ScreenAITranslator VERSION 1.4.1 LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -29,7 +29,8 @@ target_link_libraries(sat_core PUBLIC d3d11 dxgi windowscodecs ole32 oleaut32 ru
 add_library(sat_ui
  src/selection/Selection.cpp src/overlay/SpatialLayout.cpp
  src/overlay/Overlay.cpp src/overlay/OverlayToolbar.cpp src/settings/SettingsWindow.cpp src/settings/WinUIRuntime.cpp)
-target_link_libraries(sat_ui PUBLIC sat_core sat_winui comctl32 d2d1 dwrite dwmapi comdlg32 msimg32)
+target_link_libraries(sat_ui PUBLIC sat_core sat_winui comctl32 d2d1 dwrite dwmapi comdlg32 msimg32 propsys)
+target_compile_definitions(sat_ui PRIVATE SAT_APP_ICON_NAME="${SAT_APP_ICON_NAME}")
 add_executable(ScreenAITranslator WIN32
  src/app/App.cpp
  resources/app.rc)
@@ -128,6 +129,7 @@ if(SAT_INTERACTIVE_TESTS)
 endif()
 set_tests_properties(CoreTests ProviderTests PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
 install(TARGETS ScreenAITranslator RUNTIME DESTINATION .)
+install(FILES resources/app.ico DESTINATION . RENAME "${SAT_APP_ICON_NAME}")
 install(DIRECTORY "${SAT_RUNTIME}/" DESTINATION .)
 
 configure_file(tests/fixtures/installer-en.png test-fixtures/installer-en.png COPYONLY)

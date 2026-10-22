@@ -2,6 +2,10 @@ set(SAT_PACKAGES "${CMAKE_BINARY_DIR}/_deps/packages")
 set(SAT_FOUNDATION "${SAT_PACKAGES}/Microsoft.WindowsAppSDK.Foundation.1.8.260803002")
 set(SAT_INTERACTIVE "${SAT_PACKAGES}/Microsoft.WindowsAppSDK.InteractiveExperiences.1.8.260708001")
 set(SAT_WINUI "${SAT_PACKAGES}/Microsoft.WindowsAppSDK.WinUI.1.8.260803003")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/resources/app.ico")
+file(SHA256 "${CMAKE_SOURCE_DIR}/resources/app.ico" SAT_APP_ICON_HASH)
+string(SUBSTRING "${SAT_APP_ICON_HASH}" 0 16 SAT_APP_ICON_HASH)
+set(SAT_APP_ICON_NAME "ScreenAITranslator-icon-${SAT_APP_ICON_HASH}.ico")
 if(NOT EXISTS "${CMAKE_BINARY_DIR}/_deps/winui-projection/complete.stamp" OR NOT EXISTS "${CMAKE_BINARY_DIR}/_deps/winui-app.manifest")
   message(FATAL_ERROR "Run powershell -File scripts/Get-WinUI.ps1 before configuring.")
 endif()
@@ -28,5 +32,6 @@ function(sat_deploy_winui target)
   target_compile_definitions(${target} PRIVATE SAT_WINUI_MANIFEST="${CMAKE_BINARY_DIR}/_deps/winui-app.manifest")
   add_custom_command(TARGET ${target} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${SAT_RUNTIME}" "$<TARGET_FILE_DIR:${target}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/resources/app.ico" "$<TARGET_FILE_DIR:${target}>/${SAT_APP_ICON_NAME}"
     VERBATIM)
 endfunction()

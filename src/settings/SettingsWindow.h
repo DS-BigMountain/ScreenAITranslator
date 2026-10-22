@@ -2,7 +2,7 @@
 #include "common/Types.h"
 namespace winrt::Microsoft::UI::Xaml { struct FrameworkElement; }
 namespace sat {
-enum class SettingsAction { ClearContext, ReselectRegion, ClearRegion, Translate, FixedTranslate };
+enum class SettingsAction { ClearContext, Translate, FixedTranslate };
 struct SettingsCallbacks {
  std::function<std::wstring(const Settings&,const std::string&)> apply;
  std::function<void(SettingsAction)> action;
@@ -19,6 +19,7 @@ class SettingsWindow {
  bool apiBusy_{};
  static LRESULT CALLBACK Proc(HWND,UINT,WPARAM,LPARAM);
  void Build(const std::string& key);
+ void UpdateIcons();
  void Layout();
  void Save();
  void StartApi(bool fetch);
