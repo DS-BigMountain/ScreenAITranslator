@@ -26,6 +26,7 @@ bool Overlaps(RECT a, RECT b) {
 }
 struct PixelText {
     std::optional<COLORREF> color;
+    std::optional<COLORREF> background;
     std::vector<RECT> lines;
     float lineHeight{};
 };
@@ -45,11 +46,39 @@ PixelText InspectTextPixels(const Image& image, RECT box) {
             ++sampled;
         }
     auto mode = std::max_element(histogram.begin(), histogram.end());
-    if (!sampled || *mode < sampled * .45)
+    if (!sampled)
         return result;
     int background = int(mode - histogram.begin());
     int br = ((background >> 8) & 15) * 16 + 8, bg = ((background >> 4) & 15) * 16 + 8,
         bb = (background & 15) * 16 + 8;
+    // Preserve the actual surface color, including white (255) and colored message bubbles.
+    // The exterior ring can cross a bubble edge or include neighboring text.
+    // Compression and gradients can split one surface across adjacent histogram bins.
+    std::array<std::array<size_t, 256>, 3> backgroundChannels{};
+    size_t backgroundCount = 0;
+    for (int y = box.top; y < box.bottom; y += step)
+        for (int x = box.left; x < box.right; x += step) {
+            const auto* p = &image.bgra[(size_t(y) * image.width + x) * 4];
+            if (std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb) < 48) {
+                for (int c = 0; c < 3; ++c)
+                    ++backgroundChannels[c][p[c]];
+                ++backgroundCount;
+            }
+        }
+    if (backgroundCount < sampled * .55)
+        return result;
+    std::array<int, 3> backgroundMedian{};
+    for (int c = 0; c < 3; ++c) {
+        size_t accumulated = 0;
+        for (int value = 0; value < 256; ++value) {
+            accumulated += backgroundChannels[c][value];
+            if (accumulated >= (backgroundCount + 1) / 2) {
+                backgroundMedian[c] = value;
+                break;
+            }
+        }
+    }
+    result.background = RGB(backgroundMedian[2], backgroundMedian[1], backgroundMedian[0]);
     std::array<size_t, 4096> counts{}, rs{}, gs{}, bs{};
     size_t foreground = 0;
     std::vector<RECT> rows;
@@ -185,6 +214,7 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
             "layout");
     std::vector<PositionedText> output(result.segments.size());
     std::vector<float> lineHeights(result.segments.size());
+    std::vector<std::optional<COLORREF>> surfaceColors(result.segments.size());
     const RECT bounds{0, 0, image.width, image.height};
     const float scale = dpi / 96.f;
     std::vector<RECT> protectedRegions = result.protectedRegions;
@@ -225,6 +255,7 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
         }
         if (settings.matchTextColor)
             output[i].sourceColor = pixels.color;
+        surfaceColors[i] = pixels.background;
         output[i].sourceRect = clipped;
         protectedRegions.push_back(clipped);
     }
@@ -241,7 +272,8 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
             if (segment.sourcePixels && i != j && Overlaps(source, output[j].sourceRect))
                 item.suppressed = true;
         auto bg = AnalyzeBackground(image, source);
-        item.background = bg.simple ? bg.color : (bg.luminance > 128 ? RGB(247, 249, 252) : RGB(24, 30, 42));
+        item.background = surfaceColors[i].value_or(
+            bg.simple ? bg.color : (bg.luminance > 128 ? RGB(247, 249, 252) : RGB(24, 30, 42)));
         const int pad = std::max(1, int(std::ceil(2 * scale)));
         const float detectedHeight = lineHeights[i];
         const int margin = detectedHeight > 0 ? pad + int(std::ceil(detectedHeight * .18f)) : pad;
@@ -399,12 +431,13 @@ void DrawPositioned(ID2D1RenderTarget* target, const std::vector<PositionedText>
         brush->SetColor(color(item.background));
         target->FillRectangle(box, brush.Get());
         const float pad = item.padding;
-        brush->SetColor(color(item.sourceColor.value_or(ReadableTextColor(textColor, item.background))));
+        brush->SetColor(color(ReadableTextColor(item.sourceColor.value_or(textColor), item.background)));
         target->PushAxisAlignedClip(
             D2D1::RectF(box.left + pad, box.top + pad, box.right - pad, box.bottom - pad),
             D2D1_ANTIALIAS_MODE_ALIASED);
-        target->DrawTextLayout(D2D1::Point2F(box.left + pad, box.top + pad - item.scroll), item.layout.Get(),
-                               brush.Get());
+        const float offset = std::max(0.f, (box.bottom - box.top - 2 * pad - item.contentHeight) / 2);
+        target->DrawTextLayout(D2D1::Point2F(box.left + pad, box.top + pad + offset - item.scroll),
+                               item.layout.Get(), brush.Get());
         target->PopAxisAlignedClip();
         if (item.overflow) {
             brush->SetColor(color(RGB(67, 100, 235)));
