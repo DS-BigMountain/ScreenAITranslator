@@ -1,0 +1,211 @@
+{
+  "duration_ms": 2007,
+  "height": 1016,
+  "mode": 0,
+  "request_count": 1,
+  "segments": [
+    {
+      "bbox": {
+        "height": 0,
+        "width": 0,
+        "x": 0,
+        "y": 0
+      },
+      "original_text": "データ更新",
+      "position_unavailable": false,
+      "source_line_height": 90.0,
+      "source_lines": [
+        [
+          628,
+          58,
+          982,
+          148
+        ]
+      ],
+      "source_pixels": [
+        628,
+        58,
+        982,
+        148
+      ],
+      "translated_text": "数据更新",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 0,
+        "width": 0,
+        "x": 0,
+        "y": 0
+      },
+      "original_text": "ゲームデータの更新を行います。\n【ダウンロードサイズ:247.04MB】\nWi-Fi接続での更新を推奨します。",
+      "position_unavailable": false,
+      "source_line_height": 86.0,
+      "source_lines": [
+        [
+          302,
+          297,
+          1272,
+          383
+        ],
+        [
+          236,
+          432,
+          1373,
+          520
+        ],
+        [
+          241,
+          571,
+          1336,
+          654
+        ]
+      ],
+      "source_pixels": [
+        236,
+        297,
+        1373,
+        654
+      ],
+      "translated_text": "将进行游戏数据更新。\n【下载大小:247.04MB】\n建议在Wi-Fi连接下进行更新。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 0,
+        "width": 0,
+        "x": 0,
+        "y": 0
+      },
+      "original_text": "キャンセル",
+      "position_unavailable": false,
+      "source_line_height": 85.0,
+      "source_lines": [
+        [
+          268,
+          840,
+          618,
+          925
+        ]
+      ],
+      "source_pixels": [
+        268,
+        840,
+        618,
+        925
+      ],
+      "translated_text": "取消",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 0,
+        "width": 0,
+        "x": 0,
+        "y": 0
+      },
+      "original_text": "データ更新開始",
+      "position_unavailable": false,
+      "source_line_height": 77.0,
+      "source_lines": [
+        [
+          950,
+          841,
+          1371,
+          918
+        ]
+      ],
+      "source_pixels": [
+        950,
+        841,
+        1371,
+        918
+      ],
+      "translated_text": "开始数据更新",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 0,
+        "width": 0,
+        "x": 0,
+        "y": 0
+      },
+      "original_text": "confi rm ati o",
+      "position_unavailable": false,
+      "source_line_height": 25.0,
+      "source_lines": [
+        [
+          615,
+          945,
+          962,
+          970
+        ]
+      ],
+      "source_pixels": [
+        615,
+        945,
+        962,
+        970
+      ],
+      "translated_text": "确认",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 0,
+        "width": 0,
+        "x": 0,
+        "y": 0
+      },
+      "original_text": "n",
+      "position_unavailable": false,
+      "source_line_height": 21.0,
+      "source_lines": [
+        [
+          966,
+          948,
+          992,
+          969
+        ]
+      ],
+      "source_pixels": [
+        966,
+        948,
+        992,
+        969
+      ],
+      "translated_text": "n",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 0,
+        "width": 0,
+        "x": 0,
+        "y": 0
+      },
+      "original_text": "D",
+      "position_unavailable": false,
+      "source_line_height": 10.0,
+      "source_lines": [
+        [
+          856,
+          977,
+          867,
+          987
+        ]
+      ],
+      "source_pixels": [
+        856,
+        977,
+        867,
+        987
+      ],
+      "translated_text": "D",
+      "untranslated": false
+    }
+  ],
+  "source_language": "ja",
+  "width": 1636
+}

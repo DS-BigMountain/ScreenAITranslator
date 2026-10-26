@@ -1,0 +1,24 @@
+{
+  "duration_ms": 1216,
+  "height": 174,
+  "mode": 1,
+  "request_count": 1,
+  "segments": [
+    {
+      "bbox": {
+        "height": 576,
+        "width": 761,
+        "x": 45,
+        "y": 229
+      },
+      "original_text": "DioException [unknown]: null Error\n: HandshakeException: Connection\nterminated during handshake",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "DioException [unknown]：null 错误\n：HandshakeException：握手期间连接\n终止",
+      "untranslated": false
+    }
+  ],
+  "source_language": "English",
+  "width": 658
+}

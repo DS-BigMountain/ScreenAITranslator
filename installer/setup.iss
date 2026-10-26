@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.4.1"
+  #define AppVersion "1.5.0"
 #endif
 #ifndef AppStage
   #define AppStage "..\build\package-stage\Release"
