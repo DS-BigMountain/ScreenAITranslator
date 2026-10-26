@@ -1,4 +1,4 @@
-// All settings windows remain hidden. No desktop capture or live API requests.
+// Settings windows remain hidden or outside all monitors. No desktop capture or live API requests.
 #include "../src/app/App.cpp"
 #include "capture/BundledOcr.h"
 #include <wincodec.h>
@@ -29,6 +29,33 @@ Json Read(const std::filesystem::path& path) {
     std::ifstream stream(path);
     return Json::parse(stream);
 }
+class OffscreenSettings {
+    HHOOK hook_{};
+    static LRESULT CALLBACK Hook(int code, WPARAM w, LPARAM l) {
+        wchar_t name[64]{};
+        if (code >= 0)
+            GetClassNameW(reinterpret_cast<HWND>(w), name, 64);
+        if (std::wstring_view(name) == L"SAT.Settings") {
+            if (code == HCBT_CREATEWND) {
+                auto create = reinterpret_cast<CBT_CREATEWNDW*>(l);
+                create->lpcs->x = -32000;
+                create->lpcs->y = -32000;
+                create->lpcs->dwExStyle |= WS_EX_NOACTIVATE;
+            } else if (code == HCBT_ACTIVATE)
+                return 1;
+        }
+        return CallNextHookEx(nullptr, code, w, l);
+    }
+
+public:
+    OffscreenSettings() {
+        hook_ = SetWindowsHookExW(WH_CBT, Hook, nullptr, GetCurrentThreadId());
+        Check(hook_ != nullptr, "Cannot keep settings wake test outside the desktop");
+    }
+    ~OffscreenSettings() {
+        UnhookWindowsHookEx(hook_);
+    }
+};
 sat::Image ReadUserScreenshot() {
     using namespace sat;
     ComPtr<IWICImagingFactory> f;
@@ -55,6 +82,32 @@ sat::Image ReadUserScreenshot() {
 namespace sat {
 class AppIdleTest {
 public:
+    static void CheckFirstOpen(App& app, int phase) {
+        STARTUPINFOW startup{sizeof(startup)};
+        GetStartupInfoW(&startup);
+        Check((startup.dwFlags & STARTF_USESHOWWINDOW) && startup.wShowWindow == SW_HIDE,
+              "Settings wake regression requires a process started with SW_HIDE");
+        OffscreenSettings offscreen;
+        if (phase == 0) {
+            COPYDATASTRUCT request{};
+            SendMessageW(app.window_, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&request));
+        } else if (phase == 1)
+            SendMessageW(app.window_, TrayMessage, 0, WM_LBUTTONDBLCLK);
+        else
+            app.Action(OpenSettings);
+        const auto settings = app.settingsWindow_.Window();
+        Check(settings && IsWindowVisible(settings),
+              "First settings request after idle replacement left the window hidden");
+        RECT bounds{};
+        GetWindowRect(settings, &bounds);
+        for (const auto& monitor : EnumerateMonitors()) {
+            RECT overlap{};
+            Check(!IntersectRect(&overlap, &bounds, &monitor.rect),
+                  "Settings wake test entered a user monitor");
+        }
+        SendMessageW(settings, WM_CLOSE, 0, 0);
+        Check(!app.settingsWindow_.Window(), "Settings wake test did not close");
+    }
     static int Run(int phase, const std::filesystem::path& root, HANDLE instance, std::string resume) {
         WinUIRuntime runtime(true);
         Json report = {{"phase", phase}, {"initial", Memory()}};
@@ -103,7 +156,13 @@ public:
                           "Clean background private memory exceeds 24 MiB");
                     Check(report["background"]["working_set"].get<size_t>() < 40 * 1024 * 1024,
                           "Clean background working set exceeds 40 MiB");
+                    step("first-open-after-idle");
+                    CheckFirstOpen(app, phase);
+                    report["first_open"] = phase == 1 ? "tray_double_click" : "settings_menu";
                 } else {
+                    step("first-open-after-background-start");
+                    CheckFirstOpen(app, phase);
+                    report["first_open"] = "relaunch";
                     app.sessionRegion_ = FixedRegion{L"test-monitor", .1, .2, .3, .4, 1920, 1080};
                     app.context_.Restore({{"user screenshot text", "用户截图译文"}},
                                          GetTickCount64() + 20 * 60 * 1000);
@@ -269,8 +328,8 @@ int wmain(int argc, wchar_t** argv) {
         Check(std::filesystem::exists(root / L"phase-2.json"), "Resumed process failed or timed out");
         for (int phaseIndex = 0; phaseIndex < 3; ++phaseIndex)
             std::cout << Read(root / (L"phase-" + std::to_wstring(phaseIndex) + L".json")).dump() << "\n";
-        std::cout << "IdleLifecycleTests: PASS (hidden settings, real screenshot OCR, two handoffs, hotkeys, "
-                     "session, memory, failed launch)\n";
+        std::cout << "IdleLifecycleTests: PASS (offscreen first settings requests via relaunch, tray and "
+                     "menu, real screenshot OCR, two handoffs, hotkeys, session, memory, failed launch)\n";
         return 0;
     } catch (const std::exception& e) {
         if (instance)

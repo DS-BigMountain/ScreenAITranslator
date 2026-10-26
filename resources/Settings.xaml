@@ -32,7 +32,7 @@
       <NavigationViewItem Content="显示效果" Icon="Font" Tag="4"/>
     </NavigationView.MenuItems>
     <NavigationView.PaneFooter>
-      <TextBlock Text="V1.5.1" Margin="20,16,0,24" Style="{StaticResource Note}"/>
+      <TextBlock Text="V1.5.2" Margin="20,16,0,24" Style="{StaticResource Note}"/>
     </NavigationView.PaneFooter>
     <Grid Padding="32,26,32,20" RowSpacing="20">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>

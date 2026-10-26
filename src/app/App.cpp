@@ -284,16 +284,19 @@ class App {
         progress_.Close();
         SetStage(Stage::Idle);
     }
-    void StartProgress(unsigned long long id) {
+    void StartProgress(unsigned long long id, const Image& screenshot) {
         if (id != generation_)
             return;
-        if (!progress_.Count())
-            progress_.Progress(anchor_, currentMonitor_, [this, id] {
+        if (!progress_.Count()) {
+            RECT local = anchor_;
+            OffsetRect(&local, -currentMonitor_.rect.left, -currentMonitor_.rect.top);
+            progress_.Progress(anchor_, currentMonitor_, Crop(screenshot, local), [this, id] {
                 Post([this, id] {
                     if (id == generation_)
                         Cancel();
                 });
             });
+        }
         SetStage(Stage::Preprocessing);
     }
     void CloseOverlay() {
@@ -387,7 +390,7 @@ class App {
                             if (chosen) {
                                 anchor_ = *chosen;
                                 try {
-                                    StartProgress(id);
+                                    StartProgress(id, *image);
                                 } catch (const AppError& e) {
                                     Error(e);
                                     return;
@@ -449,7 +452,7 @@ class App {
                    RECT region, const Settings& options, const std::vector<ContextItem>& history,
                    const std::string& key, std::stop_token stop) {
         DiagnosticContext context(id);
-        Post([this, id] { StartProgress(id); });
+        Post([this, id, screenshot] { StartProgress(id, *screenshot); });
         RECT local = region;
         OffsetRect(&local, -monitor.rect.left, -monitor.rect.top);
         auto cropped = Crop(*screenshot, local);
