@@ -72,7 +72,7 @@ public:
     void Show(const std::vector<OverlayBlock>&, const Settings&, UINT dpi, std::function<void()> dismissed,
               std::function<void()> reselect = {}, std::function<void(RECT)> moved = {});
     void Notice(const std::wstring& text, RECT anchor, const Monitor&, std::function<void()> dismissed);
-    void Progress(RECT region, const Monitor&, std::function<void()> dismissed);
+    void Progress(RECT region, const Monitor&, Image frozen, std::function<void()> dismissed);
     void Close();
     void SetWarning(const std::wstring& text);
     void ShowFullReading() {

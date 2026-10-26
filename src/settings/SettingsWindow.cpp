@@ -67,6 +67,14 @@ std::wstring HotkeyLabel(Hotkey key) {
 const PROPERTYKEY TaskbarProperties[]{PKEY_AppUserModel_ID, PKEY_AppUserModel_RelaunchIconResource,
                                       PKEY_AppUserModel_RelaunchCommand,
                                       PKEY_AppUserModel_RelaunchDisplayNameResource};
+void ShowForUser(HWND window, int command) {
+    ShowWindow(window, command);
+    // A background launch's STARTF_USESHOWWINDOW/SW_HIDE can override the first ShowWindow.
+    // An explicit settings request must still reveal the window on that same request.
+    SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    SetForegroundWindow(window);
+}
 } // namespace
 struct SettingsWindow::Impl {
     xaml::Hosting::DesktopWindowXamlSource island{nullptr};
@@ -130,8 +138,7 @@ void SettingsWindow::Show(const Settings& s, const std::string& key, const Persi
     WinUIRuntime::EnsureInitialized();
     if (hwnd_) {
         if (visible) {
-            ShowWindow(hwnd_, SW_RESTORE);
-            SetForegroundWindow(hwnd_);
+            ShowForUser(hwnd_, SW_RESTORE);
         }
         return;
     }
@@ -181,8 +188,7 @@ void SettingsWindow::Show(const Settings& s, const std::string& key, const Persi
         UpdateIcons();
         Layout();
         if (visible) {
-            ShowWindow(hwnd_, SW_SHOW);
-            SetForegroundWindow(hwnd_);
+            ShowForUser(hwnd_, SW_SHOW);
         }
     } catch (...) {
         Close();

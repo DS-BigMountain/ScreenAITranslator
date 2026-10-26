@@ -314,8 +314,20 @@ void Overlay::Render(WindowData& window) {
         CheckHR(rt->CreateSolidColorBrush(ColorF(settings.outlineColor), &edge), "overlay");
         rt->BeginDraw();
         rt->Clear(D2D1::ColorF(0, 0.f));
+        auto drawSource = [&] {
+            const auto& image = *block.image;
+            ComPtr<ID2D1Bitmap> bitmap;
+            auto bitmapProps = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+            CheckHR(rt->CreateBitmap(D2D1::SizeU(image.width, image.height), image.bgra.data(),
+                                     image.width * 4, bitmapProps, &bitmap),
+                    "overlay");
+            rt->DrawBitmap(bitmap.Get(), D2D1::RectF(0, 0, float(w), float(h)));
+        };
         if (window.dragPreview) {
-            // Leave every interior pixel transparent so the live desktop stays visible.
+            // Processing retains the selected frame; moving a result keeps the desktop visible.
+            if (window.progressFrame && block.image)
+                drawSource();
             edge->SetColor(ColorF(window.progressFrame ? RGB(72, 180, 255) : RGB(88, 119, 235)));
             const float stroke = std::min(std::max(1.f, 2 * dpi / 96.f), float(std::min(w, h)) / 2);
             rt->DrawRectangle(D2D1::RectF(stroke / 2, stroke / 2, w - stroke / 2, h - stroke / 2), edge.Get(),
@@ -325,14 +337,7 @@ void Overlay::Render(WindowData& window) {
             rt->FillRectangle(D2D1::RectF(0, 0, static_cast<float>(w), static_cast<float>(h)),
                               background.Get());
             if (block.image && window.mode != 2) {
-                const auto& image = *block.image;
-                ComPtr<ID2D1Bitmap> bitmap;
-                auto bitmapProps = D2D1::BitmapProperties(
-                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
-                CheckHR(rt->CreateBitmap(D2D1::SizeU(image.width, image.height), image.bgra.data(),
-                                         image.width * 4, bitmapProps, &bitmap),
-                        "overlay");
-                rt->DrawBitmap(bitmap.Get(), D2D1::RectF(0, 0, float(w), float(h)));
+                drawSource();
                 if (window.mode == 0)
                     DrawPositioned(rt.Get(), block.positioned, settings.textColor);
                 edge->SetColor(ColorF(RGB(88, 119, 235)));
@@ -478,9 +483,9 @@ void Overlay::Notice(const std::wstring& text, RECT anchor, const Monitor& m,
     auto blocks = BuildOverlay(r, image, roi, m, s, false);
     Show(blocks, s, m.dpi, std::move(dismissed));
 }
-void Overlay::Progress(RECT region, const Monitor& monitor, std::function<void()> dismissed) {
-    // Keep the full selection outline while the notice occupies a separate strip.
-    // The transparent interior leaves the original desktop readable during OCR.
+void Overlay::Progress(RECT region, const Monitor& monitor, Image frozen,
+                       std::function<void()> dismissed) {
+    // Retain the exact translation input while the notice occupies a separate strip.
     RECT anchor = region;
     const int noticeHeight = 70;
     if (region.bottom + noticeHeight <= monitor.rect.bottom)
@@ -502,6 +507,7 @@ void Overlay::Progress(RECT region, const Monitor& monitor, std::function<void()
         data->dragPreview = true;
         data->progressFrame = true;
         data->block.screen = region;
+        data->block.image = std::make_shared<Image>(std::move(frozen));
         auto ptr = data.get();
         windows_.push_back(std::move(data));
         ptr->hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |

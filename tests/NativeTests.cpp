@@ -469,7 +469,7 @@ public:
         UpdateWindow(window_);
     }
 };
-bool InteriorShowsBackdrop(HWND window) {
+bool InteriorShowsBackdrop(HWND window, COLORREF reference = CLR_INVALID) {
     auto r = Bounds(window);
     int width = sat::Width(r), height = sat::Height(r);
     DwmFlush();
@@ -496,7 +496,7 @@ bool InteriorShowsBackdrop(HWND window) {
     bool copied = BitBlt(dc, 0, 0, width, height, screen, r.left, r.top, SRCCOPY | CAPTUREBLT) != FALSE;
     GdiFlush();
     // 屏幕捕获可能包含 HDR 或系统颜色变换；采用同一帧中框外的背景像素作为参照。
-    auto color = GetPixel(screen, r.left - 8, r.top + 20);
+    auto color = reference == CLR_INVALID ? GetPixel(screen, r.left - 8, r.top + 20) : reference;
     Require(color != CLR_INVALID, "backdrop reference pixel unavailable");
     bool clear = true, border = false;
     auto bytes = static_cast<const unsigned char*>(pixels);
@@ -718,15 +718,24 @@ void TestProgress() {
     for (UINT dpi : {96u, 144u, 192u}) {
         monitor.dpi = dpi;
         backdrop.Color(RGB(31, 97, 149));
-        progress.Progress(roi, monitor, [&] { ++dismissed; });
+        DwmFlush();
+        RECT local = roi;
+        OffsetRect(&local, -monitor.rect.left, -monitor.rect.top);
+        auto frozen = sat::Crop(sat::CaptureMonitor(monitor, {}), local);
+        progress.Progress(roi, monitor, std::move(frozen), [&] { ++dismissed; });
         auto frame = Windows(L"SAT.ProgressFrame").front();
         auto notice = Windows(L"SAT.Overlay").front();
         Require(IsWindowVisible(frame) && IsWindowVisible(notice),
                 "processing UI is not immediately visible");
         RequireBounds(frame, roi, "processing border changed selection geometry");
         Require(InteriorShowsBackdrop(frame), "processing frame obscures source pixels");
+        HDC screen = GetDC(nullptr);
+        auto sourceColor = GetPixel(screen, roi.left + 20, roi.top + 20);
+        ReleaseDC(nullptr, screen);
+        Require(sourceColor != CLR_INVALID, "frozen source pixel unavailable");
         backdrop.Color(RGB(91, 143, 67));
-        Require(InteriorShowsBackdrop(frame), "processing frame freezes the desktop");
+        Require(!InteriorShowsBackdrop(frame), "processing frame exposes the changed desktop");
+        Require(InteriorShowsBackdrop(frame, sourceColor), "processing frame lost the frozen source");
         auto noticeBounds = Bounds(notice);
         RECT overlap{};
         Require(!IntersectRect(&overlap, &noticeBounds, &roi),
