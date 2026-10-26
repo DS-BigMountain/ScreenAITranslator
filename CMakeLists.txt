@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenAITranslator VERSION 1.4.1 LANGUAGES CXX RC)
+project(ScreenAITranslator VERSION 1.5.0 LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -15,18 +15,24 @@ endif()
 add_library(sat_core
  src/app/IdleRestart.cpp
  src/common/Platform.cpp
+ src/common/Diagnostics.cpp
  src/capture/Capture.cpp
  src/capture/TextDetection.cpp
  src/capture/BundledOcr.cpp
  src/providers/Provider.cpp
+ src/providers/RequestParameters.cpp
+ src/providers/VisionResponse.cpp
+ src/providers/TranslationQuality.cpp
  src/providers/Catalog.cpp
  src/settings/Store.cpp)
 target_include_directories(sat_core PUBLIC src third_party)
+target_compile_definitions(sat_core PRIVATE SAT_VERSION="V${PROJECT_VERSION}")
 target_include_directories(sat_core SYSTEM PRIVATE "${SAT_ORT_INCLUDE}")
 target_include_directories(sat_core PRIVATE "${CMAKE_BINARY_DIR}/_deps/winui-projection")
 target_link_libraries(sat_core PUBLIC windowsapp)
 target_link_libraries(sat_core PUBLIC d3d11 dxgi windowscodecs ole32 oleaut32 runtimeobject crypt32 winhttp shcore shell32 advapi32 user32 gdi32)
 add_library(sat_ui
+ src/app/TranslationPipeline.cpp
  src/selection/Selection.cpp src/overlay/SpatialLayout.cpp
  src/overlay/Overlay.cpp src/overlay/OverlayToolbar.cpp src/settings/SettingsWindow.cpp src/settings/WinUIRuntime.cpp)
 target_link_libraries(sat_ui PUBLIC sat_core sat_winui comctl32 d2d1 dwrite dwmapi comdlg32 msimg32 propsys)
@@ -45,6 +51,17 @@ add_test(NAME CoreTests COMMAND CoreTests)
 add_executable(ProviderTests tests/ProviderTests.cpp)
 target_link_libraries(ProviderTests PRIVATE sat_core ws2_32)
 add_test(NAME ProviderTests COMMAND ProviderTests)
+add_executable(DiagnosticsTests tests/DiagnosticsTests.cpp)
+target_link_libraries(DiagnosticsTests PRIVATE sat_core)
+add_test(NAME DiagnosticsTests COMMAND DiagnosticsTests)
+add_executable(SettingsPersistenceTests tests/SettingsPersistenceTests.cpp tests/StoreTests.cpp)
+target_link_libraries(SettingsPersistenceTests PRIVATE sat_core)
+add_test(NAME SettingsPersistenceTests COMMAND SettingsPersistenceTests)
+add_executable(PipelineDiagnosticsTests tests/PipelineDiagnosticsTests.cpp)
+target_link_libraries(PipelineDiagnosticsTests PRIVATE sat_ui)
+sat_deploy_ocr(PipelineDiagnosticsTests)
+add_test(NAME PipelineDiagnosticsTests COMMAND PipelineDiagnosticsTests)
+set_tests_properties(PipelineDiagnosticsTests PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 add_executable(LiveApiDiagnostic tests/LiveApiDiagnostic.cpp)
 target_link_libraries(LiveApiDiagnostic PRIVATE sat_core)
 add_executable(TranslationBenchmark tests/TranslationBenchmark.cpp)

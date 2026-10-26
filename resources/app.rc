@@ -13,8 +13,8 @@ BEGIN
  301 "屏幕翻译"
 END
 1 VERSIONINFO
- FILEVERSION 1,4,1,0
- PRODUCTVERSION 1,4,1,0
+ FILEVERSION 1,5,0,0
+ PRODUCTVERSION 1,5,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -25,9 +25,9 @@ BEGIN
   BLOCK "040904B0"
   BEGIN
    VALUE "FileDescription", "Screen AI Translator\0"
-   VALUE "FileVersion", "1.4.1\0"
+   VALUE "FileVersion", "1.5.0\0"
    VALUE "ProductName", "Screen AI Translator\0"
-   VALUE "ProductVersion", "1.4.1\0"
+   VALUE "ProductVersion", "1.5.0\0"
    VALUE "OriginalFilename", "ScreenAITranslator.exe\0"
   END
  END

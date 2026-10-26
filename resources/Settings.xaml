@@ -32,7 +32,7 @@
       <NavigationViewItem Content="显示效果" Icon="Font" Tag="4"/>
     </NavigationView.MenuItems>
     <NavigationView.PaneFooter>
-      <TextBlock Text="V1.4.1" Margin="20,16,0,24" Style="{StaticResource Note}"/>
+      <TextBlock Text="V1.5.0" Margin="20,16,0,24" Style="{StaticResource Note}"/>
     </NavigationView.PaneFooter>
     <Grid Padding="32,26,32,20" RowSpacing="20">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -79,10 +79,11 @@
               <PasswordBox x:Name="Key" Header="API 密钥" PasswordRevealMode="Peek" MaxLength="4096"/>
               <ComboBox x:Name="Model" Header="模型" IsEditable="True" HorizontalAlignment="Stretch" PlaceholderText="填写账号可用的模型或部署 ID"/>
               <TextBox x:Name="ServiceRegion" Header="Azure Translator 资源区域（其他服务留空）"/>
-              <Grid ColumnSpacing="20"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                <NumberBox x:Name="Timeout" Header="请求超时（秒）" Minimum="1" Maximum="300" SpinButtonPlacementMode="Compact"/>
-                <ComboBox x:Name="ThinkingMode" Grid.Column="1" Header="思考模式" HorizontalAlignment="Stretch"><ComboBoxItem Content="低延迟 / 服务默认"/><ComboBoxItem Content="high"/></ComboBox>
-              </Grid>
+              <NumberBox x:Name="Timeout" Header="请求超时（秒）" Minimum="1" Maximum="300" SpinButtonPlacementMode="Compact"/>
+              <TextBlock Text="默认关闭思考。需要开启或调整时，在下方按服务官方定义填写请求字段。模型不支持关闭时会返回错误，不自动恢复服务默认值。" Style="{StaticResource Note}"/>
+              <TextBox x:Name="RequestParameters" Header="主连接请求参数（JSON）" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas" IsSpellCheckEnabled="False" MinHeight="160" MaxHeight="260" MaxLength="32768" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+              <Button x:Name="FormatRequestParameters" Content="格式化并校验 JSON" HorizontalAlignment="Left"/>
+              <TextBlock Text="填写 JSON 对象，留空或 {} 使用关闭思考的默认配置。字段直接合并到 API 请求体，支持嵌套对象；null 删除对应默认字段。适用于大模型翻译和连接自检，不用于模型列表及专用翻译服务。" Style="{StaticResource Note}"/>
               <StackPanel Orientation="Horizontal" Spacing="12">
                 <Button x:Name="FetchModels" Content="获取模型列表"/>
                 <Button x:Name="TestApi" Content="测试连接"/>
@@ -91,12 +92,15 @@
               <TextBlock x:Name="ApiResult" Text="OCR 文字由当前服务翻译；图片输入需要视觉模型。DeepL 和 Azure 无需选择模型。" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
             </StackPanel></Border>
             <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
-              <ToggleSwitch x:Name="FallbackEnabled" Header="OCR 不可靠时使用独立视觉连接"/>
+              <ToggleSwitch x:Name="FallbackEnabled" Header="AI 识图翻译使用独立连接"/>
               <ComboBox x:Name="FallbackProvider" Header="视觉服务提供方" HorizontalAlignment="Stretch"/>
               <TextBox x:Name="FallbackBaseUrl" Header="视觉 API 地址"/>
               <TextBox x:Name="FallbackModel" Header="支持图片输入的模型"/>
               <PasswordBox x:Name="FallbackKey" Header="视觉 API 密钥" PasswordRevealMode="Peek" MaxLength="4096"/>
-              <TextBlock Text="专用翻译服务只能翻译 OCR 文字，需配置视觉连接以处理识别失败的图片。未配置时会明确报告错误。" Style="{StaticResource Note}"/>
+              <TextBox x:Name="FallbackRequestParameters" Header="独立视觉连接请求参数（JSON）" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas" IsSpellCheckEnabled="False" MinHeight="160" MaxHeight="260" MaxLength="32768" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+              <Button x:Name="FormatFallbackRequestParameters" Content="格式化并校验 JSON" HorizontalAlignment="Left"/>
+              <TextBlock Text="此连接同样默认关闭思考。参数仅作用于独立视觉连接，填写规则与主连接相同。" Style="{StaticResource Note}"/>
+              <TextBlock Text="此连接仅用于 AI 识图翻译模式。关闭时使用主连接。OCR 文字翻译始终使用主连接，不会自动切换或上传图片。" Style="{StaticResource Note}"/>
             </StackPanel></Border>
             <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
               <ComboBox x:Name="ProxyMode" Header="网络连接方式" HorizontalAlignment="Stretch"><ComboBoxItem Content="系统代理"/><ComboBoxItem Content="直接连接"/><ComboBoxItem Content="自定义 HTTP 代理"/></ComboBox>
@@ -108,11 +112,13 @@
           <StackPanel x:Name="Page3" Spacing="16" Visibility="Collapsed">
             <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
               <ComboBox x:Name="Quality" Header="截图分辨率" HorizontalAlignment="Stretch"><ComboBoxItem Content="速度优先 · 1280 px"/><ComboBoxItem Content="均衡 · 1600 px"/><ComboBoxItem Content="质量优先 · 2200 px"/></ComboBox>
-              <ComboBox x:Name="OcrMode" Header="原文语言" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动识别"/><ComboBoxItem Content="英语"/><ComboBoxItem Content="日语"/><ComboBoxItem Content="韩语"/></ComboBox>
-              <TextBlock Text="请选择图片中的语言，译文仍为中文。英语、日语和韩语使用内置 OCR，无需系统语言包。自动识别由视觉模型判断语种并翻译，支持范围取决于模型，需要支持图片的连接。" Style="{StaticResource Note}"/>
+              <ComboBox x:Name="TranslationMode" Header="翻译模式" HorizontalAlignment="Stretch"><ComboBoxItem Content="OCR 文字翻译 · 仅上传文字"/><ComboBoxItem Content="AI 识图翻译 · 上传图片"/></ComboBox>
+              <ComboBox x:Name="OcrMode" Header="OCR 原文语言" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动识别（本地）"/><ComboBoxItem Content="英语"/><ComboBoxItem Content="日语"/><ComboBoxItem Content="韩语"/></ComboBox>
+              <TextBlock Text="本地自动识别在英语、日语和韩语模型中选择。文字检测仅执行一次；必要时比较识别结果，不上传图片。已保存的手选语言继续保留，可在此切换为自动。" Style="{StaticResource Note}"/>
+              <TextBlock Text="OCR 模式在本地识别文字，模型只翻译识别结果，不上传图片；识别不足时提示，不自动切换。AI 模式不运行本地 OCR，由视觉模型直接识图、翻译并返回位置。两种模式均输出中文。" Style="{StaticResource Note}"/>
               <ToggleSwitch x:Name="ContextEnabled" Header="使用最近翻译上下文"/>
               <ToggleSwitch x:Name="TranslateAll" Header="完整翻译所有已识别文字"/>
-              <TextBlock Text="开启后优先保证区域完整性，模型漏返区域会触发一次重试。专用翻译服务始终翻译全部输入；自定义提示词仅作用于通用大模型。" Style="{StaticResource Note}"/>
+              <TextBlock Text="OCR 模式核对已识别文字的返回完整性，遗漏时最多补译一次。AI 模式要求翻译全部可见文字，完整性取决于模型。专用文字服务始终翻译全部输入。" Style="{StaticResource Note}"/>
               <NumberBox x:Name="ContextSize" Header="上下文数量" Minimum="5" Maximum="10" SpinButtonPlacementMode="Compact"/>
               <TextBlock Text="上下文仅保存在内存中，用于保持专有名词及语义的一致性。" Style="{StaticResource Note}"/>
               <Button x:Name="ClearContext" Content="清空上下文"/>
