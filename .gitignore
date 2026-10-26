@@ -1,6 +1,7 @@
 # Source archive allowlist: everything else stays local.
 /*
 !/.gitignore
+!/.clang-format
 !/CMakeLists.txt
 !/README.md
 !/CHANGELOG.md
@@ -11,6 +12,8 @@
 !/scripts/
 !/installer/
 !/cmake/
+!/docs/
+/docs/*
 
 /scripts/*
 !/scripts/build.ps1
@@ -27,6 +30,8 @@
 *.md
 !/README.md
 !/CHANGELOG.md
+!/docs/architecture.md
+!/docs/translation-core-design.md
 *.log
 !/AGENTS.md
 !/tests/fixtures/upstream/SOURCES.md

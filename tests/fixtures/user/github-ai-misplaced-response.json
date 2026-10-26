@@ -1,0 +1,654 @@
+{
+  "duration_ms": 6170,
+  "height": 1386,
+  "mode": 1,
+  "request_count": 1,
+  "segments": [
+    {
+      "bbox": {
+        "height": 14,
+        "width": 60,
+        "x": 44,
+        "y": 14
+      },
+      "original_text": "Dashboard",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "仪表板",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 14,
+        "width": 90,
+        "x": 664,
+        "y": 14
+      },
+      "original_text": "Type / to search",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "输入 / 进行搜索",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 34,
+        "x": 31,
+        "y": 80
+      },
+      "original_text": "Home",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "主页",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 26,
+        "x": 31,
+        "y": 103
+      },
+      "original_text": "Feed",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "动态",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 80,
+        "x": 10,
+        "y": 172
+      },
+      "original_text": "Top repositories",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "热门仓库",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 16,
+        "width": 210,
+        "x": 272,
+        "y": 148
+      },
+      "original_text": "Good afternoon, DS-BigMountain!",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "下午好，DS-BigMountain！",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 44,
+        "x": 688,
+        "y": 112
+      },
+      "original_text": "Preview",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "预览",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 14,
+        "width": 200,
+        "x": 272,
+        "y": 200
+      },
+      "original_text": "Ask anything or type @ to add context",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "询问任何内容或输入 @ 添加上下文",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 22,
+        "x": 276,
+        "y": 228
+      },
+      "original_text": "Ask",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "询问",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 80,
+        "x": 330,
+        "y": 228
+      },
+      "original_text": "All repositories",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "所有仓库",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 26,
+        "x": 560,
+        "y": 228
+      },
+      "original_text": "Auto",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "自动",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 110,
+        "x": 600,
+        "y": 228
+      },
+      "original_text": "Optimized for Balance",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "针对平衡进行优化",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 34,
+        "x": 348,
+        "y": 272
+      },
+      "original_text": "Debug",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "调试",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 34,
+        "x": 404,
+        "y": 272
+      },
+      "original_text": "Agent",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "代理",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 66,
+        "x": 462,
+        "y": 272
+      },
+      "original_text": "Create issue",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "创建议题",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 62,
+        "x": 540,
+        "y": 272
+      },
+      "original_text": "Write code",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "编写代码",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 20,
+        "x": 620,
+        "y": 272
+      },
+      "original_text": "Git",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "Git",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 70,
+        "x": 256,
+        "y": 318
+      },
+      "original_text": "Pull requests",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "拉取请求",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 42,
+        "x": 686,
+        "y": 318
+      },
+      "original_text": "View all",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "查看全部",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 14,
+        "width": 250,
+        "x": 272,
+        "y": 340
+      },
+      "original_text": "No pull requests found, try a different filter.",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "未找到拉取请求，请尝试其他筛选条件。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 34,
+        "x": 256,
+        "y": 398
+      },
+      "original_text": "Issues",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "议题",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 42,
+        "x": 686,
+        "y": 398
+      },
+      "original_text": "View all",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "查看全部",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 14,
+        "width": 220,
+        "x": 272,
+        "y": 420
+      },
+      "original_text": "No issues found, try a different filter.",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "未找到议题，请尝试其他筛选条件。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 16,
+        "width": 100,
+        "x": 770,
+        "y": 158
+      },
+      "original_text": "UNIVERSE'26",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "UNIVERSE'26",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 180,
+        "x": 770,
+        "y": 196
+      },
+      "original_text": "Join Universe virtually, from anywhere.",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "随时随地虚拟参加 Universe。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 80,
+        "x": 800,
+        "y": 232
+      },
+      "original_text": "Save your seat",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "预留席位",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 12,
+        "width": 130,
+        "x": 770,
+        "y": 292
+      },
+      "original_text": "Latest from our changelog",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "我们更新日志的最新内容",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 44,
+        "x": 770,
+        "y": 312
+      },
+      "original_text": "Yesterday",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "昨天",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 22,
+        "width": 180,
+        "x": 770,
+        "y": 324
+      },
+      "original_text": "Usage metrics API adds usage from tools like OpenCode",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "使用指标 API 增加了来自 OpenCode 等工具的使用量",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 44,
+        "x": 770,
+        "y": 352
+      },
+      "original_text": "Yesterday",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "昨天",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 22,
+        "width": 180,
+        "x": 770,
+        "y": 364
+      },
+      "original_text": "Turn notifications into code with GitHub Copilot in Teams",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "在 Teams 中使用 GitHub Copilot 将通知转化为代码",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 50,
+        "x": 770,
+        "y": 392
+      },
+      "original_text": "2 days ago",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "2 天前",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 80,
+        "x": 770,
+        "y": 404
+      },
+      "original_text": "EMU deletions fix",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "EMU 删除修复",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 50,
+        "x": 770,
+        "y": 422
+      },
+      "original_text": "2 days ago",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "2 天前",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 22,
+        "width": 180,
+        "x": 770,
+        "y": 434
+      },
+      "original_text": "Public monitoring adds triage, validity, API, and webhooks",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "公共监控新增分类、有效性、API 和 Webhook",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 90,
+        "x": 770,
+        "y": 462
+      },
+      "original_text": "View changelog →",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "查看更新日志 →",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 90,
+        "x": 380,
+        "y": 668
+      },
+      "original_text": "© 2026 GitHub, Inc.",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "© 2026 GitHub, Inc.",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 28,
+        "x": 480,
+        "y": 668
+      },
+      "original_text": "Terms",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "条款",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 34,
+        "x": 516,
+        "y": 668
+      },
+      "original_text": "Privacy",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "隐私",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 40,
+        "x": 558,
+        "y": 668
+      },
+      "original_text": "Security",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "安全",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 32,
+        "x": 606,
+        "y": 668
+      },
+      "original_text": "Status",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "状态",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 54,
+        "x": 646,
+        "y": 668
+      },
+      "original_text": "Community",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "社区",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 26,
+        "x": 708,
+        "y": 668
+      },
+      "original_text": "Docs",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "文档",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 38,
+        "x": 742,
+        "y": 668
+      },
+      "original_text": "Contact",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "联系",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 70,
+        "x": 788,
+        "y": 668
+      },
+      "original_text": "Manage cookies",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "管理 Cookie",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "height": 10,
+        "width": 130,
+        "x": 866,
+        "y": 668
+      },
+      "original_text": "Do not share my personal information",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "不要共享我的个人信息",
+      "untranslated": false
+    }
+  ],
+  "source_language": "en",
+  "width": 2559
+}
