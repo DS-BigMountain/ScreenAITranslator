@@ -160,6 +160,81 @@ void AppearanceRegression() {
     Render(image, {}, "test-output/appearance/original.png", false);
     Render(image, layout, "test-output/appearance/translated.png", false);
 }
+void ChatBubbleRegression() {
+    const auto image = ReadImage(L"test-fixtures/user/chat-bubbles-en.png");
+    TranslationResult result{"en"};
+    auto add = [&](const char* original, const char* translated, RECT rect) {
+        Segment segment;
+        segment.original = original;
+        segment.translated = translated;
+        segment.sourcePixels = rect;
+        result.segments.push_back(std::move(segment));
+    };
+    add("Tibo", "Tibo", {108, 34, 168, 65});
+    add("Joined August 2025", "2025年8月加入", {478, 178, 690, 204});
+    add("928.8k Followers", "92.88万粉丝", {493, 215, 676, 241});
+    add("View Profile", "查看个人资料", {520, 276, 650, 302});
+    add("Tibo · Oct 24", "Tibo · 10月24日", {614, 377, 769, 403});
+    add("DM if you want to help scale dots to 1B users and have done similar things in the past",
+        "如果你能帮助将 dots 扩展到10亿用户，且有相关经验，请私信我。", {570, 418, 1140, 477});
+    add("i can help you!", "我可以帮你！", {977, 505, 1137, 540});
+    add("Just Chat", "只是聊天", {810, 759, 1029, 806});
+    add("Cast Sydney Sweeney for a ad, thank me later!!", "找西德尼·斯威尼拍广告，回头谢我！",
+        {573, 991, 1082, 1023});
+    add("1:20 AM", "凌晨1:20", {1043, 1034, 1110, 1053});
+    add("you are genius, what if we casted you instead of her?", "你真是个天才，如果选你来代替她呢？",
+        {47, 1090, 604, 1124});
+    add("1:28 AM", "凌晨1:28", {542, 1132, 605, 1153});
+    const std::filesystem::path output = "test-output/chat-bubbles";
+    std::filesystem::create_directories(output);
+    auto layout = LayoutPositioned(result, image, Settings{}, 96);
+    for (size_t i : {size_t(6), size_t(8), size_t(9)}) {
+        const auto& item = layout[i];
+        Require(!item.suppressed && !item.overflow, "translated blue message is hidden or clipped");
+        Require(GetBValue(item.background) > 210 && GetRValue(item.background) < 115 &&
+                    GetGValue(item.background) > 140 && GetGValue(item.background) < 170,
+                "blue message surface replaced by a white mask");
+        Require(item.sourceColor && GetRValue(*item.sourceColor) > 210,
+                "white source glyphs were not detected on the blue bubble");
+    }
+    Require(GetRValue(layout[1].background) >= 250 && GetGValue(layout[1].background) >= 250 &&
+                std::abs(int(GetRValue(layout[1].background)) - int(GetBValue(layout[1].background))) <= 2,
+            "white page acquired a tinted translation mask");
+    Render(image, layout, output / L"translated.png", false);
+    // Exercise the draw path itself: sampled white text must also receive contrast correction
+    // when a complex surface or a caller supplies a light replacement background.
+    auto fallback = layout;
+    fallback[6].background = RGB(247, 249, 252);
+    fallback[6].sourceColor = RGB(255, 255, 255);
+    Render(image, fallback, output / L"contrast-fallback.png", false);
+    const auto rendered = ReadImage((output / L"contrast-fallback.png").c_str());
+    int darkPixels = 0;
+    for (int y = fallback[6].rect.top; y < fallback[6].rect.bottom; ++y)
+        for (int x = fallback[6].rect.left; x < fallback[6].rect.right; ++x) {
+            const auto* p = &rendered.bgra[(size_t(y) * rendered.width + x) * 4];
+            darkPixels += p[0] < 80 && p[1] < 80 && p[2] < 80;
+        }
+    Require(darkPixels > 30, "sampled white glyphs bypassed contrast correction during rendering");
+    auto vision = result;
+    for (auto& s : vision.segments) {
+        const auto r = *s.sourcePixels;
+        const int x = MulDiv(r.left, 1000, image.width), y = MulDiv(r.top, 1000, image.height);
+        s.box = {x, y, MulDiv(r.right, 1000, image.width) - x,
+                 MulDiv(r.bottom, 1000, image.height) - y};
+        s.sourcePixels.reset();
+    }
+    auto visionLayout = LayoutPositioned(vision, image, Settings{}, 96);
+    Require(GetBValue(visionLayout[6].background) > 210 && GetRValue(visionLayout[6].background) < 115,
+            "AI coordinates lost the blue message background");
+    Render(image, visionLayout, output / L"vision-translated.png", false);
+    Settings manual;
+    manual.matchTextColor = false;
+    auto manualLayout = LayoutPositioned(result, image, manual, 192);
+    Require(!manualLayout[6].sourceColor && !manualLayout[6].overflow,
+            "manual text color or DPI scaling broke a blue message");
+    Render(image, manualLayout, output / L"manual-color-192dpi.png", false);
+    std::cout << "Chat bubble appearance: PASS (real screenshot, blue surfaces, rendered contrast, AI boxes, DPI)\n";
+}
 void UnitTests() {
     Image image{900, 700, std::vector<unsigned char>(900 * 700 * 4, 255)};
     {
@@ -479,6 +554,14 @@ int wmain(int argc, wchar_t** argv) {
         }
         UnitTests();
         AppearanceRegression();
+        ChatBubbleRegression();
+        if (argc == 2 && std::wstring(argv[1]) == L"--appearance") {
+            HandshakeRegression("test-fixtures/user/handshake-ai-response.json");
+            HandshakeRegression("test-fixtures/user/handshake-ai-pixel-response.json");
+            GameDialogRegression();
+            std::cout << "TextLayoutTests appearance: PASS\n";
+            return 0;
+        }
         if (argc == 1) {
             HandshakeRegression("test-fixtures/user/handshake-ai-response.json");
             HandshakeRegression("test-fixtures/user/handshake-ai-pixel-response.json");
@@ -518,6 +601,8 @@ int wmain(int argc, wchar_t** argv) {
             auto image = ReadImage(argv[1]);
             auto detected = DetectText(image, {}, OcrJapanese);
             std::cout << "OCR: " << detected.status << ", regions: " << detected.regions.size() << "\n";
+            if (detected.status == "ocr-unavailable")
+                RecognizeBundled(image, OcrJapanese, {});
             Require(!detected.regions.empty(), "OCR fixture produced no regions");
             std::filesystem::path output = argv[2];
             std::filesystem::create_directories(output);
