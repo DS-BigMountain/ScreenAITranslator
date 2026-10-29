@@ -4,7 +4,6 @@
 !/.clang-format
 !/CMakeLists.txt
 !/README.md
-!/README.en.md
 !/CHANGELOG.md
 !/src/
 !/resources/
@@ -30,7 +29,6 @@
 # Keep source and test fixtures, not local notes or generated files.
 *.md
 !/README.md
-!/README.en.md
 !/CHANGELOG.md
 !/docs/architecture.md
 !/docs/translation-core-design.md
