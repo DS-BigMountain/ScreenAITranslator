@@ -1,7 +1,5 @@
 # 屏幕翻译 · Screen AI Translator
 
-**简体中文** | [English](README.en.md)
-
 Windows 原生屏幕翻译工具。框选屏幕区域后，程序识别原文位置并调用用户配置的模型生成译文，在原位置覆盖显示。用户手动选择 OCR 文字翻译或 AI 识图翻译，两种模式不自动切换。设置界面采用 WinUI 3，截图和透明覆盖层采用 Win32 / Direct2D。
 
 ## 主要功能
