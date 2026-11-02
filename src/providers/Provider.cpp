@@ -675,14 +675,6 @@ bool HasRecognizedText(const std::vector<TextRegion>& regions) {
 }
 Settings SelectTranslationConnection(const Settings& options) {
     auto result = options;
-    if (options.translationMode == TranslationAiVision && options.fallbackEnabled) {
-        result.provider = options.fallbackProvider;
-        result.baseUrl = options.fallbackBaseUrl;
-        result.model = options.fallbackModel;
-        result.encryptedKey = options.encryptedFallbackKey;
-        result.requestParameters = options.fallbackRequestParameters;
-        result.fallbackEnabled = false;
-    }
     if (options.translationMode == TranslationAiVision && IsTextService(result.provider))
         throw AppError("Vision", "AI 识图翻译需要支持图片的模型；专用文字服务请使用 OCR 文字翻译模式");
     return result;

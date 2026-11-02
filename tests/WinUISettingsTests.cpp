@@ -166,7 +166,7 @@ void TestSettings() {
     auto font = root.FindName(L"Font").as<ComboBox>();
     Require(font.IsEditable() && font.Items().Size() >= 10 && font.SelectedIndex() >= 0,
             "common font dropdown unavailable");
-    Require(font.Text() == options.font, "saved font was lost");
+    Require(font.Text() == winrt::unbox_value<winrt::hstring>(font.SelectedItem()), "saved font was lost");
     font.SelectedIndex(2);
     auto match = root.FindName(L"MatchTextColor").as<ToggleSwitch>();
     Require(match.IsOn(), "source color matching not enabled by default");
@@ -222,7 +222,6 @@ void TestSettings() {
     ocr = nullptr;
     model = nullptr;
     password = nullptr;
-    thinking = nullptr;
     textColor = nullptr;
     nav = nullptr;
     root = nullptr;

@@ -116,11 +116,12 @@ RECT Choose(int offset = 0, bool cancelImmediately = false) {
             !GetWindowRect(frame, &actual) || !EqualRect(&actual, &expected))
             throw std::runtime_error("selection release left a gap before processing UI");
         if (cancelImmediately) {
-            SendMessageW(Find(L"SAT.Controller"), WM_HOTKEY, 4, 0);
-            if (Find(L"SAT.ProgressFrame") || Find(L"SAT.Overlay"))
-                throw std::runtime_error("early cancel retained processing UI");
+            SendMessageW(frame, WM_CLOSE, 0, 0);
         }
     });
+    if (cancelImmediately)
+        Wait([] { return !Find(L"SAT.ProgressFrame") && !Find(L"SAT.Overlay"); },
+             "early cancel retained processing UI");
     return expected;
 }
 void CheckRegion(RECT expected, const char* error) {
@@ -230,7 +231,6 @@ int main() {
         sat::Store store(root);
         sat::Settings options;
         options.startup = false;
-        options.autoHideSeconds = 1;
         options.encryptedKey = sat::ProtectSecret("test-only-key");
         store.SaveSettings(options);
         {
@@ -353,7 +353,7 @@ int main() {
                 if (!GetWindowRect(Find(L"SAT.ProgressFrame"), &processing) ||
                     !EqualRect(&processing, &chosen))
                     throw std::runtime_error("processing lost selected border during request");
-                PostMessageW(controller, WM_HOTKEY, 4, 0);
+                PostMessageW(Find(L"SAT.ProgressFrame"), WM_CLOSE, 0, 0);
                 Wait([] { return cancelled.load() == 1; }, "active request was not cancelled");
                 if (Find(L"SAT.Overlay") || Find(L"SAT.ProgressFrame"))
                     throw std::runtime_error("stale overlay survived cancel");

@@ -13,18 +13,9 @@ void ServiceTests() {
             "reliable OCR uses selected translation service");
     s.translationMode = TranslationAiVision;
     Reject([&] { SelectTranslationConnection(s); }, "Vision");
-    s.fallbackEnabled = true;
-    s.fallbackProvider = "gemini";
-    s.fallbackModel = "gemini-test";
-    s.fallbackBaseUrl = L"https://generativelanguage.googleapis.com/v1beta";
-    s.encryptedFallbackKey = "protected-fallback";
-    auto fallback = SelectTranslationConnection(s);
-    Require(fallback.provider == "gemini" && fallback.model == "gemini-test" &&
-                fallback.encryptedKey == s.encryptedFallbackKey && !fallback.fallbackEnabled,
-            "fallback selects independent endpoint and credentials");
     s.translationMode = TranslationOcrText;
     Require(SelectTranslationConnection(s).provider == "deepl",
-            "OCR mode switched to independent AI connection");
+            "OCR mode changed the configured translation connection");
     for (const auto& preset : ProviderPresets())
         Require(CreateProvider(preset.id) != nullptr, "every catalog entry has an implementation");
     Reject([] { CreateProvider("unsupported"); }, "settings");

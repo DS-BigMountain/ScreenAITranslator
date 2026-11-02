@@ -1,6 +1,7 @@
 #include "Worker.h"
 #include "IdleRestart.h"
 #include "TranslationPipeline.h"
+#include "common/AppIdentity.h"
 #include "common/Secret.h"
 #include "common/Platform.h"
 #include "common/Diagnostics.h"
@@ -23,24 +24,6 @@ constexpr UINT UiMessage = WM_APP + 1, TrayMessage = WM_APP + 2;
 constexpr UINT_PTR HideTimer = 1, ContextTimer = 2, IdleTimer = 3;
 enum class Stage { Idle, Capture, Selecting, Preprocessing, Requesting, Layout, Displaying };
 enum TrayCommand { OpenSettings = 100, ExitApp = 105, OpenLogs = 106, UseOcrText = 107, UseAiVision = 108 };
-const wchar_t* StageName(Stage s) {
-    switch (s) {
-    case Stage::Capture:
-        return L"正在截图";
-    case Stage::Selecting:
-        return L"正在框选";
-    case Stage::Preprocessing:
-        return L"正在处理图片";
-    case Stage::Requesting:
-        return L"正在翻译";
-    case Stage::Layout:
-        return L"正在排版";
-    case Stage::Displaying:
-        return L"翻译已显示";
-    default:
-        return L"就绪";
-    }
-}
 std::wstring Executable() {
     std::wstring p(32768, 0);
     auto n = GetModuleFileNameW(nullptr, p.data(), static_cast<DWORD>(p.size()));
@@ -50,7 +33,8 @@ std::wstring Executable() {
 class Hotkeys {
     HWND window_{};
     std::vector<int> registered_;
-    Hotkey values_[4]{};
+    Hotkey values_[3]{};
+    bool suspended_{};
     void Release() {
         for (int id : registered_)
             UnregisterHotKey(window_, id);
@@ -62,20 +46,39 @@ public:
     ~Hotkeys() {
         Release();
     }
+    bool Suspended() const {
+        return suspended_;
+    }
+    void Suspend() {
+        suspended_ = true;
+        Release();
+    }
+    std::wstring Resume() {
+        if (!suspended_)
+            return {};
+        suspended_ = false;
+        Settings saved;
+        std::copy(std::begin(values_), std::end(values_), std::begin(saved.hotkeys));
+        return Apply(saved);
+    }
     std::wstring Apply(const Settings& s) {
+        if (suspended_) {
+            std::copy(std::begin(s.hotkeys), std::end(s.hotkeys), std::begin(values_));
+            return {};
+        }
         // Re-register as one transaction so changing an existing action can reuse its key.
-        Hotkey previous[4];
+        Hotkey previous[3];
         std::copy(std::begin(values_), std::end(values_), previous);
         Release();
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 3; ++i) {
             auto k = s.hotkeys[i];
             if (k.key && !RegisterHotKey(window_, i + 1, k.modifiers | MOD_NOREPEAT, k.key)) {
                 Release();
-                for (int j = 0; j < 4; ++j)
+                for (int j = 0; j < 3; ++j)
                     if (previous[j].key &&
                         RegisterHotKey(window_, j + 1, previous[j].modifiers | MOD_NOREPEAT, previous[j].key))
                         registered_.push_back(j + 1);
-                const wchar_t* names[]{L"普通截图翻译", L"翻译上次区域", L"打开设置", L"关闭翻译层"};
+                const wchar_t* names[]{L"普通截图翻译", L"翻译上次区域", L"打开设置"};
                 return std::wstring(names[i]) + L"快捷键已被占用，设置未保存。";
             }
             if (k.key)
@@ -89,6 +92,7 @@ public:
 class App {
     friend class AppIdleTest;
     HWND window_{};
+    bool migrateStartup_{};
     Store store_;
     Settings settings_;
     PersistentState state_;
@@ -242,8 +246,7 @@ class App {
                                                  LR_SHARED));
         if (!ni.hIcon)
             ni.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-        std::wstring tip = std::wstring(L"屏幕翻译 · ") + StageName(stage_);
-        wcsncpy_s(ni.szTip, tip.c_str(), _TRUNCATE);
+        wcsncpy_s(ni.szTip, AppName, _TRUNCATE);
         if (Shell_NotifyIconW(trayAdded_ ? NIM_MODIFY : NIM_ADD, &ni))
             trayAdded_ = true;
     }
@@ -333,9 +336,7 @@ class App {
         usedResources_ = true;
         Cancel();
         auto id = generation_;
-        const bool independentVision =
-            settings_.translationMode == TranslationAiVision && settings_.fallbackEnabled;
-        if (independentVision ? settings_.encryptedFallbackKey.empty() : key_.empty()) {
+        if (key_.empty()) {
             ShowSettings();
             Notice(L"请先在 API 页面填写密钥并保存设置");
             return;
@@ -546,8 +547,6 @@ class App {
             context_.Add(result, options.contextSize);
             SetTimer(window_, ContextTimer, 30 * 60 * 1000, nullptr);
         }
-        if (options.autoHide)
-            SetTimer(window_, HideTimer, options.autoHideSeconds * 1000, nullptr);
         settingsWindow_.Status(std::wstring(result.untranslatedSegments || result.ignoredSegments
                                                 ? L"翻译结果含异常 · "
                                                 : L"翻译完成 · ") +
@@ -617,10 +616,7 @@ class App {
                     TranslationResult result;
                     if (options.translationMode == TranslationAiVision) {
                         auto vision = SelectTranslationConnection(options);
-                        Secret visionKey(options.fallbackEnabled
-                                             ? UnprotectSecret(options.encryptedFallbackKey)
-                                             : secret->value);
-                        result = TestVisionApi(vision, visionKey.value, stop);
+                        result = TestVisionApi(vision, secret->value, stop);
                         message = L"AI 识图翻译连接自检通过。";
                     } else {
                         result = TestTextApi(options, secret->value, stop);
@@ -671,6 +667,12 @@ class App {
         KillTimer(window_, IdleTimer);
         SettingsCallbacks cb;
         cb.apply = [this](const Settings& s, const std::string& k) { return Apply(s, k); };
+        cb.hotkeyEditing = [this](bool editing) {
+            if (editing)
+                hotkeys_->Suspend();
+            else if (auto error = hotkeys_->Resume(); !error.empty())
+                settingsWindow_.Status(error);
+        };
         cb.closed = [this](RECT r, int tab) {
             if (apiActive_)
                 Cancel();
@@ -774,6 +776,8 @@ class App {
             Dispatch();
             return 0;
         case WM_HOTKEY:
+            if (hotkeys_->Suspended())
+                return 0;
             switch (w) {
             case 1:
                 Begin(false);
@@ -783,9 +787,6 @@ class App {
                 break;
             case 3:
                 ShowSettings();
-                break;
-            case 4:
-                Cancel();
                 break;
             }
             return 0;
@@ -852,8 +853,9 @@ public:
         bool background, std::filesystem::path dataRoot = {},
         std::function<std::unique_ptr<ITranslationProvider>(const std::string&)> factory = CreateProvider,
         std::function<bool(const std::string&)> idleRestart = {}, std::string resume = {})
-        : store_(std::move(dataRoot)), providerFactory_(std::move(factory)), background_(background),
-          idleRestart_(std::move(idleRestart)), resume_(std::move(resume)) {}
+        : migrateStartup_(dataRoot.empty()), store_(std::move(dataRoot)),
+          providerFactory_(std::move(factory)), background_(background), idleRestart_(std::move(idleRestart)),
+          resume_(std::move(resume)) {}
     ~App() {
         worker_.Stop();
         if (!key_.empty())
@@ -895,11 +897,28 @@ public:
             recovery_ = error;
             settings_.tray = true;
         }
+        constexpr auto startupPath = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+        wchar_t startupCommand[32768]{};
+        DWORD bytes = sizeof(startupCommand);
+        const bool registeredStartup =
+            RegGetValueW(HKEY_CURRENT_USER, startupPath, L"ScreenAITranslator", RRF_RT_REG_SZ, nullptr,
+                         startupCommand, &bytes) == ERROR_SUCCESS;
         if (!std::filesystem::exists(store_.Root() / L"config.json")) {
-            DWORD bytes{};
-            settings_.startup =
-                RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                             L"ScreenAITranslator", RRF_RT_REG_SZ, nullptr, nullptr, &bytes) == ERROR_SUCCESS;
+            settings_.startup = registeredStartup;
+        }
+        if (migrateStartup_ && registeredStartup) {
+            const auto executable = Executable();
+            const auto legacy = std::filesystem::path(executable).parent_path() / L"ScreenAITranslator.exe";
+            const auto previousCommand = L"\"" + legacy.wstring() + L"\" --background";
+            if (CompareStringOrdinal(startupCommand, -1, previousCommand.c_str(), -1, TRUE) == CSTR_EQUAL) {
+                try {
+                    SetStartup(true, executable);
+                } catch (const AppError& e) {
+                    if (recovery_.empty())
+                        recovery_ = L"开机启动项更新失败，请重新保存设置。";
+                    DiagnosticEvent("startup_migration_failed", {{"error", Sanitize(e.what(), key_)}});
+                }
+            }
         }
         if (!settings_.tray && !settings_.hotkeys[2].key)
             settings_.tray = true;

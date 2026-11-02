@@ -14,6 +14,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $buildRoot = Join-Path $projectRoot 'build'
+$appName = '你给我翻译翻译什么叫翻译'
+$appExeName = "$appName.exe"
 function Invoke-Checked {
     param([string]$Program, [string[]]$ToolArguments)
     & $Program @ToolArguments
@@ -26,12 +28,12 @@ if (!$SkipBuild) {
     Invoke-Checked 'cmake' @('--build', $buildRoot, '--config', $Configuration, '--parallel', '1')
 }
 if (!$SkipTests) { Invoke-Checked 'ctest' @('--test-dir', $buildRoot, '-C', $Configuration, '--output-on-failure') }
-$appBinary = Join-Path $buildRoot "$Configuration/ScreenAITranslator.exe"
+$appBinary = Join-Path $buildRoot "$Configuration/$appExeName"
 if (!(Test-Path -LiteralPath $appBinary)) { throw "Application binary missing: $appBinary" }
 $appVersion = (Get-Item -LiteralPath $appBinary).VersionInfo.ProductVersion
 $iconSource = Join-Path $projectRoot 'resources/app.ico'
 $iconHash = (Get-FileHash -LiteralPath $iconSource -Algorithm SHA256).Hash.ToLowerInvariant()
-$iconName = "ScreenAITranslator-icon-$($iconHash.Substring(0,16)).ico"
+$iconName = "$appName-icon-$($iconHash.Substring(0,16)).ico"
 $builtIcon = Join-Path (Split-Path -Parent $appBinary) $iconName
 if (!(Test-Path -LiteralPath $builtIcon) -or (Get-FileHash -LiteralPath $builtIcon -Algorithm SHA256).Hash.ToLowerInvariant() -ne $iconHash) { throw 'Built taskbar icon is missing or differs from source. Rebuild before packaging.' }
 if ($appVersion -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') { throw 'Application version is missing or invalid.' }
@@ -44,8 +46,8 @@ else {
     $buildTime = [TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('China Standard Time')).ToString('yyyyMMdd-HHmmss-fff')
     $distributionRoot = Join-Path $distributionRoot $buildTime
 }
-$portableZipPath = Join-Path $distributionRoot "ScreenAITranslator-V$appVersion$suffix-portable.zip"
-$setupName = "ScreenAITranslator-Setup-V$appVersion$suffix"
+$portableZipPath = Join-Path $distributionRoot "$appName-V$appVersion$suffix-portable.zip"
+$setupName = "$appName-Setup-V$appVersion$suffix"
 $setupPath = Join-Path $distributionRoot "$setupName.exe"
 $plannedOutputs = @($portableZipPath)
 if ($Package) { $plannedOutputs += $setupPath }
@@ -62,7 +64,7 @@ if (Test-Path -LiteralPath $stageRoot) {
 }
 New-Item -ItemType Directory -Force -Path $stageRoot, $distributionRoot, (Join-Path $stageRoot 'licenses') | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'ocr-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
-Copy-Item -LiteralPath $appBinary -Destination (Join-Path $stageRoot 'ScreenAITranslator.exe')
+Copy-Item -LiteralPath $appBinary -Destination (Join-Path $stageRoot $appExeName)
 Copy-Item -LiteralPath $builtIcon -Destination (Join-Path $stageRoot $iconName)
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'winui-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party/nlohmann/LICENSE.MIT') -Destination (Join-Path $stageRoot 'licenses/nlohmann-json-LICENSE.txt')
@@ -73,10 +75,10 @@ foreach ($name in @('Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll', 
     if (!(Test-Path -LiteralPath (Join-Path $stageRoot $name))) { throw "Required runtime file missing: $name" }
 }
 $binaryHash = (Get-FileHash -LiteralPath $appBinary -Algorithm SHA256).Hash
-if ((Get-FileHash -LiteralPath (Join-Path $stageRoot 'ScreenAITranslator.exe') -Algorithm SHA256).Hash -ne $binaryHash) { throw 'Application copy integrity verification failed.' }
+if ((Get-FileHash -LiteralPath (Join-Path $stageRoot $appExeName) -Algorithm SHA256).Hash -ne $binaryHash) { throw 'Application copy integrity verification failed.' }
 foreach ($binary in Get-ChildItem -LiteralPath $stageRoot -File | Where-Object Extension -In '.exe', '.dll') {
     $signature = Get-AuthenticodeSignature -LiteralPath $binary.FullName
-    if ($binary.Name -eq 'ScreenAITranslator.exe') {
+    if ($binary.Name -eq $appExeName) {
         if ($signature.Status -notin @('Valid', 'NotSigned')) { throw "Application signature invalid: $($signature.Status)" }
     } elseif ($signature.Status -ne 'Valid') { throw "Runtime signature invalid: $($binary.Name): $($signature.Status)" }
 }

@@ -41,8 +41,7 @@ void RunStoreTests() {
     auto settings = store.LoadSettings();
     Check(settings.ocrMode == OcrLocalAuto && settings.translationMode == TranslationAiVision,
           "Default mode and OCR language are independent");
-    Check(settings.requestParameters == "{}" && settings.fallbackRequestParameters == "{}" &&
-              settings.contextEnabled && settings.contextSize == 8,
+    Check(settings.requestParameters == "{}" && settings.contextEnabled && settings.contextSize == 8,
           "Persistence and context defaults");
     Check(settings.hotkeys[0].key == 0 && settings.hotkeys[1].key == 0, "Hotkeys must start unassigned");
     Check(!std::filesystem::exists(temp.path), "Read missing config must not create data");
@@ -54,48 +53,34 @@ void RunStoreTests() {
     Check(settings.spatialOverlay, "Spatial overlay is the new default");
     settings.spatialOverlay = false;
     settings.requestParameters = R"({"reasoning_effort":"high","temperature":null})";
-    settings.fallbackRequestParameters = R"({"generationConfig":{"thinkingConfig":{"thinkingBudget":1024}}})";
     settings.ocrMode = 2;
     settings.matchTextColor = false;
     settings.provider = "azure-translator";
     settings.serviceRegion = "eastasia";
     settings.proxyMode = 2;
     settings.proxyAddress = L"127.0.0.1:7890";
-    settings.fallbackEnabled = true;
-    settings.fallbackProvider = "gemini";
-    settings.fallbackModel = "vision-test";
-    settings.fallbackBaseUrl = L"https://generativelanguage.googleapis.com/v1beta";
-    settings.encryptedFallbackKey = ProtectSecret("fallback-test-secret");
     settings.translateAll = false;
     settings.prompt = "只翻译字幕。保留专有名词。";
     settings.font = L"微软雅黑";
     settings.hotkeys[0] = {MOD_CONTROL | MOD_ALT, 'T'};
     settings.connectionProfiles["deepseek"] = {
         L"https://api.deepseek.com", "deepseek-flash", ProtectSecret("previous-provider-key"), {}};
-    settings.fallbackProfiles["anthropic"] = {
-        L"https://api.anthropic.com/v1", "claude-test", ProtectSecret("previous-fallback-key"), {}};
     settings.connectionProfiles["deepseek"].requestParameters = R"({"thinking":{"type":"disabled"}})";
-    settings.fallbackProfiles["anthropic"].requestParameters = R"({"max_tokens":2048})";
     store.SaveSettings(settings);
     auto loaded = store.LoadSettings();
     Check(loaded.prompt == settings.prompt && loaded.font == settings.font && loaded.hotkeys[0].key == 'T',
           "UTF-8 settings round trip");
     Check(!loaded.matchTextColor, "Color preference persisted");
     Check(loaded.ocrMode == 2, "OCR mode persisted");
-    Check(!loaded.spatialOverlay && loaded.requestParameters == settings.requestParameters &&
-              loaded.fallbackRequestParameters == settings.fallbackRequestParameters,
+    Check(!loaded.spatialOverlay && loaded.requestParameters == settings.requestParameters,
           "Overlay and request parameter preferences persisted");
     Check(loaded.connectionProfiles.at("deepseek").requestParameters ==
-                  settings.connectionProfiles.at("deepseek").requestParameters &&
-              loaded.fallbackProfiles.at("anthropic").requestParameters == R"({"max_tokens":2048})",
+              settings.connectionProfiles.at("deepseek").requestParameters,
           "Inactive request parameters survive disk round trip");
     Check(UnprotectSecret(loaded.encryptedKey) == secret, "Protected key persisted");
-    Check(UnprotectSecret(loaded.connectionProfiles.at("deepseek").encryptedKey) == "previous-provider-key" &&
-              UnprotectSecret(loaded.fallbackProfiles.at("anthropic").encryptedKey) ==
-                  "previous-fallback-key",
+    Check(UnprotectSecret(loaded.connectionProfiles.at("deepseek").encryptedKey) == "previous-provider-key",
           "inactive connection profiles survive disk round trip");
-    Check(File(temp.path / "config.json").find("previous-provider-key") == std::string::npos &&
-              File(temp.path / "config.json").find("previous-fallback-key") == std::string::npos,
+    Check(File(temp.path / "config.json").find("previous-provider-key") == std::string::npos,
           "inactive profile keys must be encrypted");
     {
         auto invalid = settings;
@@ -105,12 +90,7 @@ void RunStoreTests() {
     Check(loaded.provider == "azure-translator" && loaded.serviceRegion == "eastasia" &&
               loaded.proxyMode == 2 && loaded.proxyAddress == settings.proxyAddress,
           "provider and proxy persisted");
-    Check(loaded.fallbackEnabled && loaded.fallbackProvider == "gemini" &&
-              loaded.fallbackModel == "vision-test" && !loaded.translateAll &&
-              UnprotectSecret(loaded.encryptedFallbackKey) == "fallback-test-secret",
-          "fallback and coverage preferences persisted");
-    Check(File(temp.path / "config.json").find("fallback-test-secret") == std::string::npos,
-          "fallback key encrypted on disk");
+    Check(!loaded.translateAll, "coverage preference persisted");
     for (auto proxy :
          {L"user:password@host:80", L"http://host:80", L"host:0", L"host:65536", L"host:80\r\nX-Key: bad"}) {
         auto invalid = settings;
@@ -118,9 +98,26 @@ void RunStoreTests() {
         Throws([&] { ValidateSettings(invalid); }, "invalid proxy must fail");
     }
     {
-        auto invalid = settings;
-        invalid.fallbackProvider = "deepl";
-        Throws([&] { ValidateSettings(invalid); }, "text service cannot be vision fallback");
+        auto legacy = nlohmann::json::parse(File(temp.path / "config.json"));
+        legacy["hotkeys"].push_back({{"modifiers", MOD_CONTROL | MOD_ALT}, {"key", 'T'}});
+        legacy["autoHide"] = true;
+        legacy["autoHideSeconds"] = 1;
+        legacy["fallbackEnabled"] = true;
+        legacy["fallbackRequestParameters"] = "invalid obsolete JSON";
+        legacy["fallbackProfiles"] = "invalid obsolete profiles";
+        {
+            std::ofstream output(temp.path / "config.json", std::ios::binary);
+            output << legacy.dump();
+        }
+        auto restored = store.LoadSettings();
+        Check(restored.hotkeys[0].key == 'T' && UnprotectSecret(restored.encryptedKey) == secret,
+              "obsolete settings damaged active shortcuts or credentials");
+        store.SaveSettings(restored);
+        auto saved = nlohmann::json::parse(File(temp.path / "config.json"));
+        Check(saved["hotkeys"].size() == 3 && !saved.contains("autoHide") &&
+                  !saved.contains("autoHideSeconds") && !saved.contains("fallbackEnabled") &&
+                  !saved.contains("fallbackRequestParameters") && !saved.contains("fallbackProfiles"),
+              "removed settings survived migration");
     }
     Check(File(temp.path / "config.json").find(secret) == std::string::npos,
           "Config must not contain plaintext key");
@@ -171,8 +168,7 @@ void RunStoreTests() {
                                                    ? TranslationAiVision
                                                    : TranslationOcrText),
               "Legacy language selected wrong explicit mode");
-        Check(!migratedMode.encryptedKey.empty() && !migratedMode.encryptedFallbackKey.empty(),
-              "Migration lost credentials");
+        Check(!migratedMode.encryptedKey.empty(), "Migration lost credentials");
     }
     store.SaveSettings(settings);
     bad = settings;
@@ -222,7 +218,6 @@ void RunStoreTests() {
     oldConfig.erase("translationMode");
     oldConfig.erase("matchTextColor");
     oldConfig.erase("requestParameters");
-    oldConfig.erase("fallbackRequestParameters");
     oldConfig["thinkingHigh"] = true;
     oldConfig["history"] = true;
     oldConfig["persistRegion"] = true;
@@ -241,7 +236,7 @@ void RunStoreTests() {
         output << "legacy error sentinel";
     }
     auto migrated = store.LoadSettings();
-    Check(migrated.requestParameters == "{}" && migrated.fallbackRequestParameters == "{}",
+    Check(migrated.requestParameters == "{}",
           "Legacy high thinking must not enable thinking in the new default policy");
     Check(migrated.matchTextColor, "Legacy settings enable original color matching");
     Check(migrated.ocrMode == OcrLocalAuto && migrated.translationMode == TranslationAiVision,

@@ -10,6 +10,7 @@ struct SettingsCallbacks {
     std::function<void(SettingsAction)> action;
     std::function<void(bool, const Settings&, const std::string&)> api;
     std::function<void(RECT, int)> closed;
+    std::function<void(bool)> hotkeyEditing;
 };
 class SettingsWindow {
     struct Impl;
@@ -19,6 +20,7 @@ class SettingsWindow {
     SettingsCallbacks callbacks_;
     int page_{};
     bool apiBusy_{};
+    bool hotkeyEditing_{};
     static LRESULT CALLBACK Proc(HWND, UINT, WPARAM, LPARAM);
     void Build(const std::string& key);
     void UpdateIcons();
@@ -28,6 +30,7 @@ class SettingsWindow {
     Settings ReadApi(bool requireModel) const;
     void InvalidateModels();
     void UpdateTranslationMode();
+    void SetHotkeyEditing(bool editing);
 
 public:
     SettingsWindow();

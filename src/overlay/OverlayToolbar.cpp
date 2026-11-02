@@ -42,7 +42,7 @@ void Overlay::ShowToolbar() {
     if (data.mode == 2)
         toolbarStatus_ = L"全文译文 · 滚轮阅读，可复制译文或切换原图";
     toolbar_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName,
-                               L"屏幕翻译操作", WS_POPUP, bounds.left, bounds.top, Width(bounds),
+                               L"翻译操作", WS_POPUP, bounds.left, bounds.top, Width(bounds),
                                Height(bounds), data.hwnd, nullptr, wc.hInstance, this);
     if (!toolbar_)
         throw AppError("overlay", "无法创建翻译工具条");

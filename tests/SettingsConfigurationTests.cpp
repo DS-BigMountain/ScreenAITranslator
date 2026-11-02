@@ -97,7 +97,7 @@ void CheckTaskbarIdentity(HWND window) {
     auto resource = text(PKEY_AppUserModel_RelaunchIconResource);
     Check(resource.ends_with(L",0"), "taskbar icon is not an explicit ICO file");
     std::filesystem::path path(resource.substr(0, resource.size() - 2));
-    Check(path.filename().wstring().starts_with(L"ScreenAITranslator-icon-") &&
+    Check(path.filename().wstring().starts_with(L"你给我翻译翻译什么叫翻译-icon-") &&
               std::filesystem::is_regular_file(path),
           "taskbar icon asset is missing or has no content identity");
     std::wstring executable(32768, 0);
@@ -108,7 +108,8 @@ void CheckTaskbarIdentity(HWND window) {
               text(PKEY_AppUserModel_RelaunchDisplayNameResource) == L"@" + executable + L",-301",
           "taskbar shortcut relaunch metadata is incorrect");
     wchar_t name[64]{};
-    Check(LoadStringW(GetModuleHandleW(nullptr), 301, name, 64) > 0 && std::wstring(name) == L"屏幕翻译",
+    Check(LoadStringW(GetModuleHandleW(nullptr), 301, name, 64) > 0 &&
+              std::wstring(name) == L"你给我翻译翻译什么叫翻译",
           "taskbar display name resource is missing");
     SHFILEINFOW shell{};
     Check(SHGetFileInfoW(path.c_str(), 0, &shell, sizeof(shell), SHGFI_ICON | SHGFI_SMALLICON) != 0 &&
@@ -182,9 +183,7 @@ int main() {
             auto root = window.Content();
             Check(!root.FindName(L"ThinkingMode"), "ambiguous thinking selector still present");
             auto parameters = root.FindName(L"RequestParameters").as<TextBox>();
-            auto fallbackParameters = root.FindName(L"FallbackRequestParameters").as<TextBox>();
-            Check(parameters.Text() == L"{}" && fallbackParameters.Text() == L"{}",
-                  "request editors must default to an empty override");
+            Check(parameters.Text() == L"{}", "request editors must default to an empty override");
             parameters.Text(LR"({"thinking":{"type":"enabled"},"reasoning_effort":"high"})");
             {
                 xaml::Automation::Peers::ButtonAutomationPeer format(
@@ -197,6 +196,16 @@ int main() {
                       "JSON editor formatter did not format the object");
             }
             auto provider = root.FindName(L"Provider").as<ComboBox>();
+            for (auto removed : {L"AutoHide", L"HideSeconds", L"Hotkey3", L"FallbackEnabled",
+                                 L"FallbackProvider", L"FallbackBaseUrl", L"FallbackModel", L"FallbackKey",
+                                 L"FallbackRequestParameters", L"FormatFallbackRequestParameters"})
+                Check(!root.FindName(removed), "removed setting still exists");
+            auto fonts = root.FindName(L"Font").as<ComboBox>();
+            Check(winrt::unbox_value<winrt::hstring>(fonts.Items().GetAt(2)) == L"宋体" &&
+                      winrt::unbox_value<winrt::hstring>(fonts.Items().GetAt(5)) == L"仿宋" &&
+                      winrt::unbox_value<winrt::hstring>(fonts.Items().GetAt(7)) == L"Arial",
+                  "Chinese font labels or English fallback are incorrect");
+            fonts.SelectedIndex(2);
             Check(provider.Items().Size() == ProviderPresets().size(), "provider menu incomplete");
             Check(!root.FindName(L"Reselect") && !root.FindName(L"ClearRegion"),
                   "removed region controls still exist");
@@ -264,24 +273,6 @@ int main() {
             Pump();
             Check(primaryKey.Password() == L"primary-test-key" && saves == 0,
                   "unsaved provider key lost or switch committed settings");
-            root.FindName(L"FallbackProvider").as<ComboBox>().SelectedIndex(8);
-            root.FindName(L"FallbackEnabled").as<ToggleSwitch>().IsOn(true);
-            root.FindName(L"FallbackModel").as<TextBox>().Text(L"gemini-test");
-            root.FindName(L"FallbackKey").as<PasswordBox>().Password(L"fallback-test-key");
-            fallbackParameters.Text(LR"({"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}})");
-            auto fallbackProvider = root.FindName(L"FallbackProvider").as<ComboBox>();
-            fallbackProvider.SelectedIndex(0);
-            Pump();
-            Check(fallbackParameters.Text() == L"{}", "independent connection parameter draft leaked");
-            Check(root.FindName(L"FallbackKey").as<PasswordBox>().Password().empty(),
-                  "fallback reused primary service credentials");
-            fallbackProvider.SelectedIndex(8);
-            Pump();
-            Check(std::wstring(fallbackParameters.Text()).find(L"thinkingBudget") != std::wstring::npos,
-                  "independent connection parameter draft lost");
-            Check(root.FindName(L"FallbackKey").as<PasswordBox>().Password() == L"fallback-test-key" &&
-                      root.FindName(L"FallbackModel").as<TextBox>().Text() == L"gemini-test",
-                  "fallback draft lost during switching");
             root.FindName(L"ProxyMode").as<ComboBox>().SelectedIndex(2);
             root.FindName(L"ProxyAddress").as<TextBox>().Text(L"127.0.0.1:7890");
             xaml::Automation::Peers::ButtonAutomationPeer peer(root.FindName(L"Apply").as<Button>());
@@ -294,28 +285,21 @@ int main() {
                   "primary service save failed");
             Check(saved.ocrMode == OcrKorean && saved.translationMode == TranslationOcrText,
                   "translation mode or Korean selection not saved");
-            Check(saved.fallbackEnabled && saved.fallbackProvider == "gemini" &&
-                      saved.fallbackModel == "gemini-test" &&
-                      UnprotectSecret(saved.encryptedFallbackKey) == "fallback-test-key",
-                  "fallback configuration save failed");
+            Check(saved.font == L"SimSun", "Chinese font label changed the saved font family");
             Check(saved.proxyMode == 2 && saved.proxyAddress == L"127.0.0.1:7890" && saved.translateAll,
                   "network and coverage configuration save failed");
             Check(saved.requestParameters == "{}" &&
                       nlohmann::json::parse(
-                          saved.fallbackRequestParameters)["generationConfig"]["thinkingConfig"]
-                                                          ["thinkingBudget"] == 0 &&
-                      nlohmann::json::parse(
                           saved.connectionProfiles.at("deepseek").requestParameters)["reasoning_effort"] ==
                           "high",
-                  "independent and inactive request fields not saved");
+                  "inactive provider request fields not saved");
             Check(UnprotectSecret(saved.connectionProfiles.at("deepseek").encryptedKey) == "original-key" &&
                       UnprotectSecret(saved.connectionProfiles.at("deepl").encryptedKey) ==
                           "primary-test-key",
                   "saving another service discarded previous key");
             window.ApiBusy(true);
-            Check(!parameters.IsEnabled() && !fallbackParameters.IsEnabled(),
-                  "request fields editable during connection test");
-            Check(!root.FindName(L"FallbackKey").as<PasswordBox>().IsEnabled() &&
+            Check(!parameters.IsEnabled(), "request fields editable during connection test");
+            Check(!root.FindName(L"Key").as<PasswordBox>().IsEnabled() &&
                       !root.FindName(L"ProxyMode").as<ComboBox>().IsEnabled(),
                   "connection configuration editable during request");
             Check(!IsWindowVisible(window.Window()), "test unexpectedly displayed a window");
@@ -358,7 +342,7 @@ int main() {
         Pump();
         ReportMemory("Settings closed");
         SIZE_T firstCycle{};
-        for (int cycle = 0; cycle < 3; ++cycle) {
+        for (int cycle = 0; cycle < 4; ++cycle) {
             {
                 SettingsWindow window;
                 Settings options;
@@ -372,8 +356,15 @@ int main() {
                 window.Close();
             }
             Pump();
+            if (!cycle) {
+                // Complete deferred WinUI and font-cache initialization before measuring growth.
+                Sleep(100);
+                Pump();
+                ReportMemory("Settings cache warmup");
+                continue;
+            }
             auto memory = ReportMemory("Settings reopen/close");
-            if (!cycle)
+            if (cycle == 1)
                 firstCycle = memory;
             else
                 Check(memory <= firstCycle + 24 * 1024 * 1024, "reopening settings retains excessive memory");
