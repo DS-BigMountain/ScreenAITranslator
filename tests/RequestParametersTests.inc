@@ -68,9 +68,7 @@ void RequestParameterTests() {
                 body["max_tokens"] == 4096,
             "Claude native overrides retained");
 
-    options.fallbackEnabled = true;
-    options.fallbackRequestParameters = R"({"thinking":{"type":"disabled"}})";
     auto selected = SelectTranslationConnection(options);
-    Require(selected.requestParameters == options.fallbackRequestParameters,
-            "independent connection uses its own parameters");
+    Require(selected.requestParameters == options.requestParameters,
+            "image translation must retain the configured connection parameters");
 }

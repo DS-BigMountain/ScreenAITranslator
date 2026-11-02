@@ -1,6 +1,12 @@
 // Settings windows remain hidden or outside all monitors. No desktop capture or live API requests.
 #include "../src/app/App.cpp"
 #include "capture/BundledOcr.h"
+#undef GetCurrentTime
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Microsoft.UI.Xaml.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.h>
+#include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <wincodec.h>
 #include <psapi.h>
 #include <fstream>
@@ -31,6 +37,13 @@ Json Read(const std::filesystem::path& path) {
 }
 class OffscreenSettings {
     HHOOK hook_{};
+    static bool IsolatedDesktop() {
+        wchar_t name[256]{};
+        DWORD size{};
+        return GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, name, sizeof(name),
+                                         &size) &&
+               std::wstring_view(name).starts_with(L"SAT.Tests.");
+    }
     static LRESULT CALLBACK Hook(int code, WPARAM w, LPARAM l) {
         wchar_t name[64]{};
         if (code >= 0)
@@ -40,8 +53,9 @@ class OffscreenSettings {
                 auto create = reinterpret_cast<CBT_CREATEWNDW*>(l);
                 create->lpcs->x = -32000;
                 create->lpcs->y = -32000;
-                create->lpcs->dwExStyle |= WS_EX_NOACTIVATE;
-            } else if (code == HCBT_ACTIVATE)
+                if (!IsolatedDesktop())
+                    create->lpcs->dwExStyle |= WS_EX_NOACTIVATE;
+            } else if (code == HCBT_ACTIVATE && !IsolatedDesktop())
                 return 1;
         }
         return CallNextHookEx(nullptr, code, w, l);
@@ -105,8 +119,89 @@ public:
             Check(!IntersectRect(&overlap, &bounds, &monitor.rect),
                   "Settings wake test entered a user monitor");
         }
+        auto pump = [] {
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                if (!WinUIRuntime::ProcessMessage(message)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+        };
+        namespace xaml = winrt::Microsoft::UI::Xaml;
+        using namespace xaml::Controls;
+        auto root = app.settingsWindow_.Content();
+        auto navigation = root.FindName(L"Navigation").as<NavigationView>();
+        for (int frame = 0; frame < 30; ++frame) {
+            root.UpdateLayout();
+            pump();
+            if (root.IsLoaded() && navigation.ActualWidth() > 0)
+                break;
+            Sleep(10);
+        }
+        navigation.SelectedItem(navigation.MenuItems().GetAt(1));
+        root.UpdateLayout();
+        pump();
+        root.FindName(L"Close").as<Button>().Focus(xaml::FocusState::Programmatic);
+        pump();
+        auto checkRegistration = [&](bool registered) {
+            for (const auto& key : app.settings_.hotkeys) {
+                Check(key.key != 0, "Focus regression requires all shortcuts configured");
+                bool available = RegisterHotKey(nullptr, 901, key.modifiers | MOD_NOREPEAT, key.key) != FALSE;
+                if (available)
+                    UnregisterHotKey(nullptr, 901);
+                Check(available != registered, "Shortcut registration does not match editing focus");
+            }
+        };
+        checkRegistration(true);
+        for (int i = 0; i < 3; ++i) {
+            auto editor = root.FindName(L"Hotkey" + std::to_wstring(i)).as<TextBox>();
+            Check(editor.Focus(xaml::FocusState::Programmatic),
+                  ("Cannot focus shortcut editor offscreen: loaded=" + std::to_string(root.IsLoaded()) +
+                   ", visible=" + std::to_string(int(editor.Visibility())) +
+                   ", width=" + std::to_string(editor.ActualWidth()))
+                      .c_str());
+            pump();
+            for (int frame = 0; frame < 30 && !app.hotkeys_->Suspended(); ++frame) {
+                root.UpdateLayout();
+                pump();
+                Sleep(10);
+            }
+            auto focused = xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot())
+                               .try_as<xaml::FrameworkElement>();
+            Check(app.hotkeys_->Suspended(), ("Shortcut editor did not suspend global shortcuts: state=" +
+                                              std::to_string(int(editor.FocusState())) + ", focused=" +
+                                              (focused ? Utf8(std::wstring(focused.Name())) : "none") +
+                                              ", active=" + std::to_string(GetActiveWindow() == settings))
+                                                 .c_str());
+            checkRegistration(false);
+        }
+        Check(root.FindName(L"Close").as<Button>().Focus(xaml::FocusState::Programmatic),
+              "Cannot move focus out of shortcut editor");
+        pump();
+        for (int frame = 0; frame < 30 && app.hotkeys_->Suspended(); ++frame) {
+            pump();
+            Sleep(10);
+        }
+        Check(!app.hotkeys_->Suspended(), "Leaving shortcut editors did not resume shortcuts");
+        checkRegistration(true);
+        root.FindName(L"Hotkey0").as<TextBox>().Focus(xaml::FocusState::Programmatic);
+        pump();
+        navigation.SelectedItem(navigation.MenuItems().GetAt(0));
+        pump();
+        Check(!app.hotkeys_->Suspended(), "Page navigation left shortcuts suspended");
+        checkRegistration(true);
+        navigation.SelectedItem(navigation.MenuItems().GetAt(1));
+        pump();
+        root.FindName(L"Hotkey0").as<TextBox>().Focus(xaml::FocusState::Programmatic);
+        pump();
         SendMessageW(settings, WM_CLOSE, 0, 0);
         Check(!app.settingsWindow_.Window(), "Settings wake test did not close");
+        checkRegistration(true);
+        app.hotkeys_->Suspend();
+        SendMessageW(app.window_, WM_HOTKEY, 3, 0);
+        Check(!app.settingsWindow_.Window(), "Queued shortcut executed while shortcuts were suspended");
+        Check(app.hotkeys_->Resume().empty(), "Cannot restore shortcuts after queued message check");
     }
     static int Run(int phase, const std::filesystem::path& root, HANDLE instance, std::string resume) {
         WinUIRuntime runtime(true);
@@ -264,6 +359,13 @@ public:
 int wmain(int argc, wchar_t** argv) {
     std::filesystem::path root;
     HANDLE instance{};
+    struct TestDesktop {
+        HDESK handle{};
+        ~TestDesktop() {
+            if (handle)
+                CloseDesktop(handle);
+        }
+    } desktop;
     try {
         int phase = -1;
         for (int i = 1; i < argc; ++i) {
@@ -295,18 +397,22 @@ int wmain(int argc, wchar_t** argv) {
         settings.encryptedKey = sat::ProtectSecret("idle-test-key");
         HWND probe = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
                                      GetModuleHandleW(nullptr), nullptr);
-        for (UINT key = VK_F13; key <= VK_F24; ++key)
+        int shortcutIndex = 0;
+        for (UINT key = VK_F13; key <= VK_F24 && shortcutIndex < 3; ++key)
             if (RegisterHotKey(probe, 1, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, key)) {
-                settings.hotkeys[2] = {MOD_CONTROL | MOD_ALT | MOD_SHIFT, key};
+                settings.hotkeys[shortcutIndex++] = {MOD_CONTROL | MOD_ALT | MOD_SHIFT, key};
                 UnregisterHotKey(probe, 1);
-                break;
             }
         DestroyWindow(probe);
-        Check(settings.hotkeys[2].key != 0, "No free test shortcut");
+        Check(shortcutIndex == 3, "Insufficient free test shortcuts");
         sat::Store(root).SaveSettings(settings);
         auto exe = sat::Executable();
         std::wstring command = L"\"" + exe + L"\" --phase 0 --root \"" + root.wstring() + L"\"";
+        auto desktopName = L"SAT.Tests." + std::to_wstring(GetCurrentProcessId());
+        desktop.handle = CreateDesktopW(desktopName.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+        Check(desktop.handle != nullptr, "Cannot create isolated desktop for focus regression");
         STARTUPINFOW startup{sizeof(startup)};
+        startup.lpDesktop = desktopName.data();
         startup.dwFlags = STARTF_USESHOWWINDOW;
         startup.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION child{};
@@ -322,9 +428,9 @@ int wmain(int argc, wchar_t** argv) {
         DWORD code{};
         GetExitCodeProcess(child.hProcess, &code);
         CloseHandle(child.hProcess);
-        Check(exited == WAIT_OBJECT_0 && code == 0, "First lifecycle process failed");
         if (std::filesystem::exists(root / L"error.json"))
             throw std::runtime_error(Read(root / L"error.json").dump());
+        Check(exited == WAIT_OBJECT_0 && code == 0, "First lifecycle process failed");
         Check(std::filesystem::exists(root / L"phase-2.json"), "Resumed process failed or timed out");
         for (int phaseIndex = 0; phaseIndex < 3; ++phaseIndex)
             std::cout << Read(root / (L"phase-" + std::to_wstring(phaseIndex) + L".json")).dump() << "\n";
@@ -334,7 +440,7 @@ int wmain(int argc, wchar_t** argv) {
     } catch (const std::exception& e) {
         if (instance)
             CloseHandle(instance);
-        if (!root.empty())
+        if (!root.empty() && !std::filesystem::exists(root / L"error.json"))
             Write(root / L"error.json", {{"error", e.what()}});
         std::cerr << e.what() << "\n";
         return 1;

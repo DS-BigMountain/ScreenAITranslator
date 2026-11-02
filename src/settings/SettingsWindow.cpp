@@ -1,4 +1,5 @@
 #include "SettingsWindow.h"
+#include "common/AppIdentity.h"
 #include "common/Secret.h"
 #include "common/Platform.h"
 #include "WinUIRuntime.h"
@@ -19,6 +20,7 @@
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
+#include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Interop.h>
 #include <algorithm>
@@ -27,6 +29,7 @@
 #include <propsys.h>
 #include <propkey.h>
 #include <propvarutil.h>
+#include <dwrite.h>
 
 namespace sat {
 namespace xaml = winrt::Microsoft::UI::Xaml;
@@ -64,6 +67,30 @@ std::wstring HotkeyLabel(Hotkey key) {
     GetKeyNameTextW(static_cast<LONG>(scan << 16), name, 64);
     return label + (name[0] ? std::wstring(name) : std::to_wstring(key.key));
 }
+std::wstring FontLabel(IDWriteFontCollection* fonts, const std::wstring& name) {
+    if (!fonts)
+        return name;
+    UINT32 index{};
+    BOOL exists{};
+    ComPtr<IDWriteFontFamily> family;
+    ComPtr<IDWriteLocalizedStrings> names;
+    if (FAILED(fonts->FindFamilyName(name.c_str(), &index, &exists)) || !exists ||
+        FAILED(fonts->GetFontFamily(index, &family)) || FAILED(family->GetFamilyNames(&names)))
+        return name;
+    for (auto locale : {L"zh-cn", L"zh-hans", L"zh-sg", L"zh-tw", L"zh-hk", L"zh"}) {
+        if (FAILED(names->FindLocaleName(locale, &index, &exists)) || !exists)
+            continue;
+        UINT32 length{};
+        if (FAILED(names->GetStringLength(index, &length)))
+            continue;
+        std::wstring label(length + 1, L'\0');
+        if (SUCCEEDED(names->GetString(index, label.data(), length + 1))) {
+            label.resize(length);
+            return label;
+        }
+    }
+    return name;
+}
 const PROPERTYKEY TaskbarProperties[]{PKEY_AppUserModel_ID, PKEY_AppUserModel_RelaunchIconResource,
                                       PKEY_AppUserModel_RelaunchCommand,
                                       PKEY_AppUserModel_RelaunchDisplayNameResource};
@@ -71,19 +98,22 @@ void ShowForUser(HWND window, int command) {
     ShowWindow(window, command);
     // A background launch's STARTF_USESHOWWINDOW/SW_HIDE can override the first ShowWindow.
     // An explicit settings request must still reveal the window on that same request.
-    SetWindowPos(window, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    SetWindowPos(window, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
     SetForegroundWindow(window);
 }
 } // namespace
 struct SettingsWindow::Impl {
     xaml::Hosting::DesktopWindowXamlSource island{nullptr};
     xaml::FrameworkElement root{nullptr};
-    Hotkey hotkeys[4]{};
+    xaml::Input::FocusManager::GotFocus_revoker focusGained;
+    xaml::Input::FocusManager::LostFocus_revoker focusLost;
+    Hotkey hotkeys[3]{};
     bool updating{};
     bool focusPending{};
-    std::map<std::string, ConnectionProfile> profiles[2];
-    std::string activeProvider[2];
+    bool hotkeyFocusPending{};
+    std::map<std::string, ConnectionProfile> profiles;
+    std::string activeProvider;
+    std::vector<std::pair<std::wstring, std::wstring>> fontNames;
     template <class T> T Get(const wchar_t* name) const {
         return root.FindName(name).as<T>();
     }
@@ -93,12 +123,32 @@ struct SettingsWindow::Impl {
     bool On(const wchar_t* name) const {
         return Get<ToggleSwitch>(name).IsOn();
     }
-    ConnectionProfile ReadConnection(bool fallback) const {
+    bool IsHotkeyEditor(xaml::DependencyObject element) const {
+        for (; element; element = xaml::Media::VisualTreeHelper::GetParent(element)) {
+            if (auto control = element.try_as<TextBox>()) {
+                auto name = control.Name();
+                if (name == L"Hotkey0" || name == L"Hotkey1" || name == L"Hotkey2")
+                    return true;
+            }
+        }
+        return false;
+    }
+    bool FocusedHotkey() const {
+        return Get<StackPanel>(L"Page1").Visibility() == xaml::Visibility::Visible && root.XamlRoot() &&
+               IsHotkeyEditor(xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot())
+                                  .try_as<xaml::DependencyObject>());
+    }
+    std::wstring ReadFont() const {
+        const auto name = std::wstring(Get<ComboBox>(L"Font").Text());
+        for (const auto& [label, family] : fontNames)
+            if (name == label)
+                return family;
+        return name;
+    }
+    ConnectionProfile ReadConnection() const {
         ConnectionProfile profile;
-        profile.baseUrl = Text(fallback ? L"FallbackBaseUrl" : L"BaseUrl");
-        if (fallback)
-            profile.model = Utf8(Text(L"FallbackModel"));
-        else {
+        profile.baseUrl = Text(L"BaseUrl");
+        {
             auto control = Get<ComboBox>(L"Model");
             auto name = control.Text();
             if (name.empty() && control.SelectedItem())
@@ -106,10 +156,9 @@ struct SettingsWindow::Impl {
             profile.model = Utf8(std::wstring(name));
             profile.serviceRegion = Utf8(Text(L"ServiceRegion"));
         }
-        Secret secret{Utf8(std::wstring(Get<PasswordBox>(fallback ? L"FallbackKey" : L"Key").Password()))};
+        Secret secret{Utf8(std::wstring(Get<PasswordBox>(L"Key").Password()))};
         profile.encryptedKey = ProtectSecret(secret.value);
-        profile.requestParameters =
-            Utf8(Text(fallback ? L"FallbackRequestParameters" : L"RequestParameters"));
+        profile.requestParameters = Utf8(Text(L"RequestParameters"));
         return profile;
     }
     double Number(const wchar_t* name) const {
@@ -178,9 +227,9 @@ void SettingsWindow::Show(const Settings& s, const std::string& key, const Persi
             y = std::clamp(r.top, mi.rcWork.top, mi.rcWork.bottom - height);
         }
     }
-    hwnd_ = CreateWindowExW(WS_EX_CONTROLPARENT, wc.lpszClassName, L"屏幕翻译",
-                            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height, nullptr, nullptr,
-                            wc.hInstance, this);
+    hwnd_ =
+        CreateWindowExW(WS_EX_CONTROLPARENT, wc.lpszClassName, AppName, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                        x, y, width, height, nullptr, nullptr, wc.hInstance, this);
     if (!hwnd_)
         throw AppError("settings", "无法创建设置窗口");
     try {
@@ -236,7 +285,10 @@ void SettingsWindow::UpdateIcons() {
     SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
 }
 void SettingsWindow::Close() {
+    SetHotkeyEditing(false);
     if (ui_) {
+        ui_->focusGained.revoke();
+        ui_->focusLost.revoke();
         ui_->updating = true;
         if (ui_->root)
             ui_->Get<PasswordBox>(L"Key").Password(L"");
@@ -268,10 +320,8 @@ void SettingsWindow::Layout() {
 void SettingsWindow::Build(const std::string& key) {
     ui_ = std::make_unique<Impl>();
     ui_->updating = true;
-    ui_->profiles[0] = settings_.connectionProfiles;
-    ui_->profiles[1] = settings_.fallbackProfiles;
-    ui_->activeProvider[0] = settings_.provider;
-    ui_->activeProvider[1] = settings_.fallbackProvider;
+    ui_->profiles = settings_.connectionProfiles;
+    ui_->activeProvider = settings_.provider;
     auto resource = FindResourceW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(201), RT_RCDATA);
     if (!resource)
         throw AppError("settings", "界面资源缺失");
@@ -295,35 +345,22 @@ void SettingsWindow::Build(const std::string& key) {
     auto number = [&](const wchar_t* name, double value) { ui_->Get<NumberBox>(name).Value(value); };
     toggle(L"Startup", settings_.startup);
     toggle(L"Tray", settings_.tray);
-    toggle(L"AutoHide", settings_.autoHide);
-    number(L"HideSeconds", settings_.autoHideSeconds);
     for (const auto& preset : ProviderPresets())
-        for (auto name : {L"Provider", L"FallbackProvider"})
-            ui_->Get<ComboBox>(name).Items().Append(winrt::box_value(preset.name));
+        ui_->Get<ComboBox>(L"Provider").Items().Append(winrt::box_value(preset.name));
     for (size_t i = 0; i < ProviderPresets().size(); ++i) {
         if (settings_.provider == ProviderPresets()[i].id)
             ui_->Get<ComboBox>(L"Provider").SelectedIndex(int(i));
-        if (settings_.fallbackProvider == ProviderPresets()[i].id)
-            ui_->Get<ComboBox>(L"FallbackProvider").SelectedIndex(int(i));
     }
     text(L"BaseUrl", settings_.baseUrl);
     ui_->Get<PasswordBox>(L"Key").Password(Wide(key));
     text(L"ServiceRegion", Wide(settings_.serviceRegion));
-    text(L"FallbackBaseUrl", settings_.fallbackBaseUrl);
-    text(L"FallbackModel", Wide(settings_.fallbackModel));
-    toggle(L"FallbackEnabled", settings_.fallbackEnabled);
     toggle(L"TranslateAll", settings_.translateAll);
-    {
-        Secret fallback{UnprotectSecret(settings_.encryptedFallbackKey)};
-        ui_->Get<PasswordBox>(L"FallbackKey").Password(Wide(fallback.value));
-    }
     ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex(settings_.proxyMode);
     text(L"ProxyAddress", settings_.proxyAddress);
     ui_->Get<ComboBox>(L"Model").Items().Append(winrt::box_value(Wide(settings_.model)));
     ui_->Get<ComboBox>(L"Model").SelectedIndex(0);
     number(L"Timeout", settings_.timeoutSeconds);
     text(L"RequestParameters", Wide(settings_.requestParameters));
-    text(L"FallbackRequestParameters", Wide(settings_.fallbackRequestParameters));
     ui_->Get<ComboBox>(L"Quality").SelectedIndex(settings_.quality);
     ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex(settings_.translationMode);
     ui_->Get<ComboBox>(L"OcrMode").SelectedIndex(OcrSelectionFromMode(settings_.ocrMode));
@@ -332,19 +369,34 @@ void SettingsWindow::Build(const std::string& key) {
     text(L"Prompt", Wide(settings_.prompt));
     toggle(L"SpatialOverlay", settings_.spatialOverlay);
     auto fonts = ui_->Get<ComboBox>(L"Font");
+    ComPtr<IDWriteFactory> fontFactory;
+    ComPtr<IDWriteFontCollection> fontCollection;
+    if (SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                      reinterpret_cast<IUnknown**>(fontFactory.GetAddressOf()))))
+        fontFactory->GetSystemFontCollection(&fontCollection);
     int selectedFont = -1;
     for (auto name : {L"Microsoft YaHei UI", L"Microsoft YaHei", L"SimSun", L"SimHei", L"KaiTi", L"FangSong",
                       L"Segoe UI", L"Arial", L"Times New Roman", L"Consolas", L"Yu Gothic UI", L"Meiryo"}) {
-        if (settings_.font == name)
+        auto label = FontLabel(fontCollection.Get(), name);
+        if (settings_.font == name || settings_.font == label)
             selectedFont = int(fonts.Items().Size());
-        fonts.Items().Append(winrt::box_value(name));
+        fonts.Items().Append(winrt::box_value(label));
+        ui_->fontNames.emplace_back(label, name);
     }
     if (selectedFont < 0) {
         selectedFont = int(fonts.Items().Size());
-        fonts.Items().Append(winrt::box_value(settings_.font));
+        auto label = FontLabel(fontCollection.Get(), settings_.font);
+        fonts.Items().Append(winrt::box_value(label));
+        ui_->fontNames.emplace_back(label, settings_.font);
     }
     fonts.SelectedIndex(selectedFont);
-    fonts.Text(settings_.font);
+    fonts.Text(ui_->fontNames[selectedFont].first);
+    fonts.SelectionChanged([this](auto const& sender, auto const&) {
+        auto control = sender.template as<ComboBox>();
+        auto index = control.SelectedIndex();
+        if (index >= 0)
+            control.Text(ui_->fontNames.at(index).first);
+    });
     toggle(L"MatchTextColor", settings_.matchTextColor);
     toggle(L"AutoFont", settings_.autoFont);
     number(L"FontSize", settings_.fontSize);
@@ -352,7 +404,7 @@ void SettingsWindow::Build(const std::string& key) {
     text(L"OutlineColor", Color(settings_.outlineColor));
     number(L"OutlineWidth", settings_.outlineWidth);
     number(L"Opacity", settings_.backgroundOpacity);
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 3; ++i) {
         ui_->hotkeys[i] = settings_.hotkeys[i];
         auto name = L"Hotkey" + std::to_wstring(i);
         auto control = ui_->Get<TextBox>(name.c_str());
@@ -381,6 +433,24 @@ void SettingsWindow::Build(const std::string& key) {
         });
     }
     auto nav = ui_->Get<NavigationView>(L"Navigation");
+    auto focusChanged = [this](auto const&, auto const&) {
+        if (ui_ && !ui_->hotkeyFocusPending) {
+            // FocusManager notifications precede the committed focus state.
+            ui_->hotkeyFocusPending = true;
+            PostMessageW(hwnd_, WM_APP + 44, 0, 0);
+        }
+    };
+    ui_->focusGained = xaml::Input::FocusManager::GotFocus(winrt::auto_revoke, focusChanged);
+    ui_->focusLost = xaml::Input::FocusManager::LostFocus(winrt::auto_revoke, focusChanged);
+    auto leaveEditor = xaml::Input::PointerEventHandler(
+        [this](auto const&, xaml::Input::PointerRoutedEventArgs const& args) {
+            if (hotkeyEditing_ &&
+                !ui_->IsHotkeyEditor(args.OriginalSource().try_as<xaml::DependencyObject>())) {
+                ui_->Get<Button>(L"Close").Focus(xaml::FocusState::Programmatic);
+                SetHotkeyEditing(false);
+            }
+        });
+    ui_->root.AddHandler(xaml::UIElement::PointerPressedEvent(), winrt::box_value(leaveEditor), true);
     auto select = [this](int page) {
         page_ = page;
         for (int i = 0; i < 5; ++i) {
@@ -388,6 +458,7 @@ void SettingsWindow::Build(const std::string& key) {
             ui_->Get<StackPanel>(name.c_str())
                 .Visibility(i == page ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
         }
+        SetHotkeyEditing(page == 1 && GetActiveWindow() == hwnd_ && ui_->FocusedHotkey());
         const wchar_t* titles[]{L"翻译与偏好", L"快捷键", L"模型连接", L"翻译参数", L"显示效果"};
         ui_->Get<TextBlock>(L"PageTitle").Text(titles[page]);
         ui_->Get<ScrollViewer>(L"PageScroll")
@@ -419,13 +490,12 @@ void SettingsWindow::Build(const std::string& key) {
     button(L"Close", [this] { PostMessageW(hwnd_, WM_CLOSE, 0, 0); });
     button(L"FetchModels", [this] { StartApi(true); });
     button(L"TestApi", [this] { StartApi(false); });
-    for (bool fallback : {false, true})
-        button(fallback ? L"FormatFallbackRequestParameters" : L"FormatRequestParameters", [this, fallback] {
-            auto editor = ui_->Get<TextBox>(fallback ? L"FallbackRequestParameters" : L"RequestParameters");
-            auto formatted = ParseRequestParameters(Utf8(std::wstring(editor.Text()))).dump(2);
-            editor.Text(Wide(formatted));
-            Status(L"JSON 格式有效；字段支持范围以所选服务的官方定义为准。");
-        });
+    button(L"FormatRequestParameters", [this] {
+        auto editor = ui_->Get<TextBox>(L"RequestParameters");
+        auto formatted = ParseRequestParameters(Utf8(std::wstring(editor.Text()))).dump(2);
+        editor.Text(Wide(formatted));
+        Status(L"JSON 格式有效；字段支持范围以所选服务的官方定义为准。");
+    });
     for (auto [name, action] : std::initializer_list<std::pair<const wchar_t*, SettingsAction>>{
              {L"Translate", SettingsAction::Translate},
              {L"TranslateFixed", SettingsAction::FixedTranslate},
@@ -442,59 +512,52 @@ void SettingsWindow::Build(const std::string& key) {
                                          [this](auto const&, auto const&) { InvalidateModels(); });
     ui_->Get<PasswordBox>(L"Key").RegisterPropertyChangedCallback(
         PasswordBox::PasswordProperty(), [this](auto const&, auto const&) { InvalidateModels(); });
-    for (bool fallback : {false, true})
-        ui_->Get<ComboBox>(fallback ? L"FallbackProvider" : L"Provider")
-            .RegisterPropertyChangedCallback(
-                xaml::Controls::Primitives::Selector::SelectedIndexProperty(),
-                [this, fallback](auto const&, auto const&) {
-                    if (ui_->updating)
-                        return;
-                    auto index =
-                        ui_->Get<ComboBox>(fallback ? L"FallbackProvider" : L"Provider").SelectedIndex();
-                    if (index < 0)
-                        return;
-                    const auto& preset = ProviderPresets().at(index);
-                    if (ui_->activeProvider[fallback] == preset.id)
-                        return;
-                    auto previous = ui_->ReadConnection(fallback);
-                    auto& profiles = ui_->profiles[fallback];
-                    auto found = profiles.find(preset.id);
-                    ConnectionProfile next = found == profiles.end()
-                                                 ? ConnectionProfile{preset.url, preset.model, {}, {}}
-                                                 : found->second;
-                    Secret secret{UnprotectSecret(next.encryptedKey)};
-                    profiles[ui_->activeProvider[fallback]] = std::move(previous);
-                    ui_->updating = true;
-                    struct Reset {
-                        bool& value;
-                        ~Reset() {
-                            value = false;
-                        }
-                    } reset{ui_->updating};
-                    ui_->Get<PasswordBox>(fallback ? L"FallbackKey" : L"Key").Password(Wide(secret.value));
-                    ui_->Get<TextBox>(fallback ? L"FallbackBaseUrl" : L"BaseUrl").Text(next.baseUrl);
-                    ui_->Get<TextBox>(fallback ? L"FallbackRequestParameters" : L"RequestParameters")
-                        .Text(Wide(next.requestParameters));
-                    if (fallback)
-                        ui_->Get<TextBox>(L"FallbackModel").Text(Wide(next.model));
-                    else {
-                        auto model = ui_->Get<ComboBox>(L"Model");
-                        model.SelectedIndex(-1);
-                        model.Items().Clear();
-                        model.Text(Wide(next.model));
-                        ui_->Get<TextBox>(L"ServiceRegion").Text(Wide(next.serviceRegion));
+    ui_->Get<ComboBox>(L"Provider")
+        .RegisterPropertyChangedCallback(
+            xaml::Controls::Primitives::Selector::SelectedIndexProperty(), [this](auto const&, auto const&) {
+                if (ui_->updating)
+                    return;
+                auto index = ui_->Get<ComboBox>(L"Provider").SelectedIndex();
+                if (index < 0)
+                    return;
+                const auto& preset = ProviderPresets().at(index);
+                if (ui_->activeProvider == preset.id)
+                    return;
+                auto previous = ui_->ReadConnection();
+                auto& profiles = ui_->profiles;
+                auto found = profiles.find(preset.id);
+                ConnectionProfile next = found == profiles.end()
+                                             ? ConnectionProfile{preset.url, preset.model, {}, {}}
+                                             : found->second;
+                Secret secret{UnprotectSecret(next.encryptedKey)};
+                profiles[ui_->activeProvider] = std::move(previous);
+                ui_->updating = true;
+                struct Reset {
+                    bool& value;
+                    ~Reset() {
+                        value = false;
                     }
-                    ui_->activeProvider[fallback] = preset.id;
-                    ui_->Get<TextBlock>(L"ApiResult")
-                        .Text(L"已切换连接草稿。切回可恢复原配置；点击保存设置后写入磁盘。");
-                });
+                } reset{ui_->updating};
+                ui_->Get<PasswordBox>(L"Key").Password(Wide(secret.value));
+                ui_->Get<TextBox>(L"BaseUrl").Text(next.baseUrl);
+                ui_->Get<TextBox>(L"RequestParameters").Text(Wide(next.requestParameters));
+                {
+                    auto model = ui_->Get<ComboBox>(L"Model");
+                    model.SelectedIndex(-1);
+                    model.Items().Clear();
+                    model.Text(Wide(next.model));
+                    ui_->Get<TextBox>(L"ServiceRegion").Text(Wide(next.serviceRegion));
+                }
+                ui_->activeProvider = preset.id;
+                ui_->Get<TextBlock>(L"ApiResult")
+                    .Text(L"已切换连接草稿。切回可恢复原配置；点击保存设置后写入磁盘。");
+            });
     auto dependent = [this] {
-        ui_->Get<NumberBox>(L"HideSeconds").IsEnabled(ui_->On(L"AutoHide"));
         ui_->Get<NumberBox>(L"ContextSize").IsEnabled(ui_->On(L"ContextEnabled"));
         ui_->Get<NumberBox>(L"FontSize").IsEnabled(!ui_->On(L"AutoFont"));
         ui_->Get<TextBox>(L"TextColor").IsEnabled(!ui_->On(L"MatchTextColor"));
     };
-    for (auto name : {L"AutoHide", L"ContextEnabled", L"AutoFont", L"MatchTextColor"})
+    for (auto name : {L"ContextEnabled", L"AutoFont", L"MatchTextColor"})
         ui_->Get<ToggleSwitch>(name).Toggled([dependent](auto const&, auto const&) { dependent(); });
     dependent();
     ui_->Get<ComboBox>(L"TranslationMode").SelectionChanged([this](auto const&, auto const&) {
@@ -502,6 +565,13 @@ void SettingsWindow::Build(const std::string& key) {
     });
     UpdateTranslationMode();
     ui_->updating = false;
+}
+void SettingsWindow::SetHotkeyEditing(bool editing) {
+    if (hotkeyEditing_ == editing)
+        return;
+    hotkeyEditing_ = editing;
+    if (callbacks_.hotkeyEditing)
+        callbacks_.hotkeyEditing(editing);
 }
 void SettingsWindow::UpdateTranslationMode() {
     if (!ui_)
@@ -526,26 +596,9 @@ void SettingsWindow::ApiBusy(bool busy) {
     apiBusy_ = busy;
     if (!ui_)
         return;
-    for (auto name : {L"Provider",
-                      L"BaseUrl",
-                      L"Key",
-                      L"Model",
-                      L"Timeout",
-                      L"RequestParameters",
-                      L"FetchModels",
-                      L"TestApi",
-                      L"Apply",
-                      L"ServiceRegion",
-                      L"FallbackEnabled",
-                      L"FallbackProvider",
-                      L"FallbackBaseUrl",
-                      L"FallbackModel",
-                      L"FallbackKey",
-                      L"ProxyMode",
-                      L"ProxyAddress",
-                      L"FallbackRequestParameters",
-                      L"FormatRequestParameters",
-                      L"FormatFallbackRequestParameters"})
+    for (auto name :
+         {L"Provider", L"BaseUrl", L"Key", L"Model", L"Timeout", L"RequestParameters", L"FetchModels",
+          L"TestApi", L"Apply", L"ServiceRegion", L"ProxyMode", L"ProxyAddress", L"FormatRequestParameters"})
         ui_->Get<Control>(name).IsEnabled(!busy);
     auto progress = ui_->Get<ProgressRing>(L"ApiProgress");
     progress.IsActive(busy);
@@ -568,25 +621,13 @@ Settings SettingsWindow::ReadApi(bool requireModel) const {
     value.baseUrl = ui_->Text(L"BaseUrl");
     value.timeoutSeconds = ui_->Integer(L"Timeout");
     value.requestParameters = Utf8(ui_->Text(L"RequestParameters"));
-    value.fallbackRequestParameters = Utf8(ui_->Text(L"FallbackRequestParameters"));
     (void)ParseRequestParameters(value.requestParameters);
-    (void)ParseRequestParameters(value.fallbackRequestParameters);
     value.ocrMode = OcrModeFromSelection(ui_->Get<ComboBox>(L"OcrMode").SelectedIndex());
     value.translationMode = ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex();
     value.serviceRegion = Utf8(ui_->Text(L"ServiceRegion"));
     value.proxyMode = ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex();
     value.proxyAddress = ui_->Text(L"ProxyAddress");
     value.translateAll = ui_->On(L"TranslateAll");
-    value.fallbackEnabled = ui_->On(L"FallbackEnabled");
-    value.fallbackProvider = ProviderPresets().at(ui_->Get<ComboBox>(L"FallbackProvider").SelectedIndex()).id;
-    value.fallbackBaseUrl = ui_->Text(L"FallbackBaseUrl");
-    value.fallbackModel = Utf8(ui_->Text(L"FallbackModel"));
-    {
-        Secret fallback{Utf8(std::wstring(ui_->Get<PasswordBox>(L"FallbackKey").Password()))};
-        value.encryptedFallbackKey = ProtectSecret(fallback.value);
-        if (value.translationMode == TranslationAiVision && value.fallbackEnabled && fallback.value.empty())
-            throw AppError("settings", "请填写视觉连接密钥。");
-    }
     auto model = ui_->Get<ComboBox>(L"Model");
     auto name = std::wstring(model.Text());
     if (name.empty() && model.SelectedItem())
@@ -596,12 +637,10 @@ Settings SettingsWindow::ReadApi(bool requireModel) const {
     if (name.empty() && requireModel)
         throw AppError("settings", "请选择或输入模型名称。");
     value.model = name.empty() ? "model-list" : Utf8(name);
-    value.connectionProfiles = ui_->profiles[0];
-    value.fallbackProfiles = ui_->profiles[1];
-    value.connectionProfiles[value.provider] = ui_->ReadConnection(false);
+    value.connectionProfiles = ui_->profiles;
+    value.connectionProfiles[value.provider] = ui_->ReadConnection();
     value.connectionProfiles[value.provider].model = value.model;
     value.encryptedKey = value.connectionProfiles[value.provider].encryptedKey;
-    value.fallbackProfiles[value.fallbackProvider] = ui_->ReadConnection(true);
     return value;
 }
 void SettingsWindow::StartApi(bool fetch) {
@@ -609,8 +648,7 @@ void SettingsWindow::StartApi(bool fetch) {
         return;
     auto value = ReadApi(!fetch);
     Secret secret{Utf8(std::wstring(ui_->Get<PasswordBox>(L"Key").Password()))};
-    if (secret.value.empty() &&
-        (fetch || value.translationMode == TranslationOcrText || !value.fallbackEnabled))
+    if (secret.value.empty())
         throw AppError("settings", "请先填写 API 密钥。");
     ApiBusy(true);
     ui_->Get<TextBlock>(L"ApiResult").Text(fetch ? L"正在获取模型列表…" : L"正在进行连接和翻译自检…");
@@ -653,8 +691,6 @@ void SettingsWindow::Save() {
         auto next = ReadApi(true);
         next.startup = ui_->On(L"Startup");
         next.tray = ui_->On(L"Tray");
-        next.autoHide = ui_->On(L"AutoHide");
-        next.autoHideSeconds = ui_->Integer(L"HideSeconds");
         std::copy(std::begin(ui_->hotkeys), std::end(ui_->hotkeys), std::begin(next.hotkeys));
         next.quality = ui_->Get<ComboBox>(L"Quality").SelectedIndex();
         next.ocrMode = OcrModeFromSelection(ui_->Get<ComboBox>(L"OcrMode").SelectedIndex());
@@ -662,7 +698,7 @@ void SettingsWindow::Save() {
         next.contextSize = ui_->Integer(L"ContextSize");
         next.prompt = Utf8(ui_->Text(L"Prompt"));
         next.spatialOverlay = ui_->On(L"SpatialOverlay");
-        next.font = std::wstring(ui_->Get<ComboBox>(L"Font").Text());
+        next.font = ui_->ReadFont();
         next.matchTextColor = ui_->On(L"MatchTextColor");
         next.autoFont = ui_->On(L"AutoFont");
         next.fontSize = static_cast<float>(ui_->Number(L"FontSize"));
@@ -699,6 +735,13 @@ LRESULT CALLBACK SettingsWindow::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_SIZE:
             self->Layout();
             return 0;
+        case WM_ACTIVATE:
+            self->SetHotkeyEditing(LOWORD(w) != WA_INACTIVE && self->ui_ && self->ui_->FocusedHotkey());
+            break;
+        case WM_SHOWWINDOW:
+            if (!w)
+                self->SetHotkeyEditing(false);
+            break;
         case WM_APP + 43:
             if (self->ui_) {
                 auto& ui = *self->ui_;
@@ -706,6 +749,12 @@ LRESULT CALLBACK SettingsWindow::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     ui.island.NavigateFocus(xaml::Hosting::XamlSourceFocusNavigationRequest(
                         static_cast<xaml::Hosting::XamlSourceFocusNavigationReason>(w)));
                 ui.focusPending = false;
+            }
+            return 0;
+        case WM_APP + 44:
+            if (self->ui_) {
+                self->ui_->hotkeyFocusPending = false;
+                self->SetHotkeyEditing(GetActiveWindow() == h && self->ui_->FocusedHotkey());
             }
             return 0;
         case WM_GETMINMAXINFO: {

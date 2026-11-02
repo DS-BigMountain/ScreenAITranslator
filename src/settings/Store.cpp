@@ -171,8 +171,8 @@ std::string UnprotectSecret(const std::string& encrypted) {
 void ValidateSettings(const Settings& s) {
     (void)Preset(s.provider);
     (void)ParseRequestParameters(s.requestParameters);
-    (void)ParseRequestParameters(s.fallbackRequestParameters);
-    for (const auto* profiles : {&s.connectionProfiles, &s.fallbackProfiles}) {
+    {
+        const auto* profiles = &s.connectionProfiles;
         Require(profiles->size() <= ProviderPresets().size(), "Too many connection profiles");
         for (const auto& [id, profile] : *profiles) {
             (void)Preset(id);
@@ -226,18 +226,6 @@ void ValidateSettings(const Settings& s) {
                             [](unsigned char c) { return std::isalnum(c) || c == '-'; }),
             "Invalid service region");
     Require(ValidTranslationMode(s.translationMode), "Invalid translation mode");
-    if (s.translationMode == TranslationAiVision && s.fallbackEnabled) {
-        Require(!IsTextService(s.fallbackProvider), "Fallback must use a vision-capable model service");
-        auto fallback = s;
-        fallback.fallbackEnabled = false;
-        fallback.provider = s.fallbackProvider;
-        fallback.baseUrl = s.fallbackBaseUrl;
-        fallback.model = s.fallbackModel;
-        fallback.encryptedKey = s.encryptedFallbackKey;
-        fallback.requestParameters = s.fallbackRequestParameters;
-        ValidateSettings(fallback);
-    }
-    Require(s.autoHideSeconds >= 1 && s.autoHideSeconds <= 3600, "Auto-hide time must be 1 to 3600 seconds");
     Require(ValidOcrMode(s.ocrMode), "Invalid OCR mode");
     Require(s.translationMode != TranslationOcrText ||
                 (s.ocrMode == OcrLocalAuto || s.ocrMode == OcrEnglish || s.ocrMode == OcrJapanese ||
@@ -252,7 +240,7 @@ void ValidateSettings(const Settings& s) {
                 std::isfinite(s.outlineWidth) && s.outlineWidth >= 0 && s.outlineWidth <= 10 &&
                 std::isfinite(s.backgroundOpacity) && s.backgroundOpacity >= 0.1f && s.backgroundOpacity <= 1,
             "Invalid appearance settings");
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 3; ++i) {
         const auto& h = s.hotkeys[i];
         Require(h.key <= 255 && !(h.modifiers & ~(MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN)) &&
                     (h.key || !h.modifiers),
@@ -272,11 +260,11 @@ Settings Store::LoadSettings() {
     const auto j = ReadJson(root_ / L"config.json");
     Settings s;
     try {
-        for (auto field : {"startup", "tray", "autoHide", "contextEnabled", "autoFont", "matchTextColor",
-                           "spatialOverlay", "fallbackEnabled", "translateAll"})
+        for (auto field : {"startup", "tray", "contextEnabled", "autoFont", "matchTextColor",
+                           "spatialOverlay", "translateAll"})
             Require(!j.contains(field) || j.at(field).is_boolean(), "Invalid boolean setting");
-        for (auto field : {"autoHideSeconds", "timeoutSeconds", "quality", "ocrMode", "translationMode",
-                           "contextSize", "textColor", "outlineColor", "proxyMode"})
+        for (auto field : {"timeoutSeconds", "quality", "ocrMode", "translationMode", "contextSize",
+                           "textColor", "outlineColor", "proxyMode"})
             Require(!j.contains(field) ||
                         (j.at(field).is_number_integer() && j.at(field).get<long long>() >= 0 &&
                          j.at(field).get<long long>() <= INT_MAX),
@@ -284,13 +272,10 @@ Settings Store::LoadSettings() {
 #define READ_FIELD(field) s.field = j.value(#field, s.field)
         READ_FIELD(startup);
         READ_FIELD(tray);
-        READ_FIELD(autoHide);
-        READ_FIELD(autoHideSeconds);
         READ_FIELD(provider);
         READ_FIELD(model);
         READ_FIELD(timeoutSeconds);
         READ_FIELD(requestParameters);
-        READ_FIELD(fallbackRequestParameters);
         READ_FIELD(encryptedKey);
         READ_FIELD(quality);
         READ_FIELD(ocrMode);
@@ -308,10 +293,6 @@ Settings Store::LoadSettings() {
         READ_FIELD(backgroundOpacity);
         READ_FIELD(serviceRegion);
         READ_FIELD(proxyMode);
-        READ_FIELD(fallbackEnabled);
-        READ_FIELD(fallbackProvider);
-        READ_FIELD(fallbackModel);
-        READ_FIELD(encryptedFallbackKey);
         READ_FIELD(translateAll);
 #undef READ_FIELD
         if (!j.contains("translationMode") && j.contains("ocrMode")) {
@@ -323,7 +304,6 @@ Settings Store::LoadSettings() {
         s.baseUrl = Wide(j.value("baseUrl", Utf8(s.baseUrl)));
         s.font = Wide(j.value("font", Utf8(s.font)));
         s.proxyAddress = Wide(j.value("proxyAddress", std::string{}));
-        s.fallbackBaseUrl = Wide(j.value("fallbackBaseUrl", Utf8(s.fallbackBaseUrl)));
         auto readProfiles = [&](const char* field, auto& profiles) {
             if (!j.contains(field))
                 return;
@@ -340,11 +320,10 @@ Settings Store::LoadSettings() {
             }
         };
         readProfiles("connectionProfiles", s.connectionProfiles);
-        readProfiles("fallbackProfiles", s.fallbackProfiles);
         if (j.contains("hotkeys")) {
             const auto& keys = j.at("hotkeys");
-            Require(keys.is_array() && keys.size() == 4, "Invalid saved hotkeys");
-            for (int i = 0; i < 4; ++i) {
+            Require(keys.is_array() && (keys.size() == 3 || keys.size() == 4), "Invalid saved hotkeys");
+            for (int i = 0; i < 3; ++i) {
                 for (auto field : {"modifiers", "key"})
                     Require(keys.at(i).at(field).is_number_integer() &&
                                 keys.at(i).at(field).get<long long>() >= 0 &&
@@ -368,13 +347,10 @@ void Store::SaveSettings(const Settings& s) {
 #define WRITE_FIELD(field) j[#field] = s.field
     WRITE_FIELD(startup);
     WRITE_FIELD(tray);
-    WRITE_FIELD(autoHide);
-    WRITE_FIELD(autoHideSeconds);
     WRITE_FIELD(provider);
     WRITE_FIELD(model);
     WRITE_FIELD(timeoutSeconds);
     WRITE_FIELD(requestParameters);
-    WRITE_FIELD(fallbackRequestParameters);
     WRITE_FIELD(encryptedKey);
     WRITE_FIELD(quality);
     WRITE_FIELD(ocrMode);
@@ -392,17 +368,12 @@ void Store::SaveSettings(const Settings& s) {
     WRITE_FIELD(backgroundOpacity);
     WRITE_FIELD(serviceRegion);
     WRITE_FIELD(proxyMode);
-    WRITE_FIELD(fallbackEnabled);
-    WRITE_FIELD(fallbackProvider);
-    WRITE_FIELD(fallbackModel);
-    WRITE_FIELD(encryptedFallbackKey);
     WRITE_FIELD(translateAll);
 #undef WRITE_FIELD
     j["baseUrl"] = Utf8(s.baseUrl);
     j["font"] = Utf8(s.font);
     j["hotkeys"] = Json::array();
     j["proxyAddress"] = Utf8(s.proxyAddress);
-    j["fallbackBaseUrl"] = Utf8(s.fallbackBaseUrl);
     auto writeProfiles = [&](const char* field, const auto& profiles) {
         j[field] = Json::object();
         for (const auto& [id, p] : profiles)
@@ -413,7 +384,6 @@ void Store::SaveSettings(const Settings& s) {
                             {"requestParameters", p.requestParameters}};
     };
     writeProfiles("connectionProfiles", s.connectionProfiles);
-    writeProfiles("fallbackProfiles", s.fallbackProfiles);
     for (const auto& h : s.hotkeys)
         j["hotkeys"].push_back({{"modifiers", h.modifiers}, {"key", h.key}});
     std::lock_guard lock(storeMutex);

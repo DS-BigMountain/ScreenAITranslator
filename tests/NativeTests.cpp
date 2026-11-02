@@ -138,7 +138,6 @@ void TestOverlay() {
     sat::Settings settings;
     settings.spatialOverlay = false;
     settings.outlineWidth = 0;
-    Require(!settings.autoHide, "translations auto-close by default");
     std::string text = "第一段：译文框与截图选区的位置、大小完全一致。";
     for (int i = 0; i < 12; ++i)
         text += "\n译文内容保留在框内，滚动查看，点击正文不会关闭。";

@@ -67,9 +67,8 @@ struct ConnectionProfile {
     std::string requestParameters{"{}"};
 };
 struct Settings {
-    bool startup{true}, tray{true}, autoHide{false};
-    int autoHideSeconds{10};
-    Hotkey hotkeys[4]{};
+    bool startup{true}, tray{true};
+    Hotkey hotkeys[3]{};
     std::string provider{"deepseek"};
     std::wstring baseUrl{L"https://api.deepseek.com"};
     std::string model{"deepseek-flash"};
@@ -79,11 +78,7 @@ struct Settings {
     std::string serviceRegion;
     int proxyMode{0}; // 0 Windows system proxy, 1 direct, 2 explicit HTTP CONNECT proxy
     std::wstring proxyAddress;
-    bool fallbackEnabled{false};
-    std::string fallbackProvider{"openai-compatible"}, fallbackModel, encryptedFallbackKey;
-    std::wstring fallbackBaseUrl{L"https://api.openai.com/v1"};
-    std::string fallbackRequestParameters{"{}"};
-    std::map<std::string, ConnectionProfile> connectionProfiles, fallbackProfiles;
+    std::map<std::string, ConnectionProfile> connectionProfiles;
     bool translateAll{true};
     int quality{1};
     int translationMode{TranslationAiVision};

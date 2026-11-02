@@ -19,9 +19,9 @@
                   PaneDisplayMode="Left" OpenPaneLength="216" IsPaneToggleButtonVisible="False"
                   IsTitleBarAutoPaddingEnabled="False" AlwaysShowHeader="False">
     <NavigationView.PaneHeader>
-      <StackPanel Margin="20,24,0,28" Spacing="4">
-        <TextBlock Text="屏幕翻译" FontSize="22" FontWeight="SemiBold"/>
-        <TextBlock Text="Screen AI Translator" Style="{StaticResource Note}"/>
+      <StackPanel Margin="20,24,20,28" Spacing="4">
+        <TextBlock Text="你给我翻译翻译什么叫翻译" FontSize="22" FontWeight="SemiBold"
+                   MaxWidth="176" HorizontalAlignment="Left" TextWrapping="Wrap"/>
       </StackPanel>
     </NavigationView.PaneHeader>
     <NavigationView.MenuItems>
@@ -32,7 +32,7 @@
       <NavigationViewItem Content="显示效果" Icon="Font" Tag="4"/>
     </NavigationView.MenuItems>
     <NavigationView.PaneFooter>
-      <TextBlock Text="V1.5.2" Margin="20,16,0,24" Style="{StaticResource Note}"/>
+      <TextBlock Text="V1.6.0" Margin="20,16,0,24" Style="{StaticResource Note}"/>
     </NavigationView.PaneFooter>
     <Grid Padding="32,26,32,20" RowSpacing="20">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -42,7 +42,7 @@
           <StackPanel x:Name="Page0" Spacing="16">
             <Border Style="{StaticResource Card}">
               <StackPanel Spacing="16">
-                <TextBlock Text="屏幕翻译" FontSize="20" FontWeight="SemiBold"/>
+                <TextBlock Text="截图翻译" FontSize="20" FontWeight="SemiBold"/>
                 <TextBlock Text="框选屏幕区域后，译文将显示在对应位置。" Style="{StaticResource Note}"/>
                 <StackPanel Orientation="Horizontal" Spacing="12">
                   <Button x:Name="Translate" Content="框选翻译" Style="{StaticResource AccentButtonStyle}" MinWidth="136" Height="40"/>
@@ -57,18 +57,15 @@
                 <ToggleSwitch x:Name="Startup" Header="登录 Windows 后在后台启动"/>
                 <ToggleSwitch x:Name="Tray" Header="显示系统托盘图标"/>
                 <TextBlock Text="关闭托盘图标前，需先配置打开设置的快捷键。" Style="{StaticResource Note}"/>
-                <ToggleSwitch x:Name="AutoHide" Header="自动隐藏翻译结果"/>
-                <NumberBox x:Name="HideSeconds" Header="隐藏等待时间（秒）" Minimum="1" Maximum="3600" SpinButtonPlacementMode="Compact"/>
               </StackPanel>
             </Border>
           </StackPanel>
           <StackPanel x:Name="Page1" Spacing="16" Visibility="Collapsed">
-            <TextBlock Text="选中输入框后按下组合键；退格键清除设置。" Style="{StaticResource Note}"/>
+            <TextBlock Text="选中输入框后按下组合键；退格键清除设置。编辑期间暂停全部软件快捷键，退出编辑后恢复。" Style="{StaticResource Note}"/>
             <Border Style="{StaticResource Card}"><StackPanel Spacing="20">
               <TextBox x:Name="Hotkey0" Header="框选翻译" IsReadOnly="True" PlaceholderText="未设置"/>
               <TextBox x:Name="Hotkey1" Header="翻译上次区域" IsReadOnly="True" PlaceholderText="未设置"/>
               <TextBox x:Name="Hotkey2" Header="打开设置" IsReadOnly="True" PlaceholderText="未设置"/>
-              <TextBox x:Name="Hotkey3" Header="关闭翻译层" IsReadOnly="True" PlaceholderText="未设置"/>
             </StackPanel></Border>
             <TextBlock Text="支持 Ctrl、Alt、Shift 与 Win 组合键。重复或已被占用的快捷键无法保存。" Style="{StaticResource Note}"/>
           </StackPanel>
@@ -81,7 +78,7 @@
               <TextBox x:Name="ServiceRegion" Header="Azure Translator 资源区域（其他服务留空）"/>
               <NumberBox x:Name="Timeout" Header="请求超时（秒）" Minimum="1" Maximum="300" SpinButtonPlacementMode="Compact"/>
               <TextBlock Text="默认关闭思考。需要开启或调整时，在下方按服务官方定义填写请求字段。模型不支持关闭时会返回错误，不自动恢复服务默认值。" Style="{StaticResource Note}"/>
-              <TextBox x:Name="RequestParameters" Header="主连接请求参数（JSON）" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas" IsSpellCheckEnabled="False" MinHeight="160" MaxHeight="260" MaxLength="32768" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+              <TextBox x:Name="RequestParameters" Header="请求参数（JSON）" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas" IsSpellCheckEnabled="False" MinHeight="160" MaxHeight="260" MaxLength="32768" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
               <Button x:Name="FormatRequestParameters" Content="格式化并校验 JSON" HorizontalAlignment="Left"/>
               <TextBlock Text="填写 JSON 对象，留空或 {} 使用关闭思考的默认配置。字段直接合并到 API 请求体，支持嵌套对象；null 删除对应默认字段。适用于大模型翻译和连接自检，不用于模型列表及专用翻译服务。" Style="{StaticResource Note}"/>
               <StackPanel Orientation="Horizontal" Spacing="12">
@@ -92,20 +89,9 @@
               <TextBlock x:Name="ApiResult" Text="OCR 文字由当前服务翻译；图片输入需要视觉模型。DeepL 和 Azure 无需选择模型。" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
             </StackPanel></Border>
             <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
-              <ToggleSwitch x:Name="FallbackEnabled" Header="AI 识图翻译使用独立连接"/>
-              <ComboBox x:Name="FallbackProvider" Header="视觉服务提供方" HorizontalAlignment="Stretch"/>
-              <TextBox x:Name="FallbackBaseUrl" Header="视觉 API 地址"/>
-              <TextBox x:Name="FallbackModel" Header="支持图片输入的模型"/>
-              <PasswordBox x:Name="FallbackKey" Header="视觉 API 密钥" PasswordRevealMode="Peek" MaxLength="4096"/>
-              <TextBox x:Name="FallbackRequestParameters" Header="独立视觉连接请求参数（JSON）" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas" IsSpellCheckEnabled="False" MinHeight="160" MaxHeight="260" MaxLength="32768" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
-              <Button x:Name="FormatFallbackRequestParameters" Content="格式化并校验 JSON" HorizontalAlignment="Left"/>
-              <TextBlock Text="此连接同样默认关闭思考。参数仅作用于独立视觉连接，填写规则与主连接相同。" Style="{StaticResource Note}"/>
-              <TextBlock Text="此连接仅用于 AI 识图翻译模式。关闭时使用主连接。OCR 文字翻译始终使用主连接，不会自动切换或上传图片。" Style="{StaticResource Note}"/>
-            </StackPanel></Border>
-            <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
               <ComboBox x:Name="ProxyMode" Header="网络连接方式" HorizontalAlignment="Stretch"><ComboBoxItem Content="系统代理"/><ComboBoxItem Content="直接连接"/><ComboBoxItem Content="自定义 HTTP 代理"/></ComboBox>
               <TextBox x:Name="ProxyAddress" Header="代理地址（主机:端口）" PlaceholderText="127.0.0.1:7890"/>
-              <TextBlock Text="此网络设置同时用于主连接、视觉连接和模型列表。自定义代理不支持 SOCKS 或用户名密码认证。" Style="{StaticResource Note}"/>
+              <TextBlock Text="此网络设置用于文字翻译、识图翻译和模型列表。自定义代理不支持 SOCKS 或用户名密码认证。" Style="{StaticResource Note}"/>
             </StackPanel></Border>
             <TextBlock Text="连接自检使用内置小样本，不上传桌面截图，可能产生多次计费请求。自检验证协议连通性；复杂页面效果需使用实际图片评估。密钥通过 Windows 用户凭据保护。" Style="{StaticResource Note}"/>
           </StackPanel>
@@ -130,7 +116,7 @@
               <ToggleSwitch x:Name="SpatialOverlay" Header="在原文位置覆盖译文"/>
               <TextBlock Text="工具条提供译文、原图和全文阅读视图。关闭此选项后使用传统译文框。" Style="{StaticResource Note}"/>
               <ComboBox x:Name="Font" Header="字体" IsEditable="True" HorizontalAlignment="Stretch"/>
-              <TextBlock Text="可选择常用字体，也可输入已安装的字体名称；未安装的字体由系统替代。" Style="{StaticResource Note}"/>
+              <TextBlock Text="优先显示字体提供的中文名称；也可输入已安装的字体名称。未安装的字体由系统替代。" Style="{StaticResource Note}"/>
               <ToggleSwitch x:Name="MatchTextColor" Header="匹配原文文字颜色"/>
               <ToggleSwitch x:Name="AutoFont" Header="自动估算字号"/>
               <NumberBox x:Name="FontSize" Header="固定字号（DIP）" Minimum="8" Maximum="144" SpinButtonPlacementMode="Compact"/>

@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenAITranslator VERSION 1.5.2 LANGUAGES CXX RC)
+project(ScreenAITranslator VERSION 1.6.0 LANGUAGES CXX RC)
+set(SAT_APP_NAME "你给我翻译翻译什么叫翻译")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -40,6 +41,7 @@ target_compile_definitions(sat_ui PRIVATE SAT_APP_ICON_NAME="${SAT_APP_ICON_NAME
 add_executable(ScreenAITranslator WIN32
  src/app/App.cpp
  resources/app.rc)
+set_target_properties(ScreenAITranslator PROPERTIES OUTPUT_NAME "${SAT_APP_NAME}")
 target_link_libraries(ScreenAITranslator PRIVATE sat_ui)
 target_link_options(ScreenAITranslator PRIVATE /MANIFEST:NO)
 sat_deploy_winui(ScreenAITranslator)

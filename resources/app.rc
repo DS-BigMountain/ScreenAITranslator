@@ -10,11 +10,11 @@
 201 RCDATA "Settings.xaml"
 STRINGTABLE
 BEGIN
- 301 "屏幕翻译"
+ 301 "你给我翻译翻译什么叫翻译"
 END
 1 VERSIONINFO
- FILEVERSION 1,5,2,0
- PRODUCTVERSION 1,5,2,0
+ FILEVERSION 1,6,0,0
+ PRODUCTVERSION 1,6,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -24,11 +24,11 @@ BEGIN
  BEGIN
   BLOCK "040904B0"
   BEGIN
-   VALUE "FileDescription", "Screen AI Translator\0"
-   VALUE "FileVersion", "1.5.2\0"
-   VALUE "ProductName", "Screen AI Translator\0"
-   VALUE "ProductVersion", "1.5.2\0"
-   VALUE "OriginalFilename", "ScreenAITranslator.exe\0"
+   VALUE "FileDescription", "你给我翻译翻译什么叫翻译\0"
+   VALUE "FileVersion", "1.6.0\0"
+   VALUE "ProductName", "你给我翻译翻译什么叫翻译\0"
+   VALUE "ProductVersion", "1.6.0\0"
+   VALUE "OriginalFilename", "你给我翻译翻译什么叫翻译.exe\0"
   END
  END
  BLOCK "VarFileInfo"

@@ -83,11 +83,8 @@ PreparedTranslation PrepareTranslation(Image image, RECT region, const Monitor& 
                          {"reason", prepared.textOnly ? "explicit_ocr_text" : "explicit_ai_vision"},
                          {"provider", connection.provider},
                          {"model", connection.model},
-                         {"fallback", !prepared.textOnly && options.fallbackEnabled},
                          {"proxy_mode", connection.proxyMode}});
-        Secret selectedKey(!prepared.textOnly && options.fallbackEnabled
-                               ? UnprotectSecret(options.encryptedFallbackKey)
-                               : key);
+        Secret selectedKey(key);
         std::string data;
         if (!prepared.textOnly)
             data = EncodeForVision(image, options.quality, stop);
