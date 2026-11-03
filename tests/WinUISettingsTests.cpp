@@ -105,7 +105,7 @@ void TestSettings() {
         return reject ? std::wstring(L"保存被测试拒绝") : std::wstring{};
     };
     cb.action = [&](auto) { ++actions; };
-    cb.closed = [&](RECT r, int page) {
+    cb.closed = [&](RECT r, int page, int) {
         Require(sat::Valid(r) && page == 2, "window position or navigation not preserved");
         ++closed;
     };
@@ -142,20 +142,23 @@ void TestSettings() {
     auto root = window.Content();
     auto nav = root.FindName(L"Navigation").as<NavigationView>();
     Require(nav.ActualWidth() > 800 && nav.ActualHeight() > 500, "WinUI content has no visible layout");
-    Require(root.FindName(L"Translate").as<Button>().ActualWidth() > 0,
-            "translation button template is not visible");
-    Require(nav.MenuItems().Size() == 5, "settings navigation pages missing");
+    Require(root.FindName(L"SendText").as<Button>().ActualWidth() > 0,
+            "text translation composer is not visible");
+    Require(nav.MenuItems().Size() == 2 && nav.FooterMenuItems().Size() == 1, "navigation pages missing");
     auto password = root.FindName(L"Key").as<PasswordBox>();
     Require(password.PasswordRevealMode() == PasswordRevealMode::Peek, "API key is not masked by default");
-    for (int page = 0; page < 5; ++page) {
-        nav.SelectedItem(nav.MenuItems().GetAt(page));
+    const wchar_t* panels[]{L"TextPage", L"ScreenPage", L"SettingsPage"};
+    for (int page = 0; page < 3; ++page) {
+        nav.SelectedItem(page < 2 ? nav.MenuItems().GetAt(page) : nav.FooterMenuItems().GetAt(0));
         pump();
-        auto panel = root.FindName(L"Page" + std::to_wstring(page)).as<StackPanel>();
+        auto panel = root.FindName(panels[page]).as<xaml::FrameworkElement>();
         Require(panel.Visibility() == xaml::Visibility::Visible,
                 "navigation failed to display selected page");
         Snapshot(h, L"settings-" + std::to_wstring(page) + L".png");
     }
-    nav.SelectedItem(nav.MenuItems().GetAt(2));
+    nav.SelectedItem(nav.FooterMenuItems().GetAt(0));
+    auto tabs = root.FindName(L"SettingsTabs").as<SelectorBar>();
+    tabs.SelectedItem(tabs.Items().GetAt(1));
     pump();
     auto model = root.FindName(L"Model").as<ComboBox>();
     Require(model.IsEditable(), "manual model entry disabled");
@@ -206,14 +209,16 @@ void TestSettings() {
     Require(saved == 3 && root.FindName(L"Status").as<TextBlock>().Text() == L"保存被测试拒绝",
             "save failure was not retained in the interface");
     reject = false;
-    nav.SelectedItem(nav.MenuItems().GetAt(0));
+    nav.SelectedItem(nav.MenuItems().GetAt(1));
     click(L"Translate");
     click(L"TranslateFixed");
     Require(actions == 2, "translation actions disconnected");
-    nav.SelectedItem(nav.MenuItems().GetAt(3));
+    nav.SelectedItem(nav.FooterMenuItems().GetAt(0));
+    tabs.SelectedItem(tabs.Items().GetAt(0));
+    root.FindName(L"SettingsGeneral").as<StackPanel>().Children().GetAt(2).as<Expander>().IsExpanded(true);
     click(L"ClearContext");
     Require(actions == 3, "clear context disconnected");
-    nav.SelectedItem(nav.MenuItems().GetAt(2));
+    tabs.SelectedItem(tabs.Items().GetAt(1));
     window.Show(options, "different-key", state, cb);
     Require(password.Password() == L"test-only-key", "reopening visible window discarded unsaved input");
     // 关闭后释放控件引用，验证再次创建窗口的资源生命周期。

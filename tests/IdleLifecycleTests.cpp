@@ -139,7 +139,9 @@ public:
                 break;
             Sleep(10);
         }
-        navigation.SelectedItem(navigation.MenuItems().GetAt(1));
+        navigation.SelectedItem(navigation.FooterMenuItems().GetAt(0));
+        auto settingsTabs = root.FindName(L"SettingsTabs").as<SelectorBar>();
+        settingsTabs.SelectedItem(settingsTabs.Items().GetAt(0));
         root.UpdateLayout();
         pump();
         root.FindName(L"Close").as<Button>().Focus(xaml::FocusState::Programmatic);
@@ -191,7 +193,7 @@ public:
         pump();
         Check(!app.hotkeys_->Suspended(), "Page navigation left shortcuts suspended");
         checkRegistration(true);
-        navigation.SelectedItem(navigation.MenuItems().GetAt(1));
+        navigation.SelectedItem(navigation.FooterMenuItems().GetAt(0));
         pump();
         root.FindName(L"Hotkey0").as<TextBox>().Focus(xaml::FocusState::Programmatic);
         pump();
@@ -258,6 +260,16 @@ public:
                     step("first-open-after-background-start");
                     CheckFirstOpen(app, phase);
                     report["first_open"] = "relaunch";
+                    auto textSession = Json::parse(app.settingsWindow_.TextSession());
+                    textSession["target"] = "ja";
+                    textSession["draft"] = "unsent text draft";
+                    textSession["contextStart"] = 0;
+                    textSession["expires"] = GetTickCount64() + 20 * 60 * 1000;
+                    textSession["turns"] = Json::array({{{"source", "previous text source"},
+                                                         {"result", "以前の翻訳"},
+                                                         {"target", "ja"},
+                                                         {"images", Json::array()}}});
+                    app.settingsWindow_.RestoreTextSession(textSession.dump());
                     app.sessionRegion_ = FixedRegion{L"test-monitor", .1, .2, .3, .4, 1920, 1080};
                     app.context_.Restore({{"user screenshot text", "用户截图译文"}},
                                          GetTickCount64() + 20 * 60 * 1000);

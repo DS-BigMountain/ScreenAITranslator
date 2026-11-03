@@ -680,8 +680,14 @@ void DiagnosticTests() {
 #include "RequestParametersTests.inc"
 #include "TranslationCoverageTests.inc"
 #include "UserVisionResponseTests.inc"
+#include "ContentTranslationTests.inc"
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--content-translation") {
+            ContentTranslationTests();
+            std::cout << "Content translation tests passed: " << checks << " checks\n";
+            return 0;
+        }
         {
             TranslationResult quality;
             for (const auto& text :
@@ -718,6 +724,7 @@ int main(int argc, char** argv) {
         TextTranslationTests();
         RetryTests();
         ServiceTests();
+        ContentTranslationTests();
         RequestParameterTests();
         CoverageTests();
         UserVisionResponseTests();

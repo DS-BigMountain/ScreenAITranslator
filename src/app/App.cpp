@@ -136,6 +136,7 @@ class App {
             value["region"] = {Utf8(r.monitorId), r.x, r.y, r.width, r.height, r.monitorWidth,
                                r.monitorHeight};
         }
+        value["textSession"] = nlohmann::json::parse(settingsWindow_.TextSession());
         return value.dump();
     }
     void RestoreIdle() {
@@ -162,6 +163,8 @@ class App {
             items.push_back({item.at(0).get<std::string>(), item.at(1).get<std::string>()});
         if (settings_.contextEnabled)
             context_.Restore(std::move(items), value.at("expires").get<ULONGLONG>());
+        if (value.contains("textSession"))
+            settingsWindow_.RestoreTextSession(value.at("textSession").dump());
     }
     void TryIdle() {
         KillTimer(window_, IdleTimer);
@@ -170,7 +173,7 @@ class App {
         if (!idleRestart_ || !usedResources_ || shuttingDown_ || stage_ != Stage::Idle || apiActive_ ||
             settingsWindow_.Window() || selection_.Window() || overlay_.Count() || progress_.Count())
             return;
-        if (!worker_.Idle()) {
+        if (!worker_.Idle() || !settingsWindow_.BackgroundIdle()) {
             SetTimer(window_, IdleTimer, 1000, nullptr);
             return;
         }
@@ -673,16 +676,23 @@ class App {
             else if (auto error = hotkeys_->Resume(); !error.empty())
                 settingsWindow_.Status(error);
         };
-        cb.closed = [this](RECT r, int tab) {
+        cb.closed = [this](RECT r, int tab, int settingsTab) {
             if (apiActive_)
                 Cancel();
             state_.window = r;
             state_.tab = tab;
+            state_.settingsTab = settingsTab;
             SaveState();
             ArmIdle();
         };
         cb.api = [this](bool fetch, const Settings& s, const std::string& secret) {
             ApiOperation(fetch, s, secret);
+        };
+        cb.targetLanguage = [this](const std::string& language) {
+            auto updated = settings_;
+            updated.textTargetLanguage = language;
+            store_.SaveSettings(updated);
+            settings_.textTargetLanguage = language;
         };
         cb.action = [this](SettingsAction action) {
             switch (action) {

@@ -209,10 +209,23 @@ int main() {
             Check(provider.Items().Size() == ProviderPresets().size(), "provider menu incomplete");
             Check(!root.FindName(L"Reselect") && !root.FindName(L"ClearRegion"),
                   "removed region controls still exist");
-            auto home = root.FindName(L"Page0").as<StackPanel>();
-            Check(home.Children().Size() == 2,
-                  "home must contain only translation and runtime preferences cards");
+            auto navigation = root.FindName(L"Navigation").as<NavigationView>();
+            Check(navigation.MenuItems().Size() == 2 && navigation.FooterMenuItems().Size() == 1 &&
+                      root.FindName(L"TextPage").as<Grid>().Visibility() == xaml::Visibility::Visible,
+                  "translation navigation or default text page is incorrect");
+            Check(root.FindName(L"TextTarget").as<ComboBox>().Items().Size() == 8,
+                  "target language menu is incomplete");
+            navigation.SelectedItem(navigation.MenuItems().GetAt(1));
             for (const wchar_t* name : {L"Translate", L"TranslateFixed", L"ClearContext"}) {
+                if (std::wstring_view(name) == L"ClearContext") {
+                    navigation.SelectedItem(navigation.FooterMenuItems().GetAt(0));
+                    root.FindName(L"SettingsGeneral")
+                        .as<StackPanel>()
+                        .Children()
+                        .GetAt(2)
+                        .as<Expander>()
+                        .IsExpanded(true);
+                }
                 xaml::Automation::Peers::ButtonAutomationPeer actionPeer(root.FindName(name).as<Button>());
                 actionPeer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke)
                     .as<xaml::Automation::Provider::IInvokeProvider>()
@@ -224,6 +237,7 @@ int main() {
                                                          SettingsAction::ClearContext},
                   "remaining settings actions are disconnected or misrouted");
             auto language = root.FindName(L"OcrMode").as<ComboBox>();
+            navigation.SelectedItem(navigation.MenuItems().GetAt(1));
             auto translationMode = root.FindName(L"TranslationMode").as<ComboBox>();
             Check(translationMode.Items().Size() == 2 && !language.IsEnabled(),
                   "AI mode must disable local OCR language");
@@ -242,6 +256,9 @@ int main() {
             Pump();
             Check(primaryKey.Password() == L"original-key", "model selection cleared key");
             {
+                navigation.SelectedItem(navigation.FooterMenuItems().GetAt(0));
+                auto tabs = root.FindName(L"SettingsTabs").as<SelectorBar>();
+                tabs.SelectedItem(tabs.Items().GetAt(1));
                 xaml::Automation::Peers::ButtonAutomationPeer test(root.FindName(L"TestApi").as<Button>());
                 test.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke)
                     .as<xaml::Automation::Provider::IInvokeProvider>()

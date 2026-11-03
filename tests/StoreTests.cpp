@@ -60,6 +60,8 @@ void RunStoreTests() {
     settings.proxyMode = 2;
     settings.proxyAddress = L"127.0.0.1:7890";
     settings.translateAll = false;
+    settings.textCtrlEnter = true;
+    settings.textTargetLanguage = "ja";
     settings.prompt = "只翻译字幕。保留专有名词。";
     settings.font = L"微软雅黑";
     settings.hotkeys[0] = {MOD_CONTROL | MOD_ALT, 'T'};
@@ -71,6 +73,8 @@ void RunStoreTests() {
     Check(loaded.prompt == settings.prompt && loaded.font == settings.font && loaded.hotkeys[0].key == 'T',
           "UTF-8 settings round trip");
     Check(!loaded.matchTextColor, "Color preference persisted");
+    Check(loaded.textCtrlEnter && loaded.textTargetLanguage == "ja",
+          "Text translation preferences persisted");
     Check(loaded.ocrMode == 2, "OCR mode persisted");
     Check(!loaded.spatialOverlay && loaded.requestParameters == settings.requestParameters,
           "Overlay and request parameter preferences persisted");
@@ -195,11 +199,13 @@ void RunStoreTests() {
     bad.baseUrl = L"http://127.0.0.1:45678/v1";
     ValidateSettings(bad);
     PersistentState state;
-    state.tab = 4;
+    state.tab = 2;
+    state.settingsTab = 2;
     state.window = RECT{-1100, 100, -200, 800};
     store.SaveState(state);
     auto readState = store.LoadState();
-    Check(readState.window->left == -1100 && readState.tab == 4, "Window state round trip");
+    Check(readState.window->left == -1100 && readState.tab == 2 && readState.settingsTab == 2,
+          "Window state round trip");
     auto legacy = nlohmann::json::parse(File(temp.path / "state.json"));
     legacy["fixed"] = {{"monitorId", "OLD"},   {"x", .1},      {"y", .2},
                        {"width", .4},          {"height", .3}, {"monitorWidth", 1920},
@@ -250,12 +256,14 @@ void RunStoreTests() {
           "Legacy history flag is ignored and omitted on save");
     auto oldState = nlohmann::json::parse(File(temp.path / "state.json"));
     oldState["tab"] = 5;
+    oldState.erase("navigationVersion");
     {
         std::ofstream output(temp.path / "state.json", std::ios::binary);
         output << oldState.dump();
     }
     auto migratedState = store.LoadState();
-    Check(migratedState.tab == 4, "Legacy removed tab migrates to the last available tab");
+    Check(migratedState.tab == 2 && migratedState.settingsTab == 2,
+          "Legacy removed tab migrates to Appearance");
     store.SaveState(migratedState);
     Check(File(temp.path / "history" / "translations.jsonl") == "legacy history sentinel" &&
               File(temp.path / "logs" / "errors.jsonl") == "legacy error sentinel",

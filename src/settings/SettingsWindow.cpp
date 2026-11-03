@@ -11,6 +11,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.h>
 #include <winrt/Windows.System.h>
+#include <winrt/Windows.UI.h>
 #include <winrt/Microsoft.UI.h>
 #include <winrt/Microsoft.UI.Content.h>
 #include <winrt/Microsoft.UI.Windowing.h>
@@ -21,9 +22,11 @@
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Interop.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <shellapi.h>
 #include <propsys.h>
@@ -107,10 +110,12 @@ struct SettingsWindow::Impl {
     xaml::FrameworkElement root{nullptr};
     xaml::Input::FocusManager::GotFocus_revoker focusGained;
     xaml::Input::FocusManager::LostFocus_revoker focusLost;
+    xaml::FrameworkElement::ActualThemeChanged_revoker themeChanged;
     Hotkey hotkeys[3]{};
     bool updating{};
     bool focusPending{};
     bool hotkeyFocusPending{};
+    bool customCaption{};
     std::map<std::string, ConnectionProfile> profiles;
     std::string activeProvider;
     std::vector<std::pair<std::wstring, std::wstring>> fontNames;
@@ -134,7 +139,9 @@ struct SettingsWindow::Impl {
         return false;
     }
     bool FocusedHotkey() const {
-        return Get<StackPanel>(L"Page1").Visibility() == xaml::Visibility::Visible && root.XamlRoot() &&
+        return Get<StackPanel>(L"SettingsPage").Visibility() == xaml::Visibility::Visible &&
+               Get<StackPanel>(L"SettingsGeneral").Visibility() == xaml::Visibility::Visible &&
+               root.XamlRoot() &&
                IsHotkeyEditor(xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot())
                                   .try_as<xaml::DependencyObject>());
     }
@@ -193,7 +200,8 @@ void SettingsWindow::Show(const Settings& s, const std::string& key, const Persi
     }
     settings_ = s;
     callbacks_ = std::move(cb);
-    page_ = std::clamp(state.tab, 0, 4);
+    page_ = std::clamp(state.tab, 0, 2);
+    settingsTab_ = std::clamp(state.settingsTab, 0, 3);
     apiBusy_ = false;
     WNDCLASSEXW wc{sizeof(wc)};
     wc.hInstance = GetModuleHandleW(nullptr);
@@ -211,8 +219,8 @@ void SettingsWindow::Show(const Settings& s, const std::string& key, const Persi
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(mon, &mi);
     auto dpi = GetDpiForSystem();
-    int width = std::min(MulDiv(1040, dpi, 96), Width(mi.rcWork)),
-        height = std::min(MulDiv(820, dpi, 96), Height(mi.rcWork));
+    int width = std::min(MulDiv(1200, dpi, 96), Width(mi.rcWork)),
+        height = std::min(MulDiv(1000, dpi, 96), Height(mi.rcWork));
     int x = mi.rcWork.left + (Width(mi.rcWork) - width) / 2,
         y = mi.rcWork.top + (Height(mi.rcWork) - height) / 2;
     if (state.window) {
@@ -280,15 +288,42 @@ void SettingsWindow::UpdateIcons() {
         winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd_));
     appWindow.SetTaskbarIcon(iconPath.wstring());
     appWindow.SetTitleBarIcon(winrt::Microsoft::UI::GetIconIdFromIcon(smallIcon));
+    if (ui_ && ui_->customCaption) {
+        auto source = xaml::Media::Imaging::BitmapImage(
+            winrt::Windows::Foundation::Uri(L"file:///" + iconPath.generic_wstring()));
+        ui_->Get<xaml::Controls::Image>(L"CaptionIcon").Source(source);
+        UpdateCaptionTheme();
+    }
     // Set both per-window icon slots after XAML hosting has been initialized.
     SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(large));
     SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
 }
+void SettingsWindow::UpdateCaptionTheme() {
+    if (!ui_ || !ui_->customCaption)
+        return;
+    using UiColor = winrt::Windows::UI::Color;
+    auto reference = [](UiColor color) {
+        return winrt::box_value(color).as<winrt::Windows::Foundation::IReference<UiColor>>();
+    };
+    bool dark = ui_->root.ActualTheme() == xaml::ElementTheme::Dark;
+    auto title = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
+                     winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd_))
+                     .TitleBar();
+    title.ButtonBackgroundColor(reference({0, 0, 0, 0}));
+    title.ButtonInactiveBackgroundColor(reference({0, 0, 0, 0}));
+    title.ButtonForegroundColor(reference(dark ? UiColor{255, 242, 242, 242} : UiColor{255, 27, 27, 27}));
+    title.ButtonInactiveForegroundColor(
+        reference(dark ? UiColor{255, 150, 150, 150} : UiColor{255, 110, 110, 110}));
+    title.ButtonHoverBackgroundColor(
+        reference(dark ? UiColor{255, 54, 54, 54} : UiColor{255, 234, 234, 234}));
+}
 void SettingsWindow::Close() {
+    textPage_.Detach();
     SetHotkeyEditing(false);
     if (ui_) {
         ui_->focusGained.revoke();
         ui_->focusLost.revoke();
+        ui_->themeChanged.revoke();
         ui_->updating = true;
         if (ui_->root)
             ui_->Get<PasswordBox>(L"Key").Password(L"");
@@ -314,6 +349,25 @@ void SettingsWindow::Layout() {
         return;
     RECT r{};
     GetClientRect(hwnd_, &r);
+    auto dpi = GetDpiForWindow(hwnd_);
+    const bool compact = MulDiv(Height(r), 96, dpi) < 740 || MulDiv(Width(r), 96, dpi) < 1000;
+    ui_->Get<Grid>(L"ContentLayout")
+        .Padding(compact ? xaml::Thickness{24, 22, 24, 20} : xaml::Thickness{36, 34, 36, 28});
+    ui_->Get<Grid>(L"PageHeader").Margin({0, 0, 0, compact ? 16.0 : 33.0});
+    ui_->Get<TextBlock>(L"PageTitle").FontSize(compact ? 28 : 34);
+    ui_->Get<Grid>(L"TextPage").RowSpacing(compact ? 16 : 22);
+    auto language = ui_->Get<Border>(L"LanguageCard");
+    language.MinHeight(compact ? 64 : 80);
+    language.Padding(compact ? xaml::Thickness{16, 10, 16, 10} : xaml::Thickness{20, 18, 20, 18});
+    textPage_.AdaptLayout(compact);
+    if (ui_->customCaption) {
+        auto title = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
+                         winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd_))
+                         .TitleBar();
+        std::array<winrt::Windows::Graphics::RectInt32, 1> drag{
+            {{0, 0, std::max(1, Width(r) - title.RightInset()), MulDiv(56, dpi, 96)}}};
+        title.SetDragRectangles(drag);
+    }
     ui_->island.SiteBridge().MoveAndResize({0, 0, Width(r), Height(r)});
     ui_->island.SiteBridge().Show();
 }
@@ -329,6 +383,18 @@ void SettingsWindow::Build(const std::string& key) {
     auto bytes = static_cast<const char*>(LockResource(loaded));
     auto size = SizeofResource(GetModuleHandleW(nullptr), resource);
     ui_->root = xaml::Markup::XamlReader::Load(Wide(std::string(bytes, size))).as<xaml::FrameworkElement>();
+    if (winrt::Microsoft::UI::Windowing::AppWindowTitleBar::IsCustomizationSupported()) {
+        auto title = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
+                         winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd_))
+                         .TitleBar();
+        title.ExtendsContentIntoTitleBar(true);
+        title.PreferredHeightOption(winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Tall);
+        title.IconShowOptions(winrt::Microsoft::UI::Windowing::IconShowOptions::HideIconAndSystemMenu);
+        ui_->customCaption = true;
+        ui_->Get<Grid>(L"CaptionBar").Visibility(xaml::Visibility::Visible);
+        ui_->themeChanged = ui_->root.ActualThemeChanged(
+            winrt::auto_revoke, [this](auto const&, auto const&) { UpdateCaptionTheme(); });
+    }
     ui_->island = xaml::Hosting::DesktopWindowXamlSource();
     ui_->island.Initialize(winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd_));
     ui_->island.Content(ui_->root);
@@ -345,6 +411,7 @@ void SettingsWindow::Build(const std::string& key) {
     auto number = [&](const wchar_t* name, double value) { ui_->Get<NumberBox>(name).Value(value); };
     toggle(L"Startup", settings_.startup);
     toggle(L"Tray", settings_.tray);
+    toggle(L"TextCtrlEnter", settings_.textCtrlEnter);
     for (const auto& preset : ProviderPresets())
         ui_->Get<ComboBox>(L"Provider").Items().Append(winrt::box_value(preset.name));
     for (size_t i = 0; i < ProviderPresets().size(); ++i) {
@@ -451,26 +518,28 @@ void SettingsWindow::Build(const std::string& key) {
             }
         });
     ui_->root.AddHandler(xaml::UIElement::PointerPressedEvent(), winrt::box_value(leaveEditor), true);
-    auto select = [this](int page) {
-        page_ = page;
-        for (int i = 0; i < 5; ++i) {
-            auto name = L"Page" + std::to_wstring(i);
-            ui_->Get<StackPanel>(name.c_str())
-                .Visibility(i == page ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-        }
-        SetHotkeyEditing(page == 1 && GetActiveWindow() == hwnd_ && ui_->FocusedHotkey());
-        const wchar_t* titles[]{L"翻译与偏好", L"快捷键", L"模型连接", L"翻译参数", L"显示效果"};
-        ui_->Get<TextBlock>(L"PageTitle").Text(titles[page]);
-        ui_->Get<ScrollViewer>(L"PageScroll")
-            .ChangeView(nullptr, winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(),
-                        nullptr);
-    };
-    nav.SelectionChanged([select](auto const&, NavigationViewSelectionChangedEventArgs const& args) {
+    nav.SelectionChanged([this](auto const&, NavigationViewSelectionChangedEventArgs const& args) {
         if (auto item = args.SelectedItem().try_as<NavigationViewItem>())
-            select(std::stoi(std::wstring(winrt::unbox_value<winrt::hstring>(item.Tag()))));
+            SelectPage(std::stoi(std::wstring(winrt::unbox_value<winrt::hstring>(item.Tag()))));
     });
-    nav.SelectedItem(nav.MenuItems().GetAt(page_));
-    select(page_);
+    ui_->Get<SelectorBar>(L"SettingsTabs").SelectionChanged([this](auto const& sender, auto const&) {
+        auto item = sender.template as<SelectorBar>().SelectedItem();
+        if (item)
+            SelectSettingsTab(std::stoi(std::wstring(winrt::unbox_value<winrt::hstring>(item.Tag()))));
+    });
+    nav.SelectedItem(page_ < 2 ? nav.MenuItems().GetAt(page_) : nav.FooterMenuItems().GetAt(0));
+    SelectPage(page_);
+    SelectSettingsTab(settingsTab_);
+    for (auto [name, tab] : std::initializer_list<std::pair<const wchar_t*, int>>{{L"TextConnection", 1},
+                                                                                  {L"ScreenConnection", 1},
+                                                                                  {L"OpenAppearance", 2},
+                                                                                  {L"OpenShortcuts", 0}}) {
+        ui_->Get<HyperlinkButton>(name).Click([this, tab](auto const&, auto const&) {
+            auto navigation = ui_->Get<NavigationView>(L"Navigation");
+            navigation.SelectedItem(navigation.FooterMenuItems().GetAt(0));
+            SelectSettingsTab(tab);
+        });
+    }
     auto button = [&](const wchar_t* name, std::function<void()> action) {
         auto control = ui_->Get<Button>(name);
         xaml::Automation::AutomationProperties::SetAutomationId(control, name);
@@ -503,6 +572,8 @@ void SettingsWindow::Build(const std::string& key) {
         button(name, [this, action] {
             if (callbacks_.action)
                 callbacks_.action(action);
+            if (action == SettingsAction::ClearContext)
+                textPage_.ClearContext();
             if (action == SettingsAction::ClearContext)
                 Status(L"上下文已清空。");
         });
@@ -549,6 +620,7 @@ void SettingsWindow::Build(const std::string& key) {
                     ui_->Get<TextBox>(L"ServiceRegion").Text(Wide(next.serviceRegion));
                 }
                 ui_->activeProvider = preset.id;
+                UpdateTranslationMode();
                 ui_->Get<TextBlock>(L"ApiResult")
                     .Text(L"已切换连接草稿。切回可恢复原配置；点击保存设置后写入磁盘。");
             });
@@ -556,15 +628,93 @@ void SettingsWindow::Build(const std::string& key) {
         ui_->Get<NumberBox>(L"ContextSize").IsEnabled(ui_->On(L"ContextEnabled"));
         ui_->Get<NumberBox>(L"FontSize").IsEnabled(!ui_->On(L"AutoFont"));
         ui_->Get<TextBox>(L"TextColor").IsEnabled(!ui_->On(L"MatchTextColor"));
+        ui_->Get<TextBox>(L"ProxyAddress")
+            .IsEnabled(!apiBusy_ && ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex() == 2);
+        auto preview = ui_->Get<TextBlock>(L"FontPreview");
+        preview.FontFamily(xaml::Media::FontFamily(ui_->ReadFont()));
+        auto size = ui_->Get<NumberBox>(L"FontSize").Value();
+        preview.FontSize(ui_->On(L"AutoFont") || !std::isfinite(size) ? 22 : std::clamp(size, 8.0, 144.0));
     };
     for (auto name : {L"ContextEnabled", L"AutoFont", L"MatchTextColor"})
         ui_->Get<ToggleSwitch>(name).Toggled([dependent](auto const&, auto const&) { dependent(); });
     dependent();
+    fonts.RegisterPropertyChangedCallback(ComboBox::TextProperty(),
+                                          [dependent](auto const&, auto const&) { dependent(); });
+    ui_->Get<NumberBox>(L"FontSize").ValueChanged([dependent](auto const&, auto const&) { dependent(); });
+    ui_->Get<ComboBox>(L"ProxyMode").SelectionChanged([dependent](auto const&, auto const&) { dependent(); });
     ui_->Get<ComboBox>(L"TranslationMode").SelectionChanged([this](auto const&, auto const&) {
         UpdateTranslationMode();
     });
+    for (auto [name, mode] : std::initializer_list<std::pair<const wchar_t*, int>>{
+             {L"VisionChoice", TranslationAiVision}, {L"OcrChoice", TranslationOcrText}}) {
+        ui_->Get<xaml::Controls::Primitives::ToggleButton>(name).Click(
+            [this, mode](auto const&, auto const&) {
+                ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex(mode);
+                UpdateTranslationMode();
+            });
+    }
     UpdateTranslationMode();
     ui_->updating = false;
+    for (auto [name, mode] : std::initializer_list<std::pair<const wchar_t*, int>>{
+             {L"VisionChoice", TranslationAiVision}, {L"OcrChoice", TranslationOcrText}}) {
+        ui_->Get<xaml::Controls::Primitives::ToggleButton>(name).Checked(
+            [this, mode](auto const&, auto const&) {
+                ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex(mode);
+            });
+    }
+    textPage_.Attach(ui_->root, hwnd_, settings_, key, [this](const std::string& language) {
+        try {
+            if (callbacks_.targetLanguage)
+                callbacks_.targetLanguage(language);
+            settings_.textTargetLanguage = language;
+        } catch (...) {
+            Status(L"目标语言未保存，当前选择在本次会话中有效。");
+        }
+    });
+}
+void SettingsWindow::SelectPage(int page) {
+    page_ = std::clamp(page, 0, 2);
+    ui_->Get<Grid>(L"TextPage")
+        .Visibility(page_ == 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<ScrollViewer>(L"PageScroll")
+        .Visibility(page_ > 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<StackPanel>(L"ScreenPage")
+        .Visibility(page_ == 1 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<StackPanel>(L"SettingsPage")
+        .Visibility(page_ == 2 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<Grid>(L"SettingsFooter")
+        .Visibility(page_ > 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<SelectorBar>(L"SettingsTabs")
+        .Visibility(page_ == 2 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<HyperlinkButton>(L"TextConnection")
+        .Visibility(page_ == 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<Button>(L"ConversationMenu")
+        .Visibility(page_ == 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<TextBlock>(L"ScreenSubtitle")
+        .Visibility(page_ == 1 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    const wchar_t* titles[]{L"文本翻译", L"截图翻译", L"设置"};
+    ui_->Get<TextBlock>(L"PageTitle").Text(titles[page_]);
+    SetHotkeyEditing(GetActiveWindow() == hwnd_ && ui_->FocusedHotkey());
+    ui_->Get<ScrollViewer>(L"PageScroll")
+        .ChangeView(nullptr, winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(),
+                    nullptr);
+}
+void SettingsWindow::SelectSettingsTab(int tab) {
+    const bool changed = settingsTab_ != tab;
+    settingsTab_ = std::clamp(tab, 0, 3);
+    const wchar_t* names[]{L"SettingsGeneral", L"SettingsConnection", L"SettingsAppearance",
+                           L"SettingsAbout"};
+    for (int i = 0; i < 4; ++i)
+        ui_->Get<StackPanel>(names[i]).Visibility(i == settingsTab_ ? xaml::Visibility::Visible
+                                                                    : xaml::Visibility::Collapsed);
+    auto tabs = ui_->Get<SelectorBar>(L"SettingsTabs");
+    if (tabs.SelectedItem() != tabs.Items().GetAt(settingsTab_))
+        tabs.SelectedItem(tabs.Items().GetAt(settingsTab_));
+    SetHotkeyEditing(GetActiveWindow() == hwnd_ && ui_->FocusedHotkey());
+    if (changed)
+        ui_->Get<ScrollViewer>(L"PageScroll")
+            .ChangeView(nullptr, winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(),
+                        nullptr);
 }
 void SettingsWindow::SetHotkeyEditing(bool editing) {
     if (hotkeyEditing_ == editing)
@@ -577,11 +727,35 @@ void SettingsWindow::UpdateTranslationMode() {
     if (!ui_)
         return;
     const bool textOnly = ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex() == TranslationOcrText;
+    for (auto [name, selected] : std::initializer_list<std::pair<const wchar_t*, bool>>{
+             {L"VisionChoice", !textOnly}, {L"OcrChoice", textOnly}}) {
+        auto choice = ui_->Get<xaml::Controls::Primitives::ToggleButton>(name);
+        choice.IsChecked(winrt::box_value(selected).as<winrt::Windows::Foundation::IReference<bool>>());
+        choice.IsEnabled(!apiBusy_);
+    }
     ui_->Get<ComboBox>(L"TranslationMode").IsEnabled(!apiBusy_);
     ui_->Get<ComboBox>(L"OcrMode").IsEnabled(!apiBusy_ && textOnly);
     ui_->Get<ComboBox>(L"Quality").IsEnabled(!apiBusy_ && !textOnly);
+    ui_->Get<ComboBox>(L"OcrMode")
+        .Visibility(textOnly ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    ui_->Get<ComboBox>(L"Quality")
+        .Visibility(!textOnly ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    auto index = ui_->Get<ComboBox>(L"Provider").SelectedIndex();
+    if (index >= 0) {
+        auto id = ProviderPresets().at(index).id;
+        const bool dedicated = std::string_view(id) == "deepl" || std::string_view(id) == "azure-translator";
+        ui_->Get<TextBox>(L"ServiceRegion")
+            .Visibility(std::string_view(id) == "azure-translator" ? xaml::Visibility::Visible
+                                                                   : xaml::Visibility::Collapsed);
+        ui_->Get<ComboBox>(L"Model").IsEnabled(!apiBusy_ && !dedicated);
+        ui_->Get<Button>(L"FetchModels").IsEnabled(!apiBusy_ && !dedicated);
+    }
+    ui_->Get<TextBox>(L"ProxyAddress")
+        .IsEnabled(!apiBusy_ && ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex() == 2);
 }
 void SettingsWindow::Status(const std::wstring& text) {
+    if (page_ == 0)
+        textPage_.Notify(text);
     if (ui_ && ui_->root)
         ui_->Get<TextBlock>(L"Status").Text(text);
 }
@@ -691,6 +865,7 @@ void SettingsWindow::Save() {
         auto next = ReadApi(true);
         next.startup = ui_->On(L"Startup");
         next.tray = ui_->On(L"Tray");
+        next.textCtrlEnter = ui_->On(L"TextCtrlEnter");
         std::copy(std::begin(ui_->hotkeys), std::end(ui_->hotkeys), std::begin(next.hotkeys));
         next.quality = ui_->Get<ComboBox>(L"Quality").SelectedIndex();
         next.ocrMode = OcrModeFromSelection(ui_->Get<ComboBox>(L"OcrMode").SelectedIndex());
@@ -714,6 +889,7 @@ void SettingsWindow::Save() {
             return;
         }
         settings_ = next;
+        textPage_.UpdateConnection(settings_, secret.value);
         Status(L"设置已保存。关闭窗口后程序继续在后台运行。");
     } catch (const AppError& e) {
         Status(Wide(e.what()));
@@ -757,6 +933,9 @@ LRESULT CALLBACK SettingsWindow::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 self->SetHotkeyEditing(GetActiveWindow() == h && self->ui_->FocusedHotkey());
             }
             return 0;
+        case TextTranslationPage::DispatchMessage:
+            self->textPage_.Dispatch();
+            return 0;
         case WM_GETMINMAXINFO: {
             auto info = reinterpret_cast<MINMAXINFO*>(l);
             auto dpi = GetDpiForWindow(h);
@@ -779,7 +958,7 @@ LRESULT CALLBACK SettingsWindow::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             RECT r{};
             GetWindowRect(h, &r);
             if (self->callbacks_.closed)
-                self->callbacks_.closed(r, self->page_);
+                self->callbacks_.closed(r, self->page_, self->settingsTab_);
             self->Close();
             return 0;
         }

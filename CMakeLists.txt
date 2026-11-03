@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenAITranslator VERSION 1.6.0 LANGUAGES CXX RC)
+project(ScreenAITranslator VERSION 2.0.0 LANGUAGES CXX RC)
 set(SAT_APP_NAME "你给我翻译翻译什么叫翻译")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ add_library(sat_core
  src/capture/Capture.cpp
  src/capture/TextDetection.cpp
  src/capture/BundledOcr.cpp
+ src/capture/ImageInput.cpp
  src/providers/Provider.cpp
  src/providers/RequestParameters.cpp
  src/providers/VisionResponse.cpp
@@ -35,7 +36,8 @@ target_link_libraries(sat_core PUBLIC d3d11 dxgi windowscodecs ole32 oleaut32 ru
 add_library(sat_ui
  src/app/TranslationPipeline.cpp
  src/selection/Selection.cpp src/overlay/SpatialLayout.cpp
- src/overlay/Overlay.cpp src/overlay/OverlayToolbar.cpp src/settings/SettingsWindow.cpp src/settings/WinUIRuntime.cpp)
+ src/overlay/Overlay.cpp src/overlay/OverlayToolbar.cpp src/settings/SettingsWindow.cpp src/settings/WinUIRuntime.cpp
+ src/settings/TextTranslationPage.cpp)
 target_link_libraries(sat_ui PUBLIC sat_core sat_winui comctl32 d2d1 dwrite dwmapi comdlg32 msimg32 propsys)
 target_compile_definitions(sat_ui PRIVATE SAT_APP_ICON_NAME="${SAT_APP_ICON_NAME}")
 add_executable(ScreenAITranslator WIN32
@@ -53,6 +55,8 @@ add_test(NAME CoreTests COMMAND CoreTests)
 add_executable(ProviderTests tests/ProviderTests.cpp)
 target_link_libraries(ProviderTests PRIVATE sat_core ws2_32)
 add_test(NAME ProviderTests COMMAND ProviderTests)
+add_test(NAME ContentTranslationTests COMMAND ProviderTests --content-translation)
+set_tests_properties(ContentTranslationTests PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
 add_executable(DiagnosticsTests tests/DiagnosticsTests.cpp)
 target_link_libraries(DiagnosticsTests PRIVATE sat_core)
 add_test(NAME DiagnosticsTests COMMAND DiagnosticsTests)
@@ -125,6 +129,12 @@ target_link_options(SettingsConfigurationTests PRIVATE /MANIFEST:NO)
 sat_deploy_winui(SettingsConfigurationTests)
 add_test(NAME SettingsConfigurationTests COMMAND SettingsConfigurationTests)
 set_tests_properties(SettingsConfigurationTests PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
+add_executable(TextTranslationUiTests tests/TextTranslationUiTests.cpp resources/app.rc)
+target_link_libraries(TextTranslationUiTests PRIVATE sat_ui ws2_32)
+target_link_options(TextTranslationUiTests PRIVATE /MANIFEST:NO)
+sat_deploy_winui(TextTranslationUiTests)
+add_test(NAME TextTranslationUiTests COMMAND TextTranslationUiTests)
+set_tests_properties(TextTranslationUiTests PROPERTIES TIMEOUT 50 RUN_SERIAL TRUE)
 target_link_libraries(WinUISettingsTests PRIVATE sat_ui)
 target_link_options(WinUISettingsTests PRIVATE /MANIFEST:NO)
 sat_deploy_winui(WinUISettingsTests)

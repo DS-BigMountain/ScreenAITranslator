@@ -1,7 +1,7 @@
 #define AppName "你给我翻译翻译什么叫翻译"
 #define AppExeName AppName + ".exe"
 #ifndef AppVersion
-  #define AppVersion "1.6.0"
+  #define AppVersion "2.0.0"
 #endif
 #ifndef AppStage
   #define AppStage "..\build\package-stage\Release"
@@ -21,6 +21,7 @@ AppId={{2B5E7B5E-E962-42F0-A42D-6A5843E925FA}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} V{#AppVersion}
+UninstallDisplayName={#AppName}
 AppPublisher={#AppName}
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}

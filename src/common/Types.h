@@ -68,6 +68,8 @@ struct ConnectionProfile {
 };
 struct Settings {
     bool startup{true}, tray{true};
+    bool textCtrlEnter{};
+    std::string textTargetLanguage{"zh-Hans"};
     Hotkey hotkeys[3]{};
     std::string provider{"deepseek"};
     std::wstring baseUrl{L"https://api.deepseek.com"};
@@ -99,6 +101,7 @@ struct Settings {
 struct PersistentState {
     std::optional<RECT> window;
     int tab{};
+    int settingsTab{};
 };
 struct AppError : std::runtime_error {
     std::string stage;
