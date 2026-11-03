@@ -1,4 +1,5 @@
 #include "providers/Provider.h"
+#include "providers/ContentTranslation.h"
 #include "RequestParameters.h"
 #include "VisionResponse.h"
 #include "capture/Capture.h"
@@ -1033,6 +1034,7 @@ nlohmann::json BuildRequest(const std::string& image, const std::vector<ContextI
 }
 
 #include "ProviderServices.inc"
+#include "ContentTranslation.inc"
 
 std::unique_ptr<ITranslationProvider> CreateProvider(const std::string& provider) {
     const auto protocol = Preset(provider).protocol;

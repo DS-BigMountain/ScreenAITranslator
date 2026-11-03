@@ -1,5 +1,6 @@
 #include "Store.h"
 #include "providers/Catalog.h"
+#include "providers/ContentTranslation.h"
 #include "providers/RequestParameters.h"
 #include <nlohmann/json.hpp>
 #include <shlobj.h>
@@ -98,7 +99,8 @@ bool Plain(const std::string& value, size_t limit) {
            std::none_of(value.begin(), value.end(), [](unsigned char c) { return c < 32 || c == 127; });
 }
 void ValidateState(const PersistentState& state) {
-    Require(state.tab >= 0 && state.tab <= 4, "Invalid settings tab");
+    Require(state.tab >= 0 && state.tab <= 2 && state.settingsTab >= 0 && state.settingsTab <= 3,
+            "Invalid navigation state");
     if (state.window) {
         const auto& r = *state.window;
         Require(r.right > r.left && r.bottom > r.top && static_cast<long long>(r.right) - r.left <= 32768 &&
@@ -169,6 +171,7 @@ std::string UnprotectSecret(const std::string& encrypted) {
 }
 
 void ValidateSettings(const Settings& s) {
+    (void)FindTextTarget(s.textTargetLanguage);
     (void)Preset(s.provider);
     (void)ParseRequestParameters(s.requestParameters);
     {
@@ -261,7 +264,7 @@ Settings Store::LoadSettings() {
     Settings s;
     try {
         for (auto field : {"startup", "tray", "contextEnabled", "autoFont", "matchTextColor",
-                           "spatialOverlay", "translateAll"})
+                           "spatialOverlay", "translateAll", "textCtrlEnter"})
             Require(!j.contains(field) || j.at(field).is_boolean(), "Invalid boolean setting");
         for (auto field : {"timeoutSeconds", "quality", "ocrMode", "translationMode", "contextSize",
                            "textColor", "outlineColor", "proxyMode"})
@@ -272,6 +275,8 @@ Settings Store::LoadSettings() {
 #define READ_FIELD(field) s.field = j.value(#field, s.field)
         READ_FIELD(startup);
         READ_FIELD(tray);
+        READ_FIELD(textCtrlEnter);
+        READ_FIELD(textTargetLanguage);
         READ_FIELD(provider);
         READ_FIELD(model);
         READ_FIELD(timeoutSeconds);
@@ -347,6 +352,8 @@ void Store::SaveSettings(const Settings& s) {
 #define WRITE_FIELD(field) j[#field] = s.field
     WRITE_FIELD(startup);
     WRITE_FIELD(tray);
+    WRITE_FIELD(textCtrlEnter);
+    WRITE_FIELD(textTargetLanguage);
     WRITE_FIELD(provider);
     WRITE_FIELD(model);
     WRITE_FIELD(timeoutSeconds);
@@ -397,8 +404,15 @@ PersistentState Store::LoadState() {
     PersistentState state;
     try {
         state.tab = j.value("tab", 0);
-        if (state.tab == 5)
-            state.tab = 4; // Migrate the removed history/log page to Appearance.
+        if (j.value("navigationVersion", 1) == 1 && j.contains("tab")) {
+            Require(state.tab >= 0 && state.tab <= 5, "Invalid legacy navigation state");
+            const int pages[]{1, 2, 2, 1, 2, 2};
+            const int tabs[]{0, 0, 1, 0, 2, 2};
+            state.settingsTab = tabs[state.tab];
+            state.tab = pages[state.tab];
+        } else {
+            state.settingsTab = j.value("settingsTab", 0);
+        }
         if (j.contains("window") && !j["window"].is_null()) {
             const auto& w = j.at("window");
             state.window = RECT{w.at("left").get<LONG>(), w.at("top").get<LONG>(), w.at("right").get<LONG>(),
@@ -415,7 +429,11 @@ PersistentState Store::LoadState() {
 }
 void Store::SaveState(const PersistentState& state) {
     ValidateState(state);
-    Json j{{"version", 1}, {"tab", state.tab}, {"window", nullptr}};
+    Json j{{"version", 1},
+           {"navigationVersion", 2},
+           {"tab", state.tab},
+           {"settingsTab", state.settingsTab},
+           {"window", nullptr}};
     if (state.window) {
         auto r = *state.window;
         j["window"] = {{"left", r.left}, {"top", r.top}, {"right", r.right}, {"bottom", r.bottom}};
