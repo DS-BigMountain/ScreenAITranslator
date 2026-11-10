@@ -37,6 +37,12 @@ void FlagUntranslatedPassages(TranslationResult& result) {
     for (auto& segment : result.segments) {
         if (segment.untranslated || segment.original.empty())
             continue;
+        // An empty answer leaves the source passage in place instead of blanking the surface.
+        if (segment.translated.empty()) {
+            segment.untranslated = true;
+            ++result.untranslatedSegments;
+            continue;
+        }
         const auto original = Wide(segment.original), translated = Wide(segment.translated);
         const auto foreignScript = std::count_if(original.begin(), original.end(), [](wchar_t ch) {
             return (ch >= 0x3040 && ch <= 0x30ff) || (ch >= 0xac00 && ch <= 0xd7af);

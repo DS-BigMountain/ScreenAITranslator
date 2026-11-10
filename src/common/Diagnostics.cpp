@@ -1,4 +1,5 @@
 #include "Diagnostics.h"
+#include "Trace.h"
 #include <atomic>
 #include <algorithm>
 #include <mutex>
@@ -196,6 +197,9 @@ void DiagnosticSpan::End(const char* outcome, const nlohmann::json& fields) noex
         data["duration_ms"] =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_).count();
         DiagnosticEvent("stage_end", data);
+        // The payload trace keeps every measured stage beside the exact request bytes, which makes a
+        // single directory answer both "what was sent" and "where the time went".
+        TraceStage(stage_, parent_, data, start_, outcome);
     } catch (...) {
     }
     if (spanId == id_)

@@ -406,6 +406,51 @@ std::vector<unsigned char> EncodeJpeg(const Image& image, int quality, std::stop
     return result;
 }
 
+std::vector<unsigned char> EncodePng(const Image& image, std::stop_token stop) {
+    CheckStop(stop);
+    ValidateImage(image);
+    ComApartment apartment;
+    ComPtr<IWICImagingFactory> factory;
+    CheckHR(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)),
+            "image");
+    ComPtr<IWICBitmap> bitmap;
+    CheckHR(factory->CreateBitmapFromMemory(image.width, image.height, GUID_WICPixelFormat32bppBGRA,
+                                            image.width * 4, static_cast<UINT>(image.bgra.size()),
+                                            const_cast<BYTE*>(image.bgra.data()), &bitmap),
+            "image");
+    CheckStop(stop);
+    ComPtr<IStream> stream;
+    CheckHR(CreateStreamOnHGlobal(nullptr, TRUE, &stream), "image");
+    ComPtr<IWICBitmapEncoder> encoder;
+    CheckHR(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder), "image");
+    CheckHR(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache), "image");
+    ComPtr<IWICBitmapFrameEncode> frame;
+    CheckHR(encoder->CreateNewFrame(&frame, nullptr), "image");
+    CheckHR(frame->Initialize(nullptr), "image");
+    CheckHR(frame->SetSize(image.width, image.height), "image");
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+    CheckHR(frame->SetPixelFormat(&format), "image");
+    if (format != GUID_WICPixelFormat32bppBGRA)
+        throw AppError("image", "PNG 编码格式不受支持");
+    CheckHR(frame->WriteSource(bitmap.Get(), nullptr), "image");
+    CheckStop(stop);
+    CheckHR(frame->Commit(), "image");
+    CheckHR(encoder->Commit(), "image");
+    STATSTG stat{};
+    CheckHR(stream->Stat(&stat, STATFLAG_NONAME), "image");
+    if (stat.cbSize.QuadPart > std::numeric_limits<ULONG>::max())
+        throw AppError("image", "编码图片过大");
+    std::vector<unsigned char> result(static_cast<size_t>(stat.cbSize.QuadPart));
+    LARGE_INTEGER offset{};
+    CheckHR(stream->Seek(offset, STREAM_SEEK_SET, nullptr), "image");
+    ULONG read = 0;
+    CheckHR(stream->Read(result.data(), static_cast<ULONG>(result.size()), &read), "image");
+    if (read != result.size())
+        throw AppError("image", "读取编码图片失败");
+    CheckStop(stop);
+    return result;
+}
+
 std::string Base64(const std::vector<unsigned char>& bytes) {
     static constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string result;

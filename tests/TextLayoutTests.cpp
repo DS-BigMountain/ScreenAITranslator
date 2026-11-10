@@ -1,8 +1,11 @@
 #include "capture/TextDetection.h"
 #include "capture/BundledOcr.h"
+#include "app/SourceMatching.h"
 #include "overlay/SpatialLayout.h"
+#include "overlay/TextRim.h"
 #include "providers/Provider.h"
 #include <wincodec.h>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <algorithm>
@@ -33,7 +36,7 @@ Image ReadImage(const wchar_t* path) {
     return image;
 }
 void Render(const Image& image, const std::vector<PositionedText>& items, const std::filesystem::path& path,
-            bool diagnostic) {
+            bool diagnostic, const Settings& settings = {}) {
     ComPtr<IWICImagingFactory> wic;
     CheckHR(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)),
             "test");
@@ -59,7 +62,7 @@ void Render(const Image& image, const std::vector<PositionedText>& items, const 
             "test");
     target->BeginDraw();
     target->DrawBitmap(background.Get());
-    DrawPositioned(target.Get(), items, RGB(20, 20, 20), diagnostic);
+    DrawPositioned(target.Get(), items, &image, RGB(20, 20, 20), settings, 96, diagnostic);
     CheckHR(target->EndDraw(), "test");
     ComPtr<IWICStream> stream;
     CheckHR(wic->CreateStream(&stream), "test");
@@ -82,9 +85,14 @@ void Render(const Image& image, const std::vector<PositionedText>& items, const 
             for (int x = 0; x < image.width; ++x) {
                 POINT p{x, y};
                 bool covered = false;
-                for (const auto& item : items)
-                    if (!item.suppressed && PtInRect(&item.rect, p))
+                for (const auto& item : items) {
+                    // The rebuilt surface repairs a ring around each box, so the reach follows the repair
+                    // margin instead of the bare box.
+                    RECT reach = item.rect;
+                    InflateRect(&reach, 24, 24);
+                    if (!item.suppressed && PtInRect(&reach, p))
                         covered = true;
+                }
                 if (covered)
                     continue;
                 size_t pos = (size_t(y) * image.width + x) * 4;
@@ -93,6 +101,99 @@ void Render(const Image& image, const std::vector<PositionedText>& items, const 
                             "source pixel outside translation changed");
             }
     }
+}
+// Renders the three rim styles on a dark half and a light half: the inverse mode has to stay
+// readable in both directions. One row per style, and the timing loop measures each style through
+// the real end-draw path so the stacked strokes show their cost.
+void RenderRims(const std::filesystem::path& output) {
+    ComPtr<IWICImagingFactory> wic;
+    CheckHR(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)),
+            "test");
+    ComPtr<ID2D1Factory> factory;
+    CheckHR(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, factory.GetAddressOf()), "test");
+    ComPtr<IDWriteFactory> write;
+    CheckHR(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                reinterpret_cast<IUnknown**>(write.GetAddressOf())),
+            "test");
+    ComPtr<IDWriteTextFormat> format;
+    CheckHR(write->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 38.f, L"zh-CN",
+                                    &format),
+            "test");
+    CheckHR(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP), "test");
+    const wchar_t* sample = L"屏幕翻译 Overlay 42";
+    ComPtr<IDWriteTextLayout> layout;
+    CheckHR(write->CreateTextLayout(sample, UINT32(wcslen(sample)), format.Get(), 460.f, 60.f, &layout), "test");
+    const int w = 960, h = 330;
+    const auto solid = [](COLORREF c, float a = 1.f) {
+        return D2D1::ColorF(GetRValue(c) / 255.f, GetGValue(c) / 255.f, GetBValue(c) / 255.f, a);
+    };
+    auto paint = [&](int style, const std::filesystem::path* path) {
+        ComPtr<IWICBitmap> bitmap;
+        CheckHR(wic->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &bitmap), "test");
+        ComPtr<ID2D1RenderTarget> target;
+        CheckHR(factory->CreateWicBitmapRenderTarget(
+                    bitmap.Get(),
+                    D2D1::RenderTargetProperties(
+                        D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96),
+                    &target),
+                "test");
+        ComPtr<ID2D1SolidColorBrush> fill, rim, light;
+        CheckHR(target->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1), &fill), "test");
+        CheckHR(target->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0), &rim), "test");
+        CheckHR(target->CreateSolidColorBrush(solid(RGB(184, 188, 194)), &light), "test");
+        target->BeginDraw();
+        target->Clear(solid(RGB(74, 79, 87)));
+        target->FillRectangle(D2D1::RectF(w / 2.f, 0, float(w), float(h)), light.Get());
+        // Three rows: the default rim width in inverse mode, a wide rim in inverse mode, and the
+        // custom colour mode, which carries a chosen hue. Both halves are mid grey so a black rim on
+        // the dark half and a white rim on the light half stay visible.
+        struct Row {
+            float y;
+            float stroke;
+            bool inverse;
+        };
+        const Row rows[3] = {{26.f, 1.5f, true}, {118.f, 3.f, true}, {216.f, 3.f, false}};
+        for (const auto& row : rows) {
+            fill->SetColor(solid(RGB(245, 245, 245)));
+            rim->SetColor(row.inverse ? solid(RGB(16, 16, 16)) : solid(RGB(255, 59, 48)));
+            auto dark =
+                CreateRimRenderer(target.Get(), factory.Get(), fill.Get(), rim.Get(), row.stroke, style, 1.f);
+            CheckHR(layout->Draw(nullptr, dark.Get(), 26.f, row.y), "test");
+            fill->SetColor(solid(RGB(18, 18, 20)));
+            rim->SetColor(row.inverse ? solid(RGB(250, 250, 250)) : solid(RGB(10, 132, 255)));
+            auto bright =
+                CreateRimRenderer(target.Get(), factory.Get(), fill.Get(), rim.Get(), row.stroke, style, 1.f);
+            CheckHR(layout->Draw(nullptr, bright.Get(), w / 2.f + 26.f, row.y), "test");
+        }
+        CheckHR(target->EndDraw(), "test");
+        if (!path)
+            return;
+        ComPtr<IWICStream> stream;
+        CheckHR(wic->CreateStream(&stream), "test");
+        CheckHR(stream->InitializeFromFilename(path->c_str(), GENERIC_WRITE), "test");
+        ComPtr<IWICBitmapEncoder> encoder;
+        CheckHR(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder), "test");
+        CheckHR(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache), "test");
+        ComPtr<IWICBitmapFrameEncode> frame;
+        CheckHR(encoder->CreateNewFrame(&frame, nullptr), "test");
+        CheckHR(frame->Initialize(nullptr), "test");
+        CheckHR(frame->WriteSource(bitmap.Get(), nullptr), "test");
+        CheckHR(frame->Commit(), "test");
+        CheckHR(encoder->Commit(), "test");
+    };
+    for (int style = 0; style < 3; ++style) {
+        const auto path = output / (std::wstring(L"rim-") + wchar_t(L'0' + style) + L".png");
+        paint(style, &path);
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < 20; ++i)
+            paint(style, nullptr);
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() / 20;
+        std::cout << "rim style " << style << ": " << ms << " ms per six-run page\n";
+    }
+    std::cout << "Rim samples written; styles 0/1/2 are hard, rough, glow\n";
 }
 void AppearanceRegression() {
     Image image{700, 300, std::vector<unsigned char>(700 * 300 * 4, 255)};
@@ -415,11 +516,28 @@ void UserScreenshotRegression() {
         for (const auto& item : items)
             suppressed += item.suppressed;
         if (std::wstring(name) == L"bbc-headlines-en") {
+            size_t overflow = 0;
+            for (const auto& item : items)
+                overflow += item.overflow;
+            std::cout << "BBC detail: regions=" << detected.regions.size()
+                      << " translations=" << translations.size() << " overflow=" << overflow
+                      << " suppressed=" << suppressed << '\n';
+            for (size_t k = 0; k < items.size(); ++k)
+                if (items[k].overflow)
+                    std::cout << "  overflow[" << k << "] font=" << items[k].fontSize
+                              << " band=" << items[k].bandHeight << " rect=(" << items[k].rect.left << ","
+                              << items[k].rect.top << "," << items[k].rect.right << "," << items[k].rect.bottom
+                              << ")\n";
             Require(suppressed == 0, "BBC headlines or category labels hidden by geometry conflicts");
-            Require(
-                translations.size() == detected.regions.size() &&
-                    std::none_of(items.begin(), items.end(), [](const auto& item) { return item.overflow; }),
-                "saved real BBC translations overflow or lose region mapping");
+            // The fixture maps translations by region id, so the invariant is that every recognized
+            // region receives a translation, not that the detector keeps one fixed region count: the
+            // row merge deliberately fuses fragments of one caption into a single passage.
+            Require(std::all_of(detected.regions.begin(), detected.regions.end(),
+                                [&](const TextRegion& r) {
+                                    return translations.contains(std::to_string(r.id));
+                                }) &&
+                        std::none_of(items.begin(), items.end(), [](const auto& item) { return item.overflow; }),
+                    "saved real BBC translations overflow or lose region mapping");
             for (const auto* anchor : {"Trump announces deal", "curb fuel prices", "Drumcree parade",
                                        "Hurricane Isaias", "cockroach", "watch it", "election defeat",
                                        "Australian surfer", "Northern Ireland", "Business"}) {
@@ -466,6 +584,37 @@ void UserScreenshotRegression() {
                   << suppressed << " suppressed\n";
     }
 }
+void VerticalColumnRegression() {
+    // A manga balloon arrives as neighbouring strips, one glyph per row. The replacement has to keep that
+    // direction and reuse every strip, so the translated balloon covers the area the original columns
+    // occupied instead of one strip squeezed by the whole sentence.
+    auto image = ReadImage(L"test-fixtures/user/asahi-article-ja.png");
+    constexpr int top = 120;
+    const RECT rightStrip{200, top, 231, top + 160};
+    const RECT leftStrip{166, top, 197, top + 120};
+    TranslationResult result;
+    Segment segment;
+    segment.original = "それはちょっと";
+    segment.translated = "这有点不太行吧真的";
+    segment.sourcePixels = RECT{166, top, 231, top + 160};
+    segment.sourceLines = {rightStrip, leftStrip};
+    segment.sourceLineHeight = 160.f;
+    result.segments.push_back(segment);
+    auto layout = LayoutPositioned(result, image, Settings{}, 96);
+    Require(layout.size() == 1 && !layout[0].suppressed, "vertical passage was dropped");
+    const auto& item = layout[0];
+    Require(item.columnTexts.size() == 2, "vertical passage did not reuse every source strip");
+    Require(item.fontSize <= 31.f && item.fontSize >= 18.f, "vertical passage lost its glyph size");
+    Require(!item.overflow, "vertical passage overflowed its balloon");
+    UINT32 rows{};
+    item.columnTexts.front().layout->GetLineMetrics(nullptr, 0, &rows);
+    Require(rows >= 2, "vertical passage did not stack one glyph per row");
+    // The first strip sits to the right, so it carries the start of the sentence.
+    Require(item.columnTexts.front().rect.left > item.columnTexts.back().rect.left,
+            "vertical strips lost their reading order");
+    std::cout << "Vertical column: strips=" << item.columnTexts.size() << " font=" << item.fontSize
+              << " rows=" << rows << '\n';
+}
 TranslationResult ReadRecordedResponse(const std::filesystem::path& path) {
     std::ifstream file(path);
     nlohmann::json report;
@@ -487,10 +636,41 @@ TranslationResult ReadRecordedResponse(const std::filesystem::path& path) {
         segment.untranslated = row.at("untranslated");
         result.segments.push_back(std::move(segment));
     }
+    if (report.contains("uncovered_lines"))
+        for (const auto& r : report.at("uncovered_lines"))
+            result.uncoveredLines.push_back(
+                {r.at(0).get<LONG>(), r.at(1).get<LONG>(), r.at(2).get<LONG>(), r.at(3).get<LONG>()});
     return result;
 }
-void HandshakeRegression(const char* responsePath) {
-    std::ifstream file(responsePath);
+void WriteRecordedResponse(const TranslationResult& result, const std::filesystem::path& path) {
+    nlohmann::json report;
+    report["segments"] = nlohmann::json::array();
+    auto rect = [](RECT r) { return nlohmann::json::array({r.left, r.top, r.right, r.bottom}); };
+    for (const auto& segment : result.segments) {
+        nlohmann::json row;
+        row["original_text"] = segment.original;
+        row["translated_text"] = segment.translated;
+        row["bbox"] = {{"x", segment.box.x},
+                       {"y", segment.box.y},
+                       {"width", segment.box.width},
+                       {"height", segment.box.height}};
+        if (segment.sourcePixels)
+            row["source_pixels"] = rect(*segment.sourcePixels);
+        row["source_lines"] = nlohmann::json::array();
+        for (auto line : segment.sourceLines)
+            row["source_lines"].push_back(rect(line));
+        row["source_line_height"] = segment.sourceLineHeight;
+        row["position_unavailable"] = segment.positionUnavailable;
+        row["untranslated"] = segment.untranslated;
+        report["segments"].push_back(std::move(row));
+    }
+    report["uncovered_lines"] = nlohmann::json::array();
+    for (auto line : result.uncoveredLines)
+        report["uncovered_lines"].push_back(rect(line));
+    std::ofstream file(path);
+    file << report.dump(2);
+}
+void HandshakeRegression(const char* responsePath) {    std::ifstream file(responsePath);
     const std::string response(std::istreambuf_iterator<char>(file), {});
     auto result = ParseTranslation(response);
     auto image = ReadImage(L"test-fixtures/user/handshake-error-en.png");
@@ -537,10 +717,198 @@ void DirectVisionPlacementRegression(const char* responsePath) {
         Require(blocks[0].text.find(Wide(segment.translated)) != std::wstring::npos,
                 "AI position fallback discarded a completed translation");
 }
+class ReadingGlyphRenderer final : public IDWriteTextRenderer {
+    LONG refs_{1};
+    ID2D1RenderTarget* target_;
+    ID2D1Factory* factory_;
+    ID2D1Brush* brush_;
+
+public:
+    ReadingGlyphRenderer(ID2D1RenderTarget* target, ID2D1Factory* factory, ID2D1Brush* brush)
+        : target_(target), factory_(factory), brush_(brush) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID i, void** out) override {
+        if (!out)
+            return E_POINTER;
+        if (i == __uuidof(IUnknown) || i == __uuidof(IDWritePixelSnapping) ||
+            i == __uuidof(IDWriteTextRenderer)) {
+            *out = static_cast<IDWriteTextRenderer*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return ++refs_;
+    }
+    ULONG STDMETHODCALLTYPE Release() override {
+        auto n = --refs_;
+        if (!n)
+            delete this;
+        return n;
+    }
+    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* value) override {
+        *value = FALSE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* value) override {
+        D2D1_MATRIX_3X2_F m;
+        target_->GetTransform(&m);
+        memcpy(value, &m, sizeof(m));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* value) override {
+        *value = 1;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE,
+                                           const DWRITE_GLYPH_RUN* run, const DWRITE_GLYPH_RUN_DESCRIPTION*,
+                                           IUnknown*) override {
+        ComPtr<ID2D1PathGeometry> geometry;
+        CheckHR(factory_->CreatePathGeometry(&geometry), "reading");
+        ComPtr<ID2D1GeometrySink> sink;
+        CheckHR(geometry->Open(&sink), "reading");
+        CheckHR(run->fontFace->GetGlyphRunOutline(run->fontEmSize, run->glyphIndices, run->glyphAdvances,
+                                                  run->glyphOffsets, run->glyphCount, run->isSideways,
+                                                  run->bidiLevel % 2, sink.Get()),
+                "reading");
+        CheckHR(sink->Close(), "reading");
+        D2D1_MATRIX_3X2_F previous;
+        target_->GetTransform(&previous);
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(x, y) * previous);
+        target_->FillGeometry(geometry.Get(), brush_);
+        target_->SetTransform(previous);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*,
+                                                IUnknown*) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL,
+                                               IUnknown*) override {
+        return E_NOTIMPL;
+    }
+};
+void RenderReading(const Image& image, const OverlayBlock& block, const std::filesystem::path& path) {
+    ComPtr<IWICImagingFactory> wic;
+    CheckHR(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)),
+            "reading");
+    ComPtr<IWICBitmap> bitmap;
+    CheckHR(wic->CreateBitmap(image.width, image.height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad,
+                              &bitmap),
+            "reading");
+    ComPtr<ID2D1Factory> factory;
+    CheckHR(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, factory.GetAddressOf()), "reading");
+    ComPtr<ID2D1RenderTarget> target;
+    CheckHR(factory->CreateWicBitmapRenderTarget(
+                bitmap.Get(),
+                D2D1::RenderTargetProperties(
+                    D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96),
+                &target),
+            "reading");
+    auto color = [](COLORREF c, float a = 1.f) {
+        return D2D1::ColorF(GetRValue(c) / 255.f, GetGValue(c) / 255.f, GetBValue(c) / 255.f, a);
+    };
+    target->BeginDraw();
+    target->Clear(D2D1::ColorF(0, 0));
+    ComPtr<ID2D1Bitmap> source;
+    CheckHR(target->CreateBitmap(
+                D2D1::SizeU(image.width, image.height), image.bgra.data(), image.width * 4,
+                D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE)),
+                &source),
+            "reading");
+    target->DrawBitmap(source.Get());
+    ComPtr<ID2D1SolidColorBrush> brush;
+    CheckHR(target->CreateSolidColorBrush(color(block.background, block.opacity), &brush), "reading");
+    target->FillRectangle(D2D1::RectF(0, 0, float(image.width), float(image.height)), brush.Get());
+    brush->SetColor(color(RGB(20, 26, 38)));
+    const float headerBottom = float(block.closeButton.bottom + 1);
+    target->FillRectangle(D2D1::RectF(0, 0, float(image.width), headerBottom), brush.Get());
+    const auto close = block.closeButton;
+    brush->SetColor(color(RGB(180, 45, 60)));
+    target->FillRectangle(
+        D2D1::RectF(float(close.left), float(close.top), float(close.right), float(close.bottom)),
+        brush.Get());
+    brush->SetColor(color(RGB(235, 240, 250)));
+    ComPtr<IDWriteFactory> writer;
+    CheckHR(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                reinterpret_cast<IUnknown**>(writer.GetAddressOf())),
+            "reading");
+    ComPtr<IDWriteTextFormat> caption;
+    CheckHR(writer->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_MEDIUM,
+                                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13, L"zh-CN",
+                                     &caption),
+            "reading");
+    const wchar_t* title = L"译文 · 滚轮查看";
+    target->DrawText(title, UINT32(wcslen(title)), caption.Get(),
+                     D2D1::RectF(10, 0, float(close.left) - 6, headerBottom), brush.Get());
+    ComPtr<ReadingGlyphRenderer> renderer;
+    renderer.Attach(new ReadingGlyphRenderer(target.Get(), factory.Get(), brush.Get()));
+    brush->SetColor(color(RGB(232, 236, 244)));
+    for (const auto& paragraph : block.paragraphs) {
+        CheckHR(paragraph.layout->Draw(nullptr, renderer.Get(), float(paragraph.rect.left),
+                                       float(paragraph.rect.top)),
+                "reading");
+    }
+    brush->SetColor(color(RGB(88, 119, 235)));
+    target->DrawRectangle(D2D1::RectF(1, 1, float(image.width) - 1, float(image.height) - 1), brush.Get(), 2);
+    CheckHR(target->EndDraw(), "reading");
+    ComPtr<IWICStream> stream;
+    CheckHR(wic->CreateStream(&stream), "reading");
+    CheckHR(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE), "reading");
+    ComPtr<IWICBitmapEncoder> encoder;
+    CheckHR(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder), "reading");
+    CheckHR(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache), "reading");
+    ComPtr<IWICBitmapFrameEncode> frame;
+    CheckHR(encoder->CreateNewFrame(&frame, nullptr), "reading");
+    CheckHR(frame->Initialize(nullptr), "reading");
+    CheckHR(frame->WriteSource(bitmap.Get(), nullptr), "reading");
+    CheckHR(frame->Commit(), "reading");
+    CheckHR(encoder->Commit(), "reading");
+}
 } // namespace
 int wmain(int argc, wchar_t** argv) {
     try {
         ComScope com;
+        if (argc == 6 && std::wstring(argv[1]) == L"--attach-geometry") {
+            // Adopts local OCR geometry for recorded model segments, so one entry can be compared
+            // against the model rectangles and against the recognized rectangles.
+            auto image = ReadImage(argv[2]);
+            auto result = ReadRecordedResponse(argv[3]);
+            auto detected = DetectOcrText(image, {}, std::stoi(argv[4]));
+            auto report = AttachSourceGeometry(result, image.width, image.height, detected.regions);
+            std::filesystem::path output = argv[5];
+            std::filesystem::create_directories(output.parent_path());
+            WriteRecordedResponse(result, output);
+            std::cout << "regions=" << detected.regions.size() << " segments=" << report.segments
+                      << " adopted=" << report.adopted << " rows=" << report.matchedLines
+                      << " uncovered=" << report.uncoveredLines.size()
+                      << " rejected_text=" << report.rejectedText
+                      << " rejected_space=" << report.rejectedSpace
+                      << " rejected_bounds=" << report.rejectedBounds << '\n';
+            return 0;
+        }
+        if (argc == 4 && std::wstring(argv[1]) == L"--diagnose-response") {
+            auto image = ReadImage(argv[2]);
+            auto result = ReadRecordedResponse(argv[3]);
+            auto layout = LayoutPositioned(result, image, Settings{}, 96);
+            for (size_t i = 0; i < layout.size(); ++i) {
+                const auto& item = layout[i];
+                std::cout << i << (item.suppressed ? " SUPPRESSED" : " ok") << " src=(" << item.sourceRect.left
+                          << "," << item.sourceRect.top << "," << item.sourceRect.right << ","
+                          << item.sourceRect.bottom << ") rect=(" << item.rect.left << "," << item.rect.top
+                          << "," << item.rect.right << "," << item.rect.bottom << ") font=" << item.fontSize
+                          << " band=" << item.bandHeight << " core=" << item.coreHeight
+                          << " lines=" << item.detectedLines.size() << " overflow=" << (item.overflow ? 1 : 0)
+                          << " erase=" << item.eraseLines.size() << " layout=" << (item.layout ? 1 : 0)
+                          << '\n';
+            }
+            return 0;
+        }
         if (argc == 5 && std::wstring(argv[1]) == L"--render-response") {
             auto image = ReadImage(argv[2]);
             auto result = ReadRecordedResponse(argv[3]);
@@ -550,6 +918,142 @@ int wmain(int argc, wchar_t** argv) {
             Render(image, layout, output / L"translated.png", false);
             Render(image, layout, output / L"geometry.png", true);
             std::cout << "Recorded response rendered; segments=" << result.segments.size() << '\n';
+            return 0;
+        }
+        if ((argc == 5 || argc == 7) && std::wstring(argv[1]) == L"--render-ocr") {
+            // The production route hands every recognized region to the translation service and places
+            // the returned text on the measured rows. This command renders that contract directly:
+            // one segment per recognized region, so coverage, face size and row placement can be
+            // inspected without a network round trip. The optional width and style draw the rim that
+            // the placement path applies.
+            auto image = ReadImage(argv[2]);
+            // The production route recognizes through DetectOcrText, which keeps low-confidence rows so
+            // the translation service can confirm them instead of losing the whole page.
+            auto detected = DetectOcrText(image, {}, std::stoi(argv[3]));
+            TranslationResult result;
+            result.language = "source";
+            for (const auto& region : detected.regions) {
+                Segment segment;
+                segment.original = region.text;
+                segment.translated = region.text;
+                segment.sourceId = region.id;
+                segment.sourcePixels = region.rect;
+                segment.sourceLines = region.lines;
+                segment.sourceLineHeight = region.lineHeight;
+                result.segments.push_back(std::move(segment));
+                result.protectedRegions.push_back(region.rect);
+            }
+            Settings settings;
+            if (argc == 7) {
+                settings.outlineWidth = float(std::stod(argv[5]));
+                settings.outlineStyle = std::stoi(argv[6]);
+            }
+            auto layout = LayoutPositioned(result, image, settings, 96);
+            std::filesystem::path output = argv[4];
+            std::filesystem::create_directories(output);
+            Render(image, layout, output / L"translated.png", false, settings);
+            Render(image, layout, output / L"geometry.png", true, settings);
+            size_t suppressed = 0, overflow = 0;
+            for (const auto& item : layout) {
+                suppressed += item.suppressed;
+                overflow += item.overflow;
+            }
+            std::cout << "OCR route rendered; regions=" << result.segments.size() << " suppressed=" << suppressed
+                      << " overflow=" << overflow << " uncovered=" << result.uncoveredLines.size() << '\n';
+            return 0;
+        }
+        if (argc == 5 && std::wstring(argv[1]) == L"--render-reading") {
+            auto image = ReadImage(argv[2]);
+            auto result = ReadRecordedResponse(argv[3]);
+            Settings settings;
+            settings.spatialOverlay = false;
+            settings.autoFont = false;
+            settings.fontSize = 18;
+            RECT area{0, 0, image.width, image.height};
+            Monitor monitor{L"reading", area, 96};
+            auto blocks = BuildOverlay(result, image, area, monitor, settings, false);
+            std::filesystem::path output = argv[4];
+            std::filesystem::create_directories(output);
+            RenderReading(image, blocks.front(), output / L"reading.png");
+            std::cout << "Reading panel rendered; paragraphs=" << blocks.front().paragraphs.size() << '\n';
+            return 0;
+        }
+        if (argc == 5 && std::wstring(argv[1]) == L"--dump-ocr") {
+            // Exports detector boxes so a candidate detector can be compared box by box.
+            auto image = ReadImage(argv[2]);
+            auto detected = DetectOcrText(image, {}, std::stoi(argv[3]));
+            std::ofstream file(argv[4]);
+            if (!file)
+                throw std::runtime_error("dump target unavailable");
+            file << "{\"regions\":[";
+            for (size_t i = 0; i < detected.regions.size(); ++i) {
+                const auto& region = detected.regions[i];
+                if (i)
+                    file << ',';
+                file << "{\"id\":" << region.id << ",\"rect\":[" << region.rect.left << ','
+                     << region.rect.top << ',' << region.rect.right << ',' << region.rect.bottom
+                     << "],\"lineHeight\":" << region.lineHeight << '}';
+            }
+            file << "]}\n";
+            std::cout << "OCR boxes dumped; regions=" << detected.regions.size() << '\n';
+            return 0;
+        }
+        if (argc == 3 && std::wstring(argv[1]) == L"--render-rim") {
+            std::filesystem::path output = argv[2];
+            std::filesystem::create_directories(output);
+            RenderRims(output);
+            return 0;
+        }
+        if (argc == 3 && std::wstring(argv[1]) == L"--ocr-manga") {
+            // Runs the manga engine directly so its detection and vertical-column reading can be
+            // inspected without the routing layer in between.
+            auto image = ReadImage(argv[2]);
+            std::cout << "manga weights available: " << (MangaOcrAvailable() ? 1 : 0) << '\n';
+            auto lines = RecognizeMangaBundled(image, {});
+            for (const auto& line : lines)
+                std::cout << "rect=(" << line.rect.left << ',' << line.rect.top << ',' << line.rect.right
+                          << ',' << line.rect.bottom << ") conf=" << line.confidence << " text=["
+                          << line.text << "]\n";
+            std::cout << "Manga OCR: lines=" << lines.size() << '\n';
+            return 0;
+        }
+        if (argc == 4 && std::wstring(argv[1]) == L"--ocr-text") {
+            // Prints what recognition read for every region, which is how a vertical column or a
+            // rotated line shows whether the reading path found it.
+            auto image = ReadImage(argv[2]);
+            auto detected = DetectOcrText(image, {}, std::stoi(argv[3]));
+            for (const auto& region : detected.regions)
+                std::cout << "id=" << region.id << " rect=(" << region.rect.left << ',' << region.rect.top
+                          << ',' << region.rect.right << ',' << region.rect.bottom
+                          << ") conf=" << region.confidence << " text=[" << region.text << "]\n";
+            std::cout << "OCR text: regions=" << detected.regions.size() << '\n';
+            return 0;
+        }
+        if (argc == 4 && std::wstring(argv[1]) == L"--layout-bands") {
+            // Prints the band and face each region ends up with, so the ink refinement can be read
+            // against the detector box directly.
+            auto image = ReadImage(argv[2]);
+            auto detected = DetectOcrText(image, {}, std::stoi(argv[3]));
+            TranslationResult result;
+            result.language = "source";
+            for (const auto& region : detected.regions) {
+                Segment segment;
+                segment.original = region.text;
+                segment.translated = region.text;
+                segment.sourceId = region.id;
+                segment.sourcePixels = region.rect;
+                segment.sourceLines = region.lines;
+                segment.sourceLineHeight = region.lineHeight;
+                result.segments.push_back(std::move(segment));
+                result.protectedRegions.push_back(region.rect);
+            }
+            auto layout = LayoutPositioned(result, image, Settings{}, 96);
+            for (const auto& item : layout)
+                std::cout << "src=(" << item.sourceRect.left << ',' << item.sourceRect.top << ','
+                          << item.sourceRect.right << ',' << item.sourceRect.bottom
+                          << ") srcH=" << Height(item.sourceRect) << " band=" << item.bandHeight
+                          << " core=" << item.coreHeight << " font=" << item.fontSize
+                          << " rows=" << item.detectedLines.size() << '\n';
             return 0;
         }
         UnitTests();
@@ -570,6 +1074,7 @@ int wmain(int argc, wchar_t** argv) {
             DirectVisionPlacementRegression("test-fixtures/user/github-ai-pixel-response.json");
             ScreenshotRegression();
             UserScreenshotRegression();
+            VerticalColumnRegression();
             std::ifstream response("test-fixtures/user/github-dashboard-ai-web-response.json");
             Require(bool(response), "user vision response fixture missing");
             const std::string source(std::istreambuf_iterator<char>(response), {});

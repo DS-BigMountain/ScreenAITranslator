@@ -1,4 +1,5 @@
 #include "providers/Provider.h"
+#include "app/TranslationPipeline.h"
 #include "settings/Store.h"
 #include "common/Diagnostics.h"
 #include "common/Platform.h"
@@ -35,9 +36,11 @@ sat::Image ReadImage(const wchar_t* path) {
 } // namespace
 // Manual diagnostic only: uses saved credentials with an explicit test input, never the desktop.
 int wmain(int argc, wchar_t** argv) {
+    const bool pipelineImage = argc >= 3 && std::wstring(argv[1]) == L"--saved-settings-pipeline-image";
     const bool ocrImage = argc >= 3 && std::wstring(argv[1]) == L"--saved-settings-ocr-image";
     const bool suppliedImage = (argc == 3 || argc == 4 || (argc == 5 && ocrImage)) &&
-                               (ocrImage || std::wstring(argv[1]) == L"--saved-settings-image");
+                               (ocrImage || pipelineImage ||
+                                std::wstring(argv[1]) == L"--saved-settings-image");
     if (!suppliedImage && (argc != 2 || std::wstring(argv[1]) != L"--saved-settings")) {
         std::cerr << "Use --saved-settings or --saved-settings[-ocr]-image IMAGE [RESULT_JSON].\n";
         return 2;
@@ -59,7 +62,14 @@ int wmain(int argc, wchar_t** argv) {
         options.translationMode = ocrImage ? sat::TranslationOcrText : sat::TranslationAiVision;
         if (argc == 5 && ocrImage)
             options.ocrMode = std::stoi(argv[4]);
-        options = sat::SelectTranslationConnection(options);
+        try {
+            options = sat::SelectTranslationConnection(options);
+        } catch (const sat::AppError&) {
+            // The saved mode asked for image input on a text service. The production entry routes by
+            // itself, so the diagnostic keeps the saved provider and lets it decide.
+            options.translationMode = sat::TranslationOcrText;
+            options = sat::SelectTranslationConnection(options);
+        }
         key = sat::UnprotectSecret(options.encryptedKey);
         if (key.empty()) {
             std::cout << "No saved API key; no request made.\n";
@@ -68,6 +78,28 @@ int wmain(int argc, wchar_t** argv) {
         if (suppliedImage) {
             if (argc >= 4 && std::filesystem::exists(argv[3]))
                 throw sat::AppError("diagnostic", "结果文件已存在，未发送请求");
+            if (pipelineImage) {
+                // The production entry: recognition runs locally and the request carries text only,
+                // whatever the saved translation mode says.
+                auto image = ReadImage(argv[2]);
+                RECT region{0, 0, image.width, image.height};
+                sat::Monitor monitor{L"diagnostic", region, 96};
+                const auto started = std::chrono::steady_clock::now();
+                auto prepared = sat::PrepareTranslation(
+                    std::move(image), region, monitor, options, {}, key, {},
+                    [&options](const std::string&) { return sat::CreateProvider(options.provider); },
+                    [](sat::TranslationPhase) {});
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now() - started)
+                                         .count();
+                std::cout << "Pipeline diagnostic: " << elapsed << " ms; textOnly=" << prepared.textOnly
+                          << "; ocr=" << prepared.ocrMs << " ms; api=" << prepared.apiMs
+                          << " ms; segments=" << prepared.result.segments.size()
+                          << "; requests=" << prepared.result.requestCount
+                          << "; blocks=" << prepared.blocks.size()
+                          << "; low_confidence=" << prepared.lowConfidenceRegions << '\n';
+                return 0;
+            }
             auto image = ReadImage(argv[2]);
             const auto started = std::chrono::steady_clock::now();
             std::vector<sat::TextRegion> regions;

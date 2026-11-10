@@ -8,7 +8,17 @@ const std::vector<TargetLanguage>& TextTargetLanguages() {
         {"zh-Hant", L"繁体中文", "Traditional Chinese", "ZH-HANT"},
         {"fr", L"法语", "French", "FR"},
         {"de", L"德语", "German", "DE"},
-        {"es", L"西班牙语", "Spanish", "ES"}};
+        {"es", L"西班牙语", "Spanish", "ES"},
+        {"ru", L"俄语", "Russian", "RU"},
+        {"pt", L"葡萄牙语", "Portuguese", "PT-BR"},
+        {"it", L"意大利语", "Italian", "IT"},
+        {"ar", L"阿拉伯语", "Arabic", "AR"},
+        {"th", L"泰语", "Thai", "TH"},
+        {"vi", L"越南语", "Vietnamese", "VI"},
+        {"id", L"印尼语", "Indonesian", "ID"},
+        {"tr", L"土耳其语", "Turkish", "TR"},
+        {"nl", L"荷兰语", "Dutch", "NL"},
+        {"pl", L"波兰语", "Polish", "PL"}};
     return languages;
 }
 const TargetLanguage& FindTextTarget(std::string_view id) {

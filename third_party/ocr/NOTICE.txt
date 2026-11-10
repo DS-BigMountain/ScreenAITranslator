@@ -5,17 +5,26 @@ https://github.com/microsoft/onnxruntime/tree/v1.22.1
 Distributed from the Microsoft.ML.OnnxRuntime NuGet package.
 The package's LICENSE and ThirdPartyNotices.txt accompany the runtime.
 
-PP-OCRv5 mobile detection and recognition (PaddleOCR, Apache-2.0):
+PaddleOCR PP-OCRv5 / PP-OCRv6 and PP-LCNet text-line orientation (PaddleOCR, Apache-2.0):
 https://github.com/PaddlePaddle/PaddleOCR
 ONNX conversions distributed by RapidOCR (Apache-2.0):
 https://www.modelscope.cn/models/RapidAI/RapidOCR/files?Revision=v3.10.0
+https://www.modelscope.cn/models/RapidAI/RapidOCR/files?Revision=master
 https://github.com/RapidAI/RapidOCR
 Models: ch_PP-OCRv5_det_mobile, ch_PP-OCRv5_rec_mobile,
-en_PP-OCRv5_rec_mobile, korean_PP-OCRv5_rec_mobile. Recognition dictionaries are embedded in the models.
-Models are distributed unchanged; local filenames are det.onnx, rec-ja.onnx,
-rec-en.onnx, rec-ko.onnx. Pinned source URLs and integrity values are in scripts/Get-Ocr.ps1.
+en_PP-OCRv5_rec_mobile, korean_PP-OCRv5_rec_mobile,
+ch_PP-OCRv5_det_server, PP-OCRv6_rec_small,
+ch_PP-LCNet_x1_0_textline_ori_cls_server.
+Recognition dictionaries are embedded in the models.
+
+Models are distributed unchanged. Local filenames are det.onnx, det-server.onnx,
+rec-ja.onnx, rec-ja-server.onnx, rec-en.onnx, rec-ko.onnx and cls.onnx.
+The server detector, PP-OCRv6 recognizer and orientation classifier are optional
+upgrades: a delivery that omits them falls back to the mobile weights and
+horizontal-only recognition. Pinned source URLs and SHA256 values are in
+scripts/Get-Ocr.ps1; selection evidence is in docs/reverse/ocr-selection.md.
 
 The application supplies its own native horizontal-text preprocessing,
-connected-component geometry extraction, and CTC decoding implementation.
-No Python, PaddlePaddle, OpenCV, GPU runtime, or Windows OCR language pack
-is required on the target machine.
+connected-component geometry extraction, CTC decoding and 0/180-degree crop
+correction. No Python, PaddlePaddle, OpenCV, GPU runtime, or Windows OCR language
+pack is required on the target machine.

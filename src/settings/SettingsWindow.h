@@ -51,7 +51,6 @@ public:
     }
     winrt::Microsoft::UI::Xaml::FrameworkElement Content() const;
     void Status(const std::wstring& text);
-    void SetTranslationMode(int mode);
     void ApiBusy(bool busy);
     void ApiFinished(const std::vector<std::string>& models, const std::wstring& message, bool fetched);
     bool BackgroundIdle() {

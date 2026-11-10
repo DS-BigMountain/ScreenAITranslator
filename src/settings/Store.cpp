@@ -243,6 +243,8 @@ void ValidateSettings(const Settings& s) {
                 std::isfinite(s.outlineWidth) && s.outlineWidth >= 0 && s.outlineWidth <= 10 &&
                 std::isfinite(s.backgroundOpacity) && s.backgroundOpacity >= 0.1f && s.backgroundOpacity <= 1,
             "Invalid appearance settings");
+    Require(s.outlineColorMode >= 0 && s.outlineColorMode <= 1 && s.outlineStyle >= 0 && s.outlineStyle <= 2,
+            "Invalid outline colour mode or style");
     for (int i = 0; i < 3; ++i) {
         const auto& h = s.hotkeys[i];
         Require(h.key <= 255 && !(h.modifiers & ~(MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN)) &&
@@ -263,11 +265,11 @@ Settings Store::LoadSettings() {
     const auto j = ReadJson(root_ / L"config.json");
     Settings s;
     try {
-        for (auto field : {"startup", "tray", "contextEnabled", "autoFont", "matchTextColor",
+        for (auto field : {"startup", "tray", "contextEnabled", "traceEnabled", "autoFont", "matchTextColor",
                            "spatialOverlay", "translateAll", "textCtrlEnter"})
             Require(!j.contains(field) || j.at(field).is_boolean(), "Invalid boolean setting");
         for (auto field : {"timeoutSeconds", "quality", "ocrMode", "translationMode", "contextSize",
-                           "textColor", "outlineColor", "proxyMode"})
+                           "textColor", "outlineColor", "outlineColorMode", "outlineStyle", "proxyMode"})
             Require(!j.contains(field) ||
                         (j.at(field).is_number_integer() && j.at(field).get<long long>() >= 0 &&
                          j.at(field).get<long long>() <= INT_MAX),
@@ -286,6 +288,7 @@ Settings Store::LoadSettings() {
         READ_FIELD(ocrMode);
         READ_FIELD(translationMode);
         READ_FIELD(contextEnabled);
+        READ_FIELD(traceEnabled);
         READ_FIELD(contextSize);
         READ_FIELD(prompt);
         READ_FIELD(autoFont);
@@ -295,6 +298,8 @@ Settings Store::LoadSettings() {
         READ_FIELD(textColor);
         READ_FIELD(outlineColor);
         READ_FIELD(outlineWidth);
+        READ_FIELD(outlineColorMode);
+        READ_FIELD(outlineStyle);
         READ_FIELD(backgroundOpacity);
         READ_FIELD(serviceRegion);
         READ_FIELD(proxyMode);
@@ -363,6 +368,7 @@ void Store::SaveSettings(const Settings& s) {
     WRITE_FIELD(ocrMode);
     WRITE_FIELD(translationMode);
     WRITE_FIELD(contextEnabled);
+    WRITE_FIELD(traceEnabled);
     WRITE_FIELD(contextSize);
     WRITE_FIELD(prompt);
     WRITE_FIELD(autoFont);
@@ -372,6 +378,8 @@ void Store::SaveSettings(const Settings& s) {
     WRITE_FIELD(textColor);
     WRITE_FIELD(outlineColor);
     WRITE_FIELD(outlineWidth);
+    WRITE_FIELD(outlineColorMode);
+    WRITE_FIELD(outlineStyle);
     WRITE_FIELD(backgroundOpacity);
     WRITE_FIELD(serviceRegion);
     WRITE_FIELD(proxyMode);

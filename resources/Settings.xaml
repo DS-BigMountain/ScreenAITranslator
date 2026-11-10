@@ -102,13 +102,9 @@
             <HyperlinkButton x:Name="TextConnection" Padding="0" MinHeight="24" HorizontalAlignment="Left" Foreground="{ThemeResource UiSecondary}">
               <StackPanel Orientation="Horizontal" Spacing="10"><TextBlock x:Name="TextConnectionLabel" Text="模型连接" FontSize="14" Foreground="{ThemeResource UiSecondary}" TextTrimming="CharacterEllipsis"/><FontIcon Glyph="&#xE76C;" FontSize="11" Foreground="{ThemeResource UiSecondary}"/></StackPanel>
             </HyperlinkButton>
-            <TextBlock x:Name="ScreenSubtitle" Text="框选屏幕内容，在对应位置显示中文译文。" Style="{StaticResource Note}" Visibility="Collapsed"/>
-            <SelectorBar x:Name="SettingsTabs" Visibility="Collapsed" Margin="0,14,0,0"><SelectorBarItem Text="常规" Tag="0"/><SelectorBarItem Text="模型连接" Tag="1"/><SelectorBarItem Text="显示效果" Tag="2"/><SelectorBarItem Text="关于" Tag="3"/></SelectorBar>
+            <SelectorBar x:Name="SettingsTabs" Visibility="Collapsed" Margin="0,14,0,0"><SelectorBarItem Text="常规" Tag="0"/><SelectorBarItem Text="模型连接" Tag="1"/></SelectorBar>
           </StackPanel>
-          <Button x:Name="ConversationMenu" Grid.Column="1" Style="{StaticResource IconButton}" VerticalAlignment="Top" Margin="0,4,0,0" AutomationProperties.Name="会话操作" ToolTipService.ToolTip="会话操作">
-            <FontIcon Glyph="&#xE712;" FontSize="18"/>
-            <Button.Flyout><MenuFlyout><MenuFlyoutItem x:Name="PasteImage" Text="粘贴图片" Icon="Paste"/><MenuFlyoutSeparator/><MenuFlyoutItem x:Name="ClearConversation" Text="清空会话" Icon="Delete"/></MenuFlyout></Button.Flyout>
-          </Button>
+          <Button x:Name="ClearConversation" Grid.Column="1" Content="清空会话" MinHeight="36" Padding="14,6" VerticalAlignment="Top" Margin="0,4,0,0"/>
         </Grid>
         <Grid x:Name="TextPage" Grid.Row="1" RowSpacing="22" AllowDrop="True">
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -170,25 +166,30 @@
                   <HyperlinkButton x:Name="OpenShortcuts" Grid.Column="1" Content="设置快捷键" Foreground="{ThemeResource UiAccent}"/>
                 </Grid>
               </Border>
-              <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
-                <TextBlock Text="识别方式" Style="{StaticResource SectionTitle}"/>
-                <Grid ColumnSpacing="14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                  <ToggleButton x:Name="VisionChoice" Style="{StaticResource RecognitionChoice}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><StackPanel Spacing="5"><TextBlock Text="AI 识图" FontWeight="SemiBold"/><TextBlock Text="由视觉模型识别并翻译图片" Style="{StaticResource Note}"/></StackPanel></ToggleButton>
-                  <ToggleButton x:Name="OcrChoice" Grid.Column="1" Style="{StaticResource RecognitionChoice}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><StackPanel Spacing="5"><TextBlock Text="本地 OCR" FontWeight="SemiBold"/><TextBlock Text="先识别原文，仅向服务提交文字" Style="{StaticResource Note}"/></StackPanel></ToggleButton>
-                </Grid>
-                <ComboBox x:Name="TranslationMode" Visibility="Collapsed"><ComboBoxItem Content="OCR 文字翻译"/><ComboBoxItem Content="AI 识图翻译"/></ComboBox>
-                <ComboBox x:Name="Quality" Header="截图分辨率" HorizontalAlignment="Stretch"><ComboBoxItem Content="速度优先 · 1280 px"/><ComboBoxItem Content="均衡 · 1600 px"/><ComboBoxItem Content="清晰优先 · 2200 px"/></ComboBox>
-                <ComboBox x:Name="OcrMode" Header="原文语言" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动识别（本地）"/><ComboBoxItem Content="英语"/><ComboBoxItem Content="日语"/><ComboBoxItem Content="韩语"/></ComboBox>
+              <Border Style="{StaticResource Card}" Padding="22,20"><StackPanel Spacing="14">
+                <TextBlock Text="原文语言" Style="{StaticResource SectionTitle}"/>
+                <ComboBox x:Name="OcrMode" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动识别（本地）"/><ComboBoxItem Content="英语"/><ComboBoxItem Content="日语"/><ComboBoxItem Content="韩语"/></ComboBox>
                 <HyperlinkButton x:Name="ScreenConnection" Padding="0" HorizontalAlignment="Left" Foreground="{ThemeResource UiSecondary}"/>
               </StackPanel></Border>
               <Border Style="{StaticResource Card}" Padding="0"><StackPanel>
-                <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="4"><TextBlock Text="完整翻译全部文字" FontWeight="SemiBold"/><TextBlock Text="保留页面、字幕及对话中的可翻译内容。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="TranslateAll" Grid.Column="1" VerticalAlignment="Center"/></Grid>
-                <Border Style="{StaticResource Divider}"/>
-                <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="4"><TextBlock Text="在原文位置显示译文" FontWeight="SemiBold"/><TextBlock Text="关闭后使用独立译文框。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="SpatialOverlay" Grid.Column="1" VerticalAlignment="Center"/></Grid>
-                <Border Style="{StaticResource Divider}"/>
-                <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="译文的字体与颜色" VerticalAlignment="Center"/><HyperlinkButton x:Name="OpenAppearance" Grid.Column="1" Content="显示设置  ›" Foreground="{ThemeResource UiAccent}"/></Grid>
+                <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="4"><TextBlock Text="导出日志" FontWeight="SemiBold"/><TextBlock Text="每次翻译保存截图、提示词、请求与响应，并整理各步骤用时，保留最近 20 次。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="TraceEnabled" Grid.Column="1" VerticalAlignment="Center"/></Grid>
               </StackPanel></Border>
-              <TextBlock Text="拖动译文框边缘可重新定位；工具条提供原图、全文阅读、复制和关闭操作。" Style="{StaticResource Note}"/>
+              <Grid ColumnSpacing="20">
+                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                <Border Style="{StaticResource Card}" Padding="22,20" VerticalAlignment="Top"><StackPanel Spacing="14">
+                  <TextBlock Text="译文字体与颜色" Style="{StaticResource SectionTitle}"/>
+                  <ComboBox x:Name="Font" Header="字体" IsEditable="True" HorizontalAlignment="Stretch"/>
+                  <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ToggleSwitch x:Name="AutoFont" Header="自动匹配原文字号"/><NumberBox x:Name="FontSize" Grid.Column="1" Header="固定字号" Minimum="8" Maximum="144" SpinButtonPlacementMode="Compact"/></Grid>
+                  <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ToggleSwitch x:Name="MatchTextColor" Header="匹配原文文字颜色"/><TextBox x:Name="TextColor" Grid.Column="1" Header="文字颜色" MaxLength="7"/></Grid>
+                  <Border Background="{ThemeResource UiPage}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="4" Padding="16"><StackPanel Spacing="8"><TextBlock Text="显示预览" Style="{StaticResource Note}"/><TextBlock x:Name="FontPreview" Text="翻译结果将在对应位置显示。 Aa 123" FontSize="20" TextWrapping="Wrap"/></StackPanel></Border>
+                </StackPanel></Border>
+                <Border Grid.Column="1" Style="{StaticResource Card}" Padding="22,20" VerticalAlignment="Top"><StackPanel Spacing="14">
+                  <TextBlock Text="描边与背景" Style="{StaticResource SectionTitle}"/>
+                  <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ComboBox x:Name="OutlineColorMode" Header="描边颜色" MinHeight="40"/><ComboBox x:Name="OutlineStyle" Grid.Column="1" Header="描边样式" MinHeight="40"/></Grid>
+                  <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBox x:Name="OutlineColor" Header="描边颜色值" MaxLength="7"/><NumberBox x:Name="OutlineWidth" Grid.Column="1" Header="描边宽度" Minimum="0" Maximum="10" SmallChange="0.5" SpinButtonPlacementMode="Compact"/></Grid>
+                  <NumberBox x:Name="Opacity" Header="背景不透明度" Minimum="0.1" Maximum="1" SmallChange="0.05" SpinButtonPlacementMode="Compact"/>
+                </StackPanel></Border>
+              </Grid>
             </StackPanel>
             <StackPanel x:Name="SettingsPage" Spacing="24" Visibility="Collapsed">
               <StackPanel x:Name="SettingsGeneral" Spacing="20">
@@ -225,17 +226,6 @@
                   <TextBlock Text="默认关闭思考；参数定义以服务文档为准。密钥由 Windows 用户凭据保护。" Style="{StaticResource Note}"/>
                 </StackPanel></Expander>
               </StackPanel>
-              <StackPanel x:Name="SettingsAppearance" Spacing="20" Visibility="Collapsed">
-                <Border Style="{StaticResource Card}"><StackPanel Spacing="20">
-                  <TextBlock Text="字体与颜色" Style="{StaticResource SectionTitle}"/><TextBlock Text="用于截图翻译的译文显示。" Style="{StaticResource Note}"/>
-                  <ComboBox x:Name="Font" Header="字体" IsEditable="True" HorizontalAlignment="Stretch"/>
-                  <Grid ColumnSpacing="24"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ToggleSwitch x:Name="AutoFont" Header="自动匹配原文字号"/><NumberBox x:Name="FontSize" Grid.Column="1" Header="固定字号（DIP）" Minimum="8" Maximum="144" SpinButtonPlacementMode="Compact"/></Grid>
-                  <Grid ColumnSpacing="24"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ToggleSwitch x:Name="MatchTextColor" Header="匹配原文文字颜色"/><TextBox x:Name="TextColor" Grid.Column="1" Header="文字颜色（RRGGBB）" MaxLength="7"/></Grid>
-                  <Border Background="{ThemeResource UiPage}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="6" Padding="22"><StackPanel Spacing="14"><TextBlock Text="显示预览" Style="{StaticResource Note}"/><TextBlock x:Name="FontPreview" Text="翻译结果将在对应位置显示。 Aa 123" FontSize="22" TextWrapping="Wrap"/></StackPanel></Border>
-                </StackPanel></Border>
-                <Expander Header="描边与背景" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><StackPanel Spacing="18"><TextBox x:Name="OutlineColor" Header="描边颜色（RRGGBB）" MaxLength="7"/><NumberBox x:Name="OutlineWidth" Header="描边宽度（DIP）" Minimum="0" Maximum="10" SmallChange="0.5" SpinButtonPlacementMode="Compact"/><NumberBox x:Name="Opacity" Header="复杂背景不透明度（0.1–1.0）" Minimum="0.1" Maximum="1" SmallChange="0.05" SpinButtonPlacementMode="Compact"/></StackPanel></Expander>
-              </StackPanel>
-              <StackPanel x:Name="SettingsAbout" Spacing="16" Visibility="Collapsed"><Border Style="{StaticResource Card}"><StackPanel Spacing="12"><TextBlock Text="你给我翻译翻译什么叫翻译" Style="{StaticResource SectionTitle}"/><TextBlock Text="V2.0.0"/><TextBlock Text="支持文本、图片与屏幕区域翻译。" Style="{StaticResource Note}"/></StackPanel></Border></StackPanel>
             </StackPanel>
           </Grid>
         </ScrollViewer>

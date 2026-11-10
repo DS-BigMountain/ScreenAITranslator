@@ -1,8 +1,12 @@
 #include "capture/TextDetection.h"
+#include "capture/BundledOcr.h"
 #include "capture/Capture.h"
 #include "common/Platform.h"
 #include "providers/Provider.h"
+#include <nlohmann/json.hpp>
 #include <wincodec.h>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <thread>
 #include <algorithm>
@@ -38,10 +42,135 @@ std::string Text(const TextDetection& result) {
         text += r.text + '\n';
     return text;
 }
+// Model inventory lets the offline report state exactly which weight set ran.
+nlohmann::json ModelInventory() {
+    nlohmann::json inventory = nlohmann::json::object();
+    std::error_code error;
+    for (const char* name : {"det.onnx", "det-server.onnx", "rec-ja.onnx", "rec-ja-server.onnx", "rec-en.onnx",
+                             "rec-en-server.onnx", "rec-ko.onnx", "rec-ko-server.onnx", "cls.onnx"})
+        inventory[name] = std::filesystem::is_regular_file(std::filesystem::path("models") / name, error);
+    return inventory;
+}
+// UTF-8 code point scan: kana and CJK counts expose Japanese recall in the report.
+struct TextStats {
+    size_t characters{}, kana{}, kanji{}, japaneseLines{};
+};
+TextStats CountText(const std::string& text) {
+    TextStats stats;
+    bool japanese = false;
+    for (size_t i = 0; i < text.size();) {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        char32_t code = 0;
+        size_t extra = 0;
+        if (lead < 0x80) {
+            code = lead;
+        } else if ((lead & 0xE0) == 0xC0) {
+            code = lead & 0x1F;
+            extra = 1;
+        } else if ((lead & 0xF0) == 0xE0) {
+            code = lead & 0x0F;
+            extra = 2;
+        } else if ((lead & 0xF8) == 0xF0) {
+            code = lead & 0x07;
+            extra = 3;
+        } else {
+            ++i;
+            continue;
+        }
+        for (size_t k = 1; k <= extra && i + k < text.size(); ++k)
+            code = (code << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+        i += extra + 1;
+        ++stats.characters;
+        if ((code >= 0x3040 && code <= 0x30FF) || (code >= 0xFF66 && code <= 0xFF9F)) {
+            ++stats.kana;
+            japanese = true;
+        } else if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3400 && code <= 0x4DBF)) {
+            ++stats.kanji;
+            japanese = true;
+        }
+    }
+    stats.japaneseLines = japanese ? 1 : 0;
+    return stats;
+}
+// Offline mobile-versus-server measurement used to document the upgrade. The
+// caller stages one weight set per directory and compares the JSON reports.
+int RunBenchmark(const std::filesystem::path& output) {
+    struct Case {
+        const wchar_t* path;
+        const char* label;
+        int mode;
+    };
+    const Case cases[] = {
+        {L"test-fixtures/user/game-data-update-ja.png", "game-data-update-ja", OcrLocalAuto},
+        {L"test-fixtures/user/game-data-update-ja.png", "game-data-update-ja/ja", OcrJapanese},
+        {L"test-fixtures/user/asahi-article-ja.png", "asahi-article-ja", OcrLocalAuto},
+        {L"test-fixtures/user/asahi-article-ja.png", "asahi-article-ja/ja", OcrJapanese},
+        {L"test-fixtures/user/bbc-article-en.png", "bbc-article-en", OcrLocalAuto},
+        {L"test-fixtures/user/bbc-article-en.png", "bbc-article-en/en", OcrEnglish},
+        {L"test-fixtures/user/bbc-headlines-en.png", "bbc-headlines-en/ja", OcrJapanese},
+    };
+    nlohmann::json report = nlohmann::json::object();
+    report["models"] = ModelInventory();
+    report["cases"] = nlohmann::json::array();
+    for (const auto& item : cases) {
+        auto image = Read(item.path);
+        // Geometry-only pass separates detector cost from recognizer cost in the report.
+        const auto geometryStart = std::chrono::steady_clock::now();
+        auto geometry = DetectTextGeometry(image);
+        const auto geometryElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - geometryStart);
+        const auto start = std::chrono::steady_clock::now();
+        auto lines = RecognizeBundled(image, item.mode, {}, false, true, true);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+        nlohmann::json rows = nlohmann::json::array();
+        double total = 0;
+        size_t characters = 0, kana = 0, kanji = 0, japaneseLines = 0;
+        for (const auto& line : lines) {
+            rows.push_back({{"x", line.rect.left},
+                            {"y", line.rect.top},
+                            {"w", Width(line.rect)},
+                            {"h", Height(line.rect)},
+                            {"text", line.text},
+                            {"confidence", line.confidence}});
+            total += line.confidence;
+            characters += line.text.size();
+            const auto stats = CountText(line.text);
+            kana += stats.kana;
+            kanji += stats.kanji;
+            japaneseLines += stats.japaneseLines;
+        }
+        report["cases"].push_back({{"image", item.label},
+                                   {"width", image.width},
+                                   {"height", image.height},
+                                   {"mode", item.mode},
+                                   {"elapsed_ms", elapsed.count()},
+                                   {"geometry_elapsed_ms", geometryElapsed.count()},
+                                   {"geometry_regions", geometry.regions.size()},
+                                   {"lines", rows},
+                                   {"line_count", lines.size()},
+                                   {"character_count", characters},
+                                   {"kana_count", kana},
+                                   {"kanji_count", kanji},
+                                   {"japanese_hit_lines", japaneseLines},
+                                   {"mean_confidence", lines.empty() ? 0.0 : total / double(lines.size())}});
+        std::cout << "Benchmark " << item.label << ": " << lines.size() << " lines, " << characters
+                  << " bytes, " << elapsed.count() << " ms\n";
+    }
+    std::filesystem::create_directories(output.parent_path());
+    std::ofstream stream(output, std::ios::binary);
+    if (!stream)
+        throw std::runtime_error("Cannot write benchmark report");
+    stream << report.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
+    std::cout << "Benchmark report written: " << output.string() << "\n";
+    return 0;
+}
 } // namespace
 int wmain(int argc, wchar_t** argv) {
     try {
         ComScope com;
+        if (argc == 3 && std::wstring(argv[1]) == L"--ocr-benchmark")
+            return RunBenchmark(argv[2]);
         auto english = Read(L"test-fixtures/installer-en.png");
         if (argc == 2 && std::wstring(argv[1]) == L"--missing-korean") {
             auto whole = Read(L"test-fixtures/korean-sign.jpg");
@@ -170,6 +299,12 @@ int wmain(int argc, wchar_t** argv) {
                              .count()
                       << " ms, regions=" << single.regions.size() << "\n";
         }
+        // Explicit strongest-available smoke check: a staged server detector must
+        // produce the same production status as the mobile fallback.
+        std::error_code modelError;
+        if (std::filesystem::is_regular_file(std::filesystem::path("models") / "det-server.onnx", modelError))
+            Require(DetectText(english, {}, 1).status == "bundled-ocr",
+                    "Server detector smoke check failed");
         Require(DetectText(blank, {}, OcrJapanese).status == "no-text", "Blank image generated OCR regions");
         Require(DetectText(japanese, {}, 3).status == "direct-ai", "Explicit AI path ignored");
         Require(DetectText(japanese, {}, 99).status == "invalid-mode", "Invalid OCR mode accepted");
@@ -195,3 +330,6 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     }
 }
+
+
+

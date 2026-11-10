@@ -13,8 +13,8 @@ BEGIN
  301 "你给我翻译翻译什么叫翻译"
 END
 1 VERSIONINFO
- FILEVERSION 2,0,0,0
- PRODUCTVERSION 2,0,0,0
+ FILEVERSION 3,0,0,0
+ PRODUCTVERSION 3,0,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -25,9 +25,9 @@ BEGIN
   BLOCK "040904B0"
   BEGIN
    VALUE "FileDescription", "你给我翻译翻译什么叫翻译\0"
-   VALUE "FileVersion", "2.0.0\0"
+   VALUE "FileVersion", "3.0.0\0"
    VALUE "ProductName", "你给我翻译翻译什么叫翻译\0"
-   VALUE "ProductVersion", "2.0.0\0"
+   VALUE "ProductVersion", "3.0.0\0"
    VALUE "OriginalFilename", "你给我翻译翻译什么叫翻译.exe\0"
   END
  END

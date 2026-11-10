@@ -675,6 +675,69 @@ void DiagnosticTests() {
     }
     WSACleanup();
 }
+// The payload trace must reproduce the bytes that left the process and the reply that arrived,
+// including the prompt and schema, so an operator can audit one real request end to end.
+void TraceSinkTests() {
+    auto root = std::filesystem::absolute("test-output") /
+                ("provider-trace-" + std::to_string(GetCurrentProcessId()) + "-" +
+                 std::to_string(GetTickCount64()));
+    std::filesystem::remove_all(root);
+    InitializeTrace(root, true, 3);
+    Require(TraceEnabled(), "trace stayed disabled for the request sink test");
+    WSADATA data{};
+    if (WSAStartup(MAKEWORD(2, 2), &data))
+        throw std::runtime_error("WSAStartup");
+    {
+        LocalServer server(0);
+        Settings options;
+        options.provider = "openai-compatible";
+        options.model = "trace-model";
+        options.baseUrl = L"http://127.0.0.1:" + std::to_wstring(server.port);
+        options.quality = 0;
+        DiagnosticContext context(700);
+        std::filesystem::path directory;
+        {
+            TraceSession session("provider");
+            Require(static_cast<bool>(session), "provider trace session missing");
+            directory = session.Directory();
+            auto result = CreateProvider(options.provider)->Translate("aW1n", {}, options, "test-key", {});
+            Require(result.segments.size() == 1, "trace test lost the parsed segment");
+        }
+        auto read = [](const std::filesystem::path& path) {
+            std::ifstream input(path, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+        };
+        Require(std::filesystem::exists(directory / "1" / "request.json"), "request record missing");
+        Require(std::filesystem::exists(directory / "1" / "response.json"), "response record missing");
+        Require(std::filesystem::exists(directory / "upload.jpg"), "uploaded image record missing");
+        Require(std::filesystem::exists(directory / "parsed.json"), "parsed record missing");
+        const auto request = read(directory / "1" / "request.json");
+        Require(request.find("trace-model") != std::string::npos &&
+                    request.find("json_schema") != std::string::npos,
+                "request record lost the model or schema");
+        Require(request.find("base64,") == std::string::npos, "request record kept inline image data");
+        Require(read(directory / "1" / "response.json").find("choices") != std::string::npos,
+                "response record lost the service reply");
+        Require(read(directory / "1" / "response.content.txt").find("source_language") != std::string::npos,
+                "response content extraction failed");
+        Require(std::filesystem::exists(directory / "1" / "request.headers.txt"),
+                "request header record missing");
+        const auto requestHeaders = read(directory / "1" / "request.headers.txt");
+        Require(requestHeaders.find("Content-Type: application/json") != std::string::npos &&
+                    requestHeaders.find("test-key") == std::string::npos,
+                "request header record lost the shape or exposed the credential");
+        Require(read(directory / "1" / "response.headers.txt").find("Content-Type") != std::string::npos,
+                "response header record missing");
+        const auto timing = read(directory / "timing.md");
+        Require(timing.find("http_body") != std::string::npos &&
+                    timing.find("response_parse") != std::string::npos,
+                "timing summary lost the transport stages");
+        Require(read(directory / "session.json").find("duration_ms") != std::string::npos,
+                "session record lost the total duration");
+    }
+    WSACleanup();
+    InitializeTrace({}, false);
+}
 } // namespace
 #include "ProviderServicesTests.inc"
 #include "RequestParametersTests.inc"
@@ -729,6 +792,7 @@ int main(int argc, char** argv) {
         CoverageTests();
         UserVisionResponseTests();
         NetworkTests();
+        TraceSinkTests();
         DiagnosticTests();
         std::ifstream log(logRoot / "diagnostic.jsonl");
         bool beforeBodyTimeout = false, bodyTimeout = false, coverageRepair = false, cancelled = false;

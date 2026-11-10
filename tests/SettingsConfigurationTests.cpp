@@ -3,6 +3,7 @@
 #include "settings/WinUIRuntime.h"
 #include "settings/Store.h"
 #include "providers/Catalog.h"
+#include "providers/ContentTranslation.h"
 #include <nlohmann/json.hpp>
 #undef GetCurrentTime
 #include <winrt/Windows.Foundation.h>
@@ -213,7 +214,7 @@ int main() {
             Check(navigation.MenuItems().Size() == 2 && navigation.FooterMenuItems().Size() == 1 &&
                       root.FindName(L"TextPage").as<Grid>().Visibility() == xaml::Visibility::Visible,
                   "translation navigation or default text page is incorrect");
-            Check(root.FindName(L"TextTarget").as<ComboBox>().Items().Size() == 8,
+            Check(root.FindName(L"TextTarget").as<ComboBox>().Items().Size() == TextTargetLanguages().size(),
                   "target language menu is incomplete");
             navigation.SelectedItem(navigation.MenuItems().GetAt(1));
             for (const wchar_t* name : {L"Translate", L"TranslateFixed", L"ClearContext"}) {
@@ -238,18 +239,17 @@ int main() {
                   "remaining settings actions are disconnected or misrouted");
             auto language = root.FindName(L"OcrMode").as<ComboBox>();
             navigation.SelectedItem(navigation.MenuItems().GetAt(1));
-            auto translationMode = root.FindName(L"TranslationMode").as<ComboBox>();
-            Check(translationMode.Items().Size() == 2 && !language.IsEnabled(),
-                  "AI mode must disable local OCR language");
-            translationMode.SelectedIndex(TranslationOcrText);
-            Check(language.IsEnabled() && !root.FindName(L"Quality").as<ComboBox>().IsEnabled(),
-                  "OCR mode controls are not isolated");
+            Check(!root.FindName(L"TranslationMode") && !root.FindName(L"VisionChoice") &&
+                      !root.FindName(L"OcrChoice"),
+                  "standalone translation mode controls still exist");
+            Check(language.IsEnabled() && !root.FindName(L"Quality"),
+                  "single screen entry must keep the recognition control active and drop the capture size");
             Check(language.Items().Size() == 4 && language.SelectedIndex() == 0,
                   "language menu or automatic default incorrect");
             language.SelectedIndex(3);
             Check(winrt::unbox_value<winrt::hstring>(language.SelectedItem().as<ComboBoxItem>().Content()) ==
                       L"韩语",
-                  "fourth language choice is not Korean");
+                  "fourth language choice is Korean");
             auto primaryKey = root.FindName(L"Key").as<PasswordBox>();
             auto model = root.FindName(L"Model").as<ComboBox>();
             model.Text(L"another-deepseek-model");
@@ -264,7 +264,7 @@ int main() {
                     .as<xaml::Automation::Provider::IInvokeProvider>()
                     .Invoke();
                 Pump();
-                Check(diagnosticMode == OcrKorean && diagnosticTranslationMode == TranslationOcrText,
+                Check(diagnosticMode == OcrKorean && diagnosticTranslationMode == TranslationAiVision,
                       "connection diagnostic ignored unsaved language selection");
                 Check(nlohmann::json::parse(diagnosticParameters)["reasoning_effort"] == "high",
                       "connection test ignored unsaved request parameters");
@@ -300,8 +300,7 @@ int main() {
             Check(saves == 1 && saved.provider == "deepl" && saved.model == "translate" &&
                       savedKey == "primary-test-key",
                   "primary service save failed");
-            Check(saved.ocrMode == OcrKorean && saved.translationMode == TranslationOcrText,
-                  "translation mode or Korean selection not saved");
+            Check(saved.ocrMode == OcrKorean, "Korean language selection not saved");
             Check(saved.font == L"SimSun", "Chinese font label changed the saved font family");
             Check(saved.proxyMode == 2 && saved.proxyAddress == L"127.0.0.1:7890" && saved.translateAll,
                   "network and coverage configuration save failed");

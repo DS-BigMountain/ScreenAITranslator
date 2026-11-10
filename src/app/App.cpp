@@ -1,12 +1,15 @@
 #include "Worker.h"
 #include "IdleRestart.h"
+#include "SourceMatching.h"
 #include "TranslationPipeline.h"
 #include "common/AppIdentity.h"
 #include "common/Secret.h"
 #include "common/Platform.h"
 #include "common/Diagnostics.h"
+#include "common/Trace.h"
 #include "capture/Capture.h"
 #include "providers/Provider.h"
+#include "providers/TranslationQuality.h"
 #include "settings/Store.h"
 #include "settings/SettingsWindow.h"
 #include "settings/WinUIRuntime.h"
@@ -23,7 +26,7 @@ namespace {
 constexpr UINT UiMessage = WM_APP + 1, TrayMessage = WM_APP + 2;
 constexpr UINT_PTR HideTimer = 1, ContextTimer = 2, IdleTimer = 3;
 enum class Stage { Idle, Capture, Selecting, Preprocessing, Requesting, Layout, Displaying };
-enum TrayCommand { OpenSettings = 100, ExitApp = 105, OpenLogs = 106, UseOcrText = 107, UseAiVision = 108 };
+enum TrayCommand { OpenSettings = 100, ExitApp = 105, OpenLogs = 106 };
 std::wstring Executable() {
     std::wstring p(32768, 0);
     auto n = GetModuleFileNameW(nullptr, p.data(), static_cast<DWORD>(p.size()));
@@ -456,6 +459,20 @@ class App {
                    RECT region, const Settings& options, const std::vector<ContextItem>& history,
                    const std::string& key, std::stop_token stop) {
         DiagnosticContext context(id);
+        // The record starts before any other preparation work so the first measured stage lands in it.
+        TraceSession trace("screen_translation",
+                           {{"provider", options.provider},
+                            {"model", options.model},
+                            {"route", EffectiveTranslationMode(options) == TranslationOcrText ? "text"
+                                                                                               : "vision"},
+                            {"quality", options.quality},
+                            {"ocr_mode", options.ocrMode},
+                            {"timeout_s", options.timeoutSeconds},
+                            {"translate_all", options.translateAll},
+                            {"context_enabled", options.contextEnabled},
+                            {"context_items", history.size()},
+                            {"proxy_mode", options.proxyMode},
+                            {"prompt", options.prompt}});
         Post([this, id, screenshot] { StartProgress(id, *screenshot); });
         RECT local = region;
         OffsetRect(&local, -monitor.rect.left, -monitor.rect.top);
@@ -465,8 +482,19 @@ class App {
             std::move(cropped), region, monitor, options, history, key, stop, providerFactory_,
             [this, id](TranslationPhase phase) {
                 Post([this, id, phase] {
-                    if (id == generation_)
-                        SetStage(phase == TranslationPhase::Requesting ? Stage::Requesting : Stage::Layout);
+                    if (id != generation_)
+                        return;
+                    // One fixed line per stage: the recognition pass names itself, and the request that
+                    // follows reports translation. Placement finishes so quickly that it keeps the last line.
+                    if (phase == TranslationPhase::Recognizing) {
+                        progress_.SetProgressText(L"文字识别中 · 点击 × 取消");
+                        SetStage(Stage::Preprocessing);
+                    } else if (phase == TranslationPhase::Requesting) {
+                        progress_.SetProgressText(L"翻译中 · 点击 × 取消");
+                        SetStage(Stage::Requesting);
+                    } else {
+                        SetStage(Stage::Layout);
+                    }
                 });
             });
         Post([this, id, prepared = std::move(prepared), options, monitor] {
@@ -493,7 +521,7 @@ class App {
         if (textOnly && (prepared.unrecognizedLines || prepared.lowConfidenceRegions)) {
             warning = L"OCR：" + std::to_wstring(prepared.unrecognizedLines) + L" 行未识别，" +
                       std::to_wstring(prepared.lowConfidenceRegions) +
-                      L" 个区域置信度偏低；可手动切换 AI 模式。";
+                      L" 个区域置信度偏低；可检查原文语言设置。";
         }
         if (result.clippedBoxes) {
             if (!warning.empty())
@@ -540,12 +568,22 @@ class App {
         progress_.Close();
         SetStage(Stage::Displaying);
         overlay_.SetWarning(warning);
+        // The toolbar carries one one-off vision pass: it reads the same selection straight from the image
+        // and lands as another switchable view, leaving the saved translation flow untouched.
+        overlay_.SetAiRequest([this] { RequestAiView(); });
         const bool noVisiblePlacement = std::all_of(blocks.begin(), blocks.end(), [](const auto& block) {
             return std::all_of(block.positioned.begin(), block.positioned.end(),
                                [](const auto& item) { return item.suppressed || !item.layout; });
         });
         if (options.spatialOverlay && noVisiblePlacement)
             overlay_.ShowFullReading();
+        // The result takes over the screen: everything outside the selection dims and keeps its input, and
+        // the toolbar's close button or Esc ends the view.
+        try {
+            overlay_.ShowFocusShade();
+        } catch (const AppError& e) {
+            overlay_.SetWarning(Wide(e.what()));
+        }
         if (options.contextEnabled) {
             context_.Add(result, options.contextSize);
             SetTimer(window_, ContextTimer, 30 * 60 * 1000, nullptr);
@@ -553,11 +591,106 @@ class App {
         settingsWindow_.Status(std::wstring(result.untranslatedSegments || result.ignoredSegments
                                                 ? L"翻译结果含异常 · "
                                                 : L"翻译完成 · ") +
-                               (textOnly ? L"纯文本" : L"视觉翻译") + L" · OCR " + std::to_wstring(ocrMs) +
+                               (textOnly ? L"文字翻译" : L"视觉翻译 + 本地定位") + L" · OCR " +
+                               std::to_wstring(ocrMs) +
                                L" ms · API " + std::to_wstring(apiMs) + L" ms · 请求 " +
                                std::to_wstring(result.requestCount) + L" 次 · 本次处理 " +
                                std::to_wstring(total) + L" ms" + (warning.empty() ? L"" : L" · " + warning));
         display.End();
+    }
+    // One vision pass over the same selection. The request reads the captured image directly, carries its
+    // own upload bound, and comes back as a view the toolbar switches to beside the recognized result. It
+    // writes nothing to the settings, so the next translation runs the recognition route again.
+    void RequestAiView() {
+        if (key_.empty()) {
+            overlay_.SetWarning(L"请先在设置中填写密钥");
+            return;
+        }
+        if (!Valid(anchor_)) {
+            overlay_.SetWarning(L"请先框选区域");
+            return;
+        }
+        const auto id = generation_;
+        const auto region = anchor_;
+        const auto monitor = currentMonitor_;
+        auto options = settings_;
+        auto secret = std::make_shared<Secret>(key_);
+        worker_.Submit([this, id, region, monitor, options, secret](std::stop_token stop) {
+            DiagnosticContext context(id);
+            try {
+                ComScope com;
+                DwmFlush();
+                auto full = CaptureMonitor(monitor, stop);
+                RECT local = region;
+                OffsetRect(&local, -monitor.rect.left, -monitor.rect.top);
+                auto cropped = Crop(full, local);
+                full = {};
+                Settings routed = options;
+                routed.translationMode = TranslationAiVision;
+                // A long edge of 1600 px keeps a full-screen selection inside one request, while a dialog
+                // smaller than that uploads at its captured size.
+                routed.quality = 1;
+                const auto connection = SelectTranslationConnection(routed);
+                auto provider = providerFactory_(connection.provider);
+                auto data = Base64(EncodeJpeg(cropped, routed.quality, stop));
+                auto result = provider->TranslateLocated(data, {}, connection, secret->value, stop, {});
+                FlagUntranslatedPassages(result);
+                if (result.segments.empty())
+                    throw AppError("translation", "模型没有返回可翻译文字");
+                // A vision answer describes passages, the local detector describes screen rows. Pairing
+                // them adopts the measured rows wherever both agree, which is the placement the main line
+                // already uses; passages only the model sees keep its rectangle.
+                data.clear();
+                data.shrink_to_fit();
+                try {
+                    auto detected = DetectOcrText(cropped, stop, options.ocrMode);
+                    std::erase_if(detected.regions, [](const auto& region) { return region.text.empty(); });
+                    if (!detected.regions.empty()) {
+                        auto report =
+                            AttachSourceGeometry(result, cropped.width, cropped.height, detected.regions);
+                        result.uncoveredLines = std::move(report.uncoveredLines);
+                    }
+                } catch (const Cancelled&) {
+                    throw;
+                } catch (...) {
+                    // Recognition assists placement here: the model rectangles stand when it yields nothing.
+                }
+                CheckStop(stop);
+                Post([this, id, region, monitor, result = std::move(result),
+                      cropped = std::move(cropped)] {
+                    if (id != generation_ || stage_ != Stage::Displaying)
+                        return;
+                    try {
+                        // The source stays with the result: the override layer rebuilds the artwork behind
+                        // each replaced passage, which needs the captured pixels.
+                        auto block =
+                            BuildOverlay(result, std::move(cropped), region, monitor, settings_, true).front();
+                        // A vision answer without usable boxes still carries text, so the reading panel
+                        // takes over instead of leaving a dimmed selection with nothing on it.
+                        const bool noPlacement =
+                            std::all_of(block.positioned.begin(), block.positioned.end(), [](const auto& item) {
+                                return item.suppressed || !item.layout;
+                            });
+                        overlay_.ShowAiResult(std::move(block));
+                        if (noPlacement)
+                            overlay_.ShowFullReading();
+                    } catch (const AppError& e) {
+                        overlay_.SetWarning(Wide(e.what()));
+                    }
+                });
+            } catch (const Cancelled&) {
+            } catch (const AppError& e) {
+                Post([this, id, e] {
+                    if (id == generation_)
+                        overlay_.SetWarning(Wide(e.what()));
+                });
+            } catch (...) {
+                Post([this, id] {
+                    if (id == generation_)
+                        overlay_.SetWarning(L"AI 识别未完成，请重试");
+                });
+            }
+        });
     }
     std::wstring Apply(const Settings& next, const std::string& key) {
         ValidateSettings(next);
@@ -582,6 +715,9 @@ class App {
         Cancel();
         ContextChanged();
         settings_ = std::move(updated);
+        // A saved toggle takes effect immediately: the next translation writes or skips its record.
+        if (settings_.traceEnabled != TraceEnabled())
+            InitializeTrace(store_.Root() / L"logs" / L"trace", settings_.traceEnabled);
         if (!key_.empty())
             SecureZeroMemory(key_.data(), key_.size());
         key_ = key;
@@ -617,13 +753,13 @@ class App {
                               L" 个模型。请选择模型，再点击测试 API；模型列表不代表图片识别能力。";
                 } else {
                     TranslationResult result;
-                    if (options.translationMode == TranslationAiVision) {
+                    if (EffectiveTranslationMode(options) == TranslationAiVision) {
                         auto vision = SelectTranslationConnection(options);
                         result = TestVisionApi(vision, secret->value, stop);
                         message = L"AI 识图翻译连接自检通过。";
                     } else {
                         result = TestTextApi(options, secret->value, stop);
-                        message = L"主连接文字翻译自检通过。";
+                        message = L"文字翻译连接自检通过。";
                     }
                     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::steady_clock::now() - started)
@@ -711,37 +847,12 @@ class App {
         if (!recovery_.empty())
             settingsWindow_.Status(recovery_);
     }
-    void SwitchTranslationMode(int mode) {
-        if (settings_.translationMode != mode) {
-            auto updated = settings_;
-            updated.translationMode = mode;
-            store_.SaveSettings(updated);
-            settings_.translationMode = mode;
-        }
-        // Update only the mode control, preserving any other unsaved settings.
-        // In-flight requests retain their original settings snapshot.
-        settingsWindow_.SetTranslationMode(mode);
-        settingsWindow_.Status(mode == TranslationOcrText ? L"已切换为 OCR 文字翻译，下次翻译生效。"
-                                                          : L"已切换为 AI 识图翻译，下次翻译生效。");
-    }
     void TrayMenu() {
         HMENU menu = CreatePopupMenu();
-        HMENU methods = CreatePopupMenu();
-        if (!menu || !methods) {
-            if (menu)
-                DestroyMenu(menu);
-            if (methods)
-                DestroyMenu(methods);
+        if (!menu)
             throw AppError("tray", "无法创建托盘菜单");
-        }
         AppendMenuW(menu, MF_STRING, OpenSettings, L"打开设置");
-        AppendMenuW(methods, MF_STRING, UseOcrText, L"OCR 文字翻译（仅上传文字）");
-        AppendMenuW(methods, MF_STRING, UseAiVision, L"AI 识图翻译（上传图片）");
-        CheckMenuRadioItem(methods, UseOcrText, UseAiVision,
-                           settings_.translationMode == TranslationOcrText ? UseOcrText : UseAiVision,
-                           MF_BYCOMMAND);
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(methods), L"识别方法");
-        AppendMenuW(menu, MF_STRING, OpenLogs, L"打开诊断日志");
+        AppendMenuW(menu, MF_STRING, OpenLogs, L"导出日志");
         AppendMenuW(menu, MF_STRING, ExitApp, L"退出");
         POINT pt{};
         GetCursorPos(&pt);
@@ -756,16 +867,12 @@ class App {
         case OpenSettings:
             ShowSettings();
             break;
-        case UseOcrText:
-            SwitchTranslationMode(TranslationOcrText);
-            break;
-        case UseAiVision:
-            SwitchTranslationMode(TranslationAiVision);
-            break;
         case ExitApp:
             DestroyWindow(window_);
             break;
         case OpenLogs: {
+            // One entry for both records: a trace directory carries the request payload and the timing
+            // file, so the folder holding it describes everything a report needs.
             auto path = store_.Root() / L"logs";
             std::filesystem::create_directories(path);
             if (reinterpret_cast<INT_PTR>(
@@ -880,6 +987,8 @@ public:
             recovery_ =
                 L"配置读取失败；请检查 %LOCALAPPDATA%\\ScreenAITranslator\\config.json，原文件已保留。";
         }
+        // Payload tracing shares the log root; every screen translation adds one directory there.
+        InitializeTrace(store_.Root() / L"logs" / L"trace", settings_.traceEnabled);
         try {
             state_ = store_.LoadState();
         } catch (const AppError& e) {

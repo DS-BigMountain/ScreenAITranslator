@@ -3,6 +3,7 @@
 #include <wincodec.h>
 #include <fstream>
 #include <iostream>
+#include <thread>
 
 using namespace sat;
 namespace {
@@ -35,16 +36,22 @@ Image ReadFixture(const std::filesystem::path& path) {
 
 class FixtureProvider final : public ITranslationProvider {
     bool fail_;
+    int delayMs_;
 
 public:
-    explicit FixtureProvider(bool fail) : fail_(fail) {}
+    explicit FixtureProvider(bool fail, int delayMs = 0) : fail_(fail), delayMs_(delayMs) {}
     TranslationResult Translate(const std::string&, const std::vector<ContextItem>&, const Settings&,
                                 const std::string&, std::stop_token) override {
         throw std::runtime_error("located translation expected");
     }
     TranslationResult TranslateLocated(const std::string& image, const std::vector<ContextItem>&,
-                                       const Settings& settings, const std::string&, std::stop_token,
+                                       const Settings& settings, const std::string&, std::stop_token stop,
                                        const std::vector<TextRegion>& regions) override {
+        for (int waited = 0; waited < delayMs_; waited += 10) {
+            if (stop.stop_requested())
+                throw Cancelled{};
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         if (settings.translationMode == TranslationOcrText) {
             Require(image.empty() && regions.size() >= 20 && HasRecognizedText(regions),
                     "OCR mode uploaded an image or discarded all local text");
@@ -53,11 +60,15 @@ public:
                         request.find("data:image") == std::string::npos,
                     "OCR mode serialized image data");
         } else {
-            Require(!image.empty() && regions.empty(), "AI mode received local OCR regions");
+            // The reference ordering recognizes first and sends the measured rows together with the
+            // image, so the model returns one translation per source_id instead of locating text by
+            // itself. Losing the regions here would bring back the uncovered lines this contract fixes.
+            Require(!image.empty() && regions.size() >= 20 && HasRecognizedText(regions),
+                    "vision mode lost the recognized source rows");
             auto request = BuildRequest(image, {}, settings, false, regions).dump();
-            Require(request.find("source_regions") == std::string::npos &&
+            Require(request.find("source_regions") != std::string::npos &&
                         request.find("image_url") != std::string::npos,
-                    "AI mode did not use the direct image protocol");
+                    "vision mode did not combine the image with its source regions");
         }
         if (fail_)
             throw AppError("Requesting", "请求超时");
@@ -90,13 +101,16 @@ int main() {
         Settings options;
         options.quality = 0;
         options.spatialOverlay = false;
+        // One entry routes by provider capability: dedicated text services receive recognized text,
+        // every image model receives the capture while the local detector still supplies geometry.
+        const std::vector<std::string> providers{"deepseek", "deepl"};
         for (const auto* name : {L"github-dashboard-en.png", L"github-browser-dashboard-en.png"}) {
-            for (int mode : {TranslationAiVision, TranslationOcrText}) {
+            for (const auto& provider : providers) {
                 DiagnosticContext context(++operation);
                 auto image = ReadFixture(std::filesystem::path(L"test-fixtures/user") / name);
                 RECT region{0, 0, image.width, image.height};
                 Monitor monitor{L"fixture", region, 96};
-                options.translationMode = mode;
+                options.provider = provider;
                 options.ocrMode = OcrEnglish;
                 std::vector<TranslationPhase> phases;
                 bool timeout = false;
@@ -108,33 +122,34 @@ int main() {
                 } catch (const AppError& error) {
                     timeout = error.stage == "Requesting";
                 }
-                Require(timeout && phases == std::vector{TranslationPhase::Requesting},
+                Require(timeout && phases == std::vector{TranslationPhase::Recognizing, TranslationPhase::Requesting},
                         "API failure was swallowed or continued into layout");
-                if (operation == 1)
-                    Require(GetModuleHandleW(L"onnxruntime.dll") == nullptr,
-                            "AI mode loaded local OCR runtime");
             }
         }
-        for (int mode : {TranslationAiVision, TranslationOcrText}) {
+        for (const auto& provider : providers) {
             DiagnosticContext context(++operation);
             auto image = ReadFixture(L"test-fixtures/user/github-browser-dashboard-en.png");
             RECT region{0, 0, image.width, image.height};
             Monitor monitor{L"fixture", region, 96};
-            options.translationMode = mode;
+            options.provider = provider;
             std::vector<TranslationPhase> phases;
             auto prepared = PrepareTranslation(
                 std::move(image), region, monitor, options, {}, "PRIVATE_TEST_KEY", {},
-                [](const std::string&) { return std::make_unique<FixtureProvider>(false); },
+                [](const std::string&) { return std::make_unique<FixtureProvider>(false, 600); },
                 [&](TranslationPhase phase) { phases.push_back(phase); });
-            Require(phases == std::vector{TranslationPhase::Requesting, TranslationPhase::Layout} &&
+            Require(phases == std::vector{TranslationPhase::Recognizing, TranslationPhase::Requesting, TranslationPhase::Layout} &&
                         prepared.blocks.size() == 1 && prepared.blocks.front().image &&
-                        prepared.result.requestCount == 1 &&
-                        prepared.textOnly == (mode == TranslationOcrText),
+                        prepared.result.requestCount == 1 && prepared.textOnly,
                     "extracted pipeline lost display data or phase order");
+            // Every provider receives recognized text only. Recognition runs ahead of the request, so
+            // its duration is measured and precedes the translation call.
+            Require(prepared.ocrMs > 0 && prepared.apiMs > 0 &&
+                        prepared.totalMs + 200 >= prepared.ocrMs + prepared.apiMs,
+                    "run lost its recognition stage or its stage timings");
         }
         {
             DiagnosticContext context(++operation);
-            options.translationMode = TranslationOcrText;
+            options.provider = "deepl";
             Image blank{640, 320, std::vector<unsigned char>(640 * 320 * 4, 255)};
             bool rejected = false;
             try {
@@ -149,6 +164,26 @@ int main() {
                 rejected = error.stage == "ocr";
             }
             Require(rejected, "empty OCR switched to an image request");
+        }
+        {
+            // A vision model receives a capture whose local recognition found nothing: the whole
+            // image goes out instead of the run failing on an empty page.
+            DiagnosticContext context(++operation);
+            options.provider = "openai";
+            Image blank{640, 320, std::vector<unsigned char>(640 * 320 * 4, 255)};
+            bool reachedProvider = false;
+            try {
+                PrepareTranslation(
+                    std::move(blank), {0, 0, 640, 320}, {L"blank", {0, 0, 640, 320}, 96}, options, {},
+                    "PRIVATE_TEST_KEY", {},
+                    [&reachedProvider](const std::string&) -> std::unique_ptr<ITranslationProvider> {
+                        reachedProvider = true;
+                        throw std::runtime_error("fallback reached the provider");
+                    },
+                    [](TranslationPhase) {});
+            } catch (const std::runtime_error&) {
+            }
+            Require(reachedProvider, "empty OCR did not fall back to the whole-image route");
         }
         {
             DiagnosticContext context(++operation);
@@ -185,7 +220,11 @@ int main() {
             if (row.value("event", "") == "route_selected")
                 ++routes;
         }
-        Require(timeouts == 4 && completedOcr == 4 && routes == 6,
+        // Recognition runs ahead of every request now, so all eight routed runs finish it: four
+        // simulated API failures, two successful runs, the empty capture whose empty result stops a
+        // text service before any request, and the empty capture that falls back to the whole-image
+        // route. The cancelled run stops before routing and reaches neither stage.
+        Require(timeouts == 4 && completedOcr == 8 && routes == 8,
                 "logs did not separate successful local OCR from simulated API timeout");
         std::cout << "Pipeline diagnostics passed: real screenshots, simulated API, no visible windows\n";
         return 0;

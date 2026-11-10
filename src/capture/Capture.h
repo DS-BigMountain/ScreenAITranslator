@@ -9,6 +9,8 @@ FixedRegion NormalizeRegion(const Monitor& monitor, RECT screenRect);
 Image CaptureMonitor(const Monitor& monitor, std::stop_token stop);
 Image Crop(const Image& image, RECT localRect);
 std::vector<unsigned char> EncodeJpeg(const Image& image, int quality, std::stop_token stop);
+// Lossless companion for the request trace: the recorded capture reproduces source pixels exactly.
+std::vector<unsigned char> EncodePng(const Image& image, std::stop_token stop);
 std::string Base64(const std::vector<unsigned char>& bytes);
 struct Background {
     COLORREF color{};

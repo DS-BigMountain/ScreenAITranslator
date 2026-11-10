@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenAITranslator VERSION 2.0.0 LANGUAGES CXX RC)
+project(ScreenAITranslator VERSION 3.0.0 LANGUAGES CXX RC)
 set(SAT_APP_NAME "你给我翻译翻译什么叫翻译")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,8 +15,10 @@ if(MSVC)
 endif()
 add_library(sat_core
  src/app/IdleRestart.cpp
+ src/app/SourceMatching.cpp
  src/common/Platform.cpp
  src/common/Diagnostics.cpp
+ src/common/Trace.cpp
  src/capture/Capture.cpp
  src/capture/TextDetection.cpp
  src/capture/BundledOcr.cpp
@@ -36,7 +38,7 @@ target_link_libraries(sat_core PUBLIC d3d11 dxgi windowscodecs ole32 oleaut32 ru
 add_library(sat_ui
  src/app/TranslationPipeline.cpp
  src/selection/Selection.cpp src/overlay/SpatialLayout.cpp
- src/overlay/Overlay.cpp src/overlay/OverlayToolbar.cpp src/settings/SettingsWindow.cpp src/settings/WinUIRuntime.cpp
+ src/overlay/Overlay.cpp src/overlay/TextRim.cpp src/overlay/OverlayToolbar.cpp src/settings/SettingsWindow.cpp src/settings/WinUIRuntime.cpp
  src/settings/TextTranslationPage.cpp)
 target_link_libraries(sat_ui PUBLIC sat_core sat_winui comctl32 d2d1 dwrite dwmapi comdlg32 msimg32 propsys)
 target_compile_definitions(sat_ui PRIVATE SAT_APP_ICON_NAME="${SAT_APP_ICON_NAME}")
@@ -69,7 +71,7 @@ sat_deploy_ocr(PipelineDiagnosticsTests)
 add_test(NAME PipelineDiagnosticsTests COMMAND PipelineDiagnosticsTests)
 set_tests_properties(PipelineDiagnosticsTests PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 add_executable(LiveApiDiagnostic tests/LiveApiDiagnostic.cpp)
-target_link_libraries(LiveApiDiagnostic PRIVATE sat_core)
+target_link_libraries(LiveApiDiagnostic PRIVATE sat_ui)
 add_executable(TranslationBenchmark tests/TranslationBenchmark.cpp)
 target_link_libraries(TranslationBenchmark PRIVATE sat_ui)
 add_executable(CaptureLiveTests tests/CaptureTests.cpp)
@@ -87,6 +89,11 @@ endif()
 add_executable(TextLayoutTests tests/TextLayoutTests.cpp)
 target_link_libraries(TextLayoutTests PRIVATE sat_ui)
 add_test(NAME TextLayoutTests COMMAND TextLayoutTests)
+add_executable(TraceTests tests/TraceTests.cpp)
+target_link_libraries(TraceTests PRIVATE sat_ui)
+sat_deploy_ocr(TraceTests)
+add_test(NAME TraceTests COMMAND TraceTests)
+set_tests_properties(TraceTests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 add_executable(BundledOcrTests tests/BundledOcrTests.cpp)
 add_executable(MemoryRegression tests/MemoryRegression.cpp)
 target_link_libraries(MemoryRegression PRIVATE sat_core psapi)

@@ -52,6 +52,46 @@ void CoverageTests() {
     result = complete.TranslateLocated("aW1n", {}, settings, "test-key", {}, regions);
     Require(normalCalls == 1 && result.segments.size() == 1 && result.resolvedSourceIds.size() == 2,
             "explicit non-text confirmation must not cause extra requests");
+    // A low-confidence recognition is a fragment of artwork. The model may confirm it as non-text,
+    // and that confirmation has to keep the rest of the response alive.
+    auto fragment = regions;
+    fragment[1].text = "T";
+    fragment[1].confidence = .35f;
+    auto confirmed = first;
+    confirmed["segments"].push_back({{"source_id", 2}, {"original_text", ""}, {"translated_text", ""}});
+    auto fragmentResult = ParseTranslation(confirmed.dump(), fragment);
+    Require(fragmentResult.segments.size() == 1 && fragmentResult.resolvedSourceIds.size() == 2,
+            "low-confidence fragment rejected instead of confirmed as non-text");
+    // The same empty answer for a reliable recognition stays a protocol violation.
+    auto reliable = regions;
+    reliable[1].text = "Second";
+    reliable[1].confidence = .99f;
+    Reject([&] { ParseTranslation(confirmed.dump(), reliable); });
+    // A compact answer for a fragment stands: the region carries a piece of artwork, so the omitted
+    // original text comes from the detector rather than from the model.
+    auto tiny = regions;
+    tiny[1].text = ">";
+    tiny[1].confidence = .2f;
+    auto compactFragment = first;
+    compactFragment["segments"].push_back({{"source_id", 2}, {"translated_text", "》"}});
+    auto tinyResult = ParseTranslation(compactFragment.dump(), tiny);
+    Require(tinyResult.segments.size() == 2 && tinyResult.segments[1].original == ">",
+            "compact answer for a fragment lost its translated text");
+    // A recognized passage keeps the obligation to echo its original text back.
+    auto passage = regions;
+    passage[1].text = "source B";
+    passage[1].confidence = .2f;
+    Reject([&] { ParseTranslation(compactFragment.dump(), passage); });
+    // An empty translation keeps that passage as source text instead of failing the whole page.
+    auto partial = first;
+    partial["segments"].push_back({{"source_id", 2}, {"original_text", "Second"}, {"translated_text", ""}});
+    auto partialResult = ParseTranslation(partial.dump(), regions);
+    Require(partialResult.segments.size() == 2 && partialResult.segments[1].translated.empty(),
+            "empty translation discarded instead of keeping its source passage");
+    // A response that translates nothing describes a failed service, so it stays an error.
+    auto blank = partial;
+    blank["segments"][0]["translated_text"] = "";
+    Reject([&] { ParseTranslation(blank.dump(), regions); });
     settings.translateAll = false;
     failedCalls = 0;
     Require(missing.TranslateLocated("aW1n", {}, settings, "test-key", {}, regions).segments.size() == 1 &&

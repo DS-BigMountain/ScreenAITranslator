@@ -7,6 +7,9 @@
 namespace sat {
 bool CanTranslateText(const std::vector<TextRegion>& regions);
 bool HasRecognizedText(const std::vector<TextRegion>& regions);
+// A single screen translation entry routes by provider capability: dedicated text services receive
+// locally recognized text, every other model receives the captured image.
+int EffectiveTranslationMode(const Settings& options);
 Settings SelectTranslationConnection(const Settings& options);
 TranslationResult ParseTranslation(const std::string& json, const std::vector<TextRegion>& regions = {},
                                    bool textOnly = false, VisionCoordinates coordinates = {});

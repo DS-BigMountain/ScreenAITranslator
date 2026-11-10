@@ -3,7 +3,9 @@
 #include "providers/Provider.h"
 
 namespace sat {
-enum class TranslationPhase { Requesting, Layout };
+// Reporting order follows the work: recognition runs first, the service request second, and the last
+// phase places the result. The controller turns each phase into one fixed status line.
+enum class TranslationPhase { Recognizing, Requesting, Layout };
 using ProviderFactory = std::function<std::unique_ptr<ITranslationProvider>(const std::string&)>;
 
 struct PreparedTranslation {

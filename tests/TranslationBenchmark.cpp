@@ -68,7 +68,7 @@ void Render(const Image& image, const std::vector<PositionedText>& items, const 
             "benchmark");
     target->BeginDraw();
     target->DrawBitmap(background.Get());
-    DrawPositioned(target.Get(), items, RGB(20, 20, 20));
+    DrawPositioned(target.Get(), items, &image, RGB(20, 20, 20), Settings{}, 96, false);
     CheckHR(target->EndDraw(), "benchmark");
     ComPtr<IWICStream> stream;
     CheckHR(wic->CreateStream(&stream), "benchmark");

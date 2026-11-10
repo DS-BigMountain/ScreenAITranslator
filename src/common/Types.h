@@ -33,6 +33,9 @@ struct TranslationResult {
     std::string language;
     std::vector<Segment> segments;
     std::vector<RECT> protectedRegions;
+    // Recognized text rows that no translated passage claimed. The overlay rebuilds their surface so
+    // the original text never survives beside its translation.
+    std::vector<RECT> uncoveredLines;
     int requestCount{};
     // Includes geometry regions explicitly confirmed as non-text, even without a segment.
     std::vector<int> resolvedSourceIds;
@@ -87,6 +90,9 @@ struct Settings {
     int ocrMode{OcrLocalAuto};
     bool contextEnabled{true};
     int contextSize{8};
+    // Payload tracing records each screen translation into one directory under logs\trace. It stays off
+    // until the user asks for it, because every trace keeps a screenshot and the full request payload.
+    bool traceEnabled{};
     std::string prompt{
         "请准确翻译画面中的所有可见文字为简体中文。优先忠实原意，不进行文学化润色，不添加原文不存在的信息。角"
         "色名、专有名词应尽量保持一致。默认翻译所有字幕、对话、按钮和 UI 文本。"};
@@ -97,6 +103,9 @@ struct Settings {
     bool spatialOverlay{true};
     COLORREF textColor{RGB(255, 255, 255)}, outlineColor{RGB(0, 0, 0)};
     float outlineWidth{1.0f}, backgroundOpacity{0.88f};
+    // Outline colour mode: 0 takes the configured colour, 1 derives the inverse of the rendered
+    // text colour. Outline style: 0 hard edge, 1 rough edge, 2 glow.
+    int outlineColorMode{}, outlineStyle{};
 };
 struct PersistentState {
     std::optional<RECT> window;

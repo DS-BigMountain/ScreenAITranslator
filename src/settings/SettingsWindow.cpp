@@ -175,6 +175,11 @@ struct SettingsWindow::Impl {
             throw AppError("settings", "请填写有效数值。");
         return value;
     }
+    // A float setting carries binary rounding, so the stored 0.88 reaches the box as 0.8799999952. The
+    // box shows stored values through this helper, which trims them to two decimals first.
+    static double Displayed(double value) {
+        return std::round(value * 100) / 100;
+    }
     int Integer(const wchar_t* name) const {
         auto value = Number(name);
         if (std::floor(value) != value)
@@ -408,7 +413,9 @@ void SettingsWindow::Build(const std::string& key) {
     });
     auto text = [&](const wchar_t* name, const std::wstring& value) { ui_->Get<TextBox>(name).Text(value); };
     auto toggle = [&](const wchar_t* name, bool value) { ui_->Get<ToggleSwitch>(name).IsOn(value); };
-    auto number = [&](const wchar_t* name, double value) { ui_->Get<NumberBox>(name).Value(value); };
+    auto number = [&](const wchar_t* name, double value) {
+        ui_->Get<NumberBox>(name).Value(SettingsWindow::Impl::Displayed(value));
+    };
     toggle(L"Startup", settings_.startup);
     toggle(L"Tray", settings_.tray);
     toggle(L"TextCtrlEnter", settings_.textCtrlEnter);
@@ -421,20 +428,17 @@ void SettingsWindow::Build(const std::string& key) {
     text(L"BaseUrl", settings_.baseUrl);
     ui_->Get<PasswordBox>(L"Key").Password(Wide(key));
     text(L"ServiceRegion", Wide(settings_.serviceRegion));
-    toggle(L"TranslateAll", settings_.translateAll);
+    toggle(L"TraceEnabled", settings_.traceEnabled);
     ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex(settings_.proxyMode);
     text(L"ProxyAddress", settings_.proxyAddress);
     ui_->Get<ComboBox>(L"Model").Items().Append(winrt::box_value(Wide(settings_.model)));
     ui_->Get<ComboBox>(L"Model").SelectedIndex(0);
     number(L"Timeout", settings_.timeoutSeconds);
     text(L"RequestParameters", Wide(settings_.requestParameters));
-    ui_->Get<ComboBox>(L"Quality").SelectedIndex(settings_.quality);
-    ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex(settings_.translationMode);
     ui_->Get<ComboBox>(L"OcrMode").SelectedIndex(OcrSelectionFromMode(settings_.ocrMode));
     toggle(L"ContextEnabled", settings_.contextEnabled);
     number(L"ContextSize", settings_.contextSize);
     text(L"Prompt", Wide(settings_.prompt));
-    toggle(L"SpatialOverlay", settings_.spatialOverlay);
     auto fonts = ui_->Get<ComboBox>(L"Font");
     ComPtr<IDWriteFactory> fontFactory;
     ComPtr<IDWriteFontCollection> fontCollection;
@@ -468,6 +472,23 @@ void SettingsWindow::Build(const std::string& key) {
     toggle(L"AutoFont", settings_.autoFont);
     number(L"FontSize", settings_.fontSize);
     text(L"TextColor", Color(settings_.textColor));
+    auto outlineMode = ui_->Get<ComboBox>(L"OutlineColorMode");
+    outlineMode.Items().Append(winrt::box_value(L"自定义颜色"));
+    outlineMode.Items().Append(winrt::box_value(L"字体反色"));
+    outlineMode.SelectedIndex(settings_.outlineColorMode == 1 ? 1 : 0);
+    auto outlineStyle = ui_->Get<ComboBox>(L"OutlineStyle");
+    outlineStyle.Items().Append(winrt::box_value(L"硬边"));
+    outlineStyle.Items().Append(winrt::box_value(L"毛边"));
+    outlineStyle.Items().Append(winrt::box_value(L"荧光"));
+    outlineStyle.SelectedIndex(std::clamp(settings_.outlineStyle, 0, 2));
+    // The colour box follows the colour mode: the inverse mode reads the rendered face colour, so
+    // the picked value only applies while the custom mode holds.
+    auto syncOutlineColor = [this] {
+        ui_->Get<TextBox>(L"OutlineColor").IsEnabled(
+            ui_->Get<ComboBox>(L"OutlineColorMode").SelectedIndex() == 0);
+    };
+    syncOutlineColor();
+    outlineMode.SelectionChanged([syncOutlineColor](auto const&, auto const&) { syncOutlineColor(); });
     text(L"OutlineColor", Color(settings_.outlineColor));
     number(L"OutlineWidth", settings_.outlineWidth);
     number(L"Opacity", settings_.backgroundOpacity);
@@ -532,7 +553,6 @@ void SettingsWindow::Build(const std::string& key) {
     SelectSettingsTab(settingsTab_);
     for (auto [name, tab] : std::initializer_list<std::pair<const wchar_t*, int>>{{L"TextConnection", 1},
                                                                                   {L"ScreenConnection", 1},
-                                                                                  {L"OpenAppearance", 2},
                                                                                   {L"OpenShortcuts", 0}}) {
         ui_->Get<HyperlinkButton>(name).Click([this, tab](auto const&, auto const&) {
             auto navigation = ui_->Get<NavigationView>(L"Navigation");
@@ -642,26 +662,8 @@ void SettingsWindow::Build(const std::string& key) {
                                           [dependent](auto const&, auto const&) { dependent(); });
     ui_->Get<NumberBox>(L"FontSize").ValueChanged([dependent](auto const&, auto const&) { dependent(); });
     ui_->Get<ComboBox>(L"ProxyMode").SelectionChanged([dependent](auto const&, auto const&) { dependent(); });
-    ui_->Get<ComboBox>(L"TranslationMode").SelectionChanged([this](auto const&, auto const&) {
-        UpdateTranslationMode();
-    });
-    for (auto [name, mode] : std::initializer_list<std::pair<const wchar_t*, int>>{
-             {L"VisionChoice", TranslationAiVision}, {L"OcrChoice", TranslationOcrText}}) {
-        ui_->Get<xaml::Controls::Primitives::ToggleButton>(name).Click(
-            [this, mode](auto const&, auto const&) {
-                ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex(mode);
-                UpdateTranslationMode();
-            });
-    }
     UpdateTranslationMode();
     ui_->updating = false;
-    for (auto [name, mode] : std::initializer_list<std::pair<const wchar_t*, int>>{
-             {L"VisionChoice", TranslationAiVision}, {L"OcrChoice", TranslationOcrText}}) {
-        ui_->Get<xaml::Controls::Primitives::ToggleButton>(name).Checked(
-            [this, mode](auto const&, auto const&) {
-                ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex(mode);
-            });
-    }
     textPage_.Attach(ui_->root, hwnd_, settings_, key, [this](const std::string& language) {
         try {
             if (callbacks_.targetLanguage)
@@ -688,10 +690,8 @@ void SettingsWindow::SelectPage(int page) {
         .Visibility(page_ == 2 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
     ui_->Get<HyperlinkButton>(L"TextConnection")
         .Visibility(page_ == 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<Button>(L"ConversationMenu")
+    ui_->Get<Button>(L"ClearConversation")
         .Visibility(page_ == 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<TextBlock>(L"ScreenSubtitle")
-        .Visibility(page_ == 1 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
     const wchar_t* titles[]{L"文本翻译", L"截图翻译", L"设置"};
     ui_->Get<TextBlock>(L"PageTitle").Text(titles[page_]);
     SetHotkeyEditing(GetActiveWindow() == hwnd_ && ui_->FocusedHotkey());
@@ -701,10 +701,9 @@ void SettingsWindow::SelectPage(int page) {
 }
 void SettingsWindow::SelectSettingsTab(int tab) {
     const bool changed = settingsTab_ != tab;
-    settingsTab_ = std::clamp(tab, 0, 3);
-    const wchar_t* names[]{L"SettingsGeneral", L"SettingsConnection", L"SettingsAppearance",
-                           L"SettingsAbout"};
-    for (int i = 0; i < 4; ++i)
+    settingsTab_ = std::clamp(tab, 0, 1);
+    const wchar_t* names[]{L"SettingsGeneral", L"SettingsConnection"};
+    for (int i = 0; i < 2; ++i)
         ui_->Get<StackPanel>(names[i]).Visibility(i == settingsTab_ ? xaml::Visibility::Visible
                                                                     : xaml::Visibility::Collapsed);
     auto tabs = ui_->Get<SelectorBar>(L"SettingsTabs");
@@ -726,20 +725,9 @@ void SettingsWindow::SetHotkeyEditing(bool editing) {
 void SettingsWindow::UpdateTranslationMode() {
     if (!ui_)
         return;
-    const bool textOnly = ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex() == TranslationOcrText;
-    for (auto [name, selected] : std::initializer_list<std::pair<const wchar_t*, bool>>{
-             {L"VisionChoice", !textOnly}, {L"OcrChoice", textOnly}}) {
-        auto choice = ui_->Get<xaml::Controls::Primitives::ToggleButton>(name);
-        choice.IsChecked(winrt::box_value(selected).as<winrt::Windows::Foundation::IReference<bool>>());
-        choice.IsEnabled(!apiBusy_);
-    }
-    ui_->Get<ComboBox>(L"TranslationMode").IsEnabled(!apiBusy_);
-    ui_->Get<ComboBox>(L"OcrMode").IsEnabled(!apiBusy_ && textOnly);
-    ui_->Get<ComboBox>(L"Quality").IsEnabled(!apiBusy_ && !textOnly);
-    ui_->Get<ComboBox>(L"OcrMode")
-        .Visibility(textOnly ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<ComboBox>(L"Quality")
-        .Visibility(!textOnly ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    // One screen translation entry runs recognition and translation together: the capture is always
+    // recognized locally, and only the provider decides whether the image itself travels to the service.
+    ui_->Get<ComboBox>(L"OcrMode").IsEnabled(!apiBusy_);
     auto index = ui_->Get<ComboBox>(L"Provider").SelectedIndex();
     if (index >= 0) {
         auto id = ProviderPresets().at(index).id;
@@ -758,13 +746,6 @@ void SettingsWindow::Status(const std::wstring& text) {
         textPage_.Notify(text);
     if (ui_ && ui_->root)
         ui_->Get<TextBlock>(L"Status").Text(text);
-}
-void SettingsWindow::SetTranslationMode(int mode) {
-    settings_.translationMode = mode;
-    if (ui_ && ui_->root) {
-        ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex(mode);
-        UpdateTranslationMode();
-    }
 }
 void SettingsWindow::ApiBusy(bool busy) {
     apiBusy_ = busy;
@@ -797,11 +778,11 @@ Settings SettingsWindow::ReadApi(bool requireModel) const {
     value.requestParameters = Utf8(ui_->Text(L"RequestParameters"));
     (void)ParseRequestParameters(value.requestParameters);
     value.ocrMode = OcrModeFromSelection(ui_->Get<ComboBox>(L"OcrMode").SelectedIndex());
-    value.translationMode = ui_->Get<ComboBox>(L"TranslationMode").SelectedIndex();
     value.serviceRegion = Utf8(ui_->Text(L"ServiceRegion"));
     value.proxyMode = ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex();
     value.proxyAddress = ui_->Text(L"ProxyAddress");
-    value.translateAll = ui_->On(L"TranslateAll");
+    // Translation always covers every recognized passage, so the switch that used to restrict it is gone.
+    value.translateAll = true;
     auto model = ui_->Get<ComboBox>(L"Model");
     auto name = std::wstring(model.Text());
     if (name.empty() && model.SelectedItem())
@@ -867,12 +848,13 @@ void SettingsWindow::Save() {
         next.tray = ui_->On(L"Tray");
         next.textCtrlEnter = ui_->On(L"TextCtrlEnter");
         std::copy(std::begin(ui_->hotkeys), std::end(ui_->hotkeys), std::begin(next.hotkeys));
-        next.quality = ui_->Get<ComboBox>(L"Quality").SelectedIndex();
         next.ocrMode = OcrModeFromSelection(ui_->Get<ComboBox>(L"OcrMode").SelectedIndex());
         next.contextEnabled = ui_->On(L"ContextEnabled");
         next.contextSize = ui_->Integer(L"ContextSize");
         next.prompt = Utf8(ui_->Text(L"Prompt"));
-        next.spatialOverlay = ui_->On(L"SpatialOverlay");
+        // Replacement in place is the only display mode now, so the stored value keeps it enabled.
+        next.spatialOverlay = true;
+        next.traceEnabled = ui_->On(L"TraceEnabled");
         next.font = ui_->ReadFont();
         next.matchTextColor = ui_->On(L"MatchTextColor");
         next.autoFont = ui_->On(L"AutoFont");
@@ -880,6 +862,8 @@ void SettingsWindow::Save() {
         next.textColor = ParseColor(ui_->Text(L"TextColor"));
         next.outlineColor = ParseColor(ui_->Text(L"OutlineColor"));
         next.outlineWidth = static_cast<float>(ui_->Number(L"OutlineWidth"));
+        next.outlineColorMode = ui_->Get<ComboBox>(L"OutlineColorMode").SelectedIndex() == 1 ? 1 : 0;
+        next.outlineStyle = std::clamp(ui_->Get<ComboBox>(L"OutlineStyle").SelectedIndex(), 0, 2);
         next.backgroundOpacity = static_cast<float>(ui_->Number(L"Opacity"));
         ValidateSettings(next);
         Secret secret{Utf8(std::wstring(ui_->Get<PasswordBox>(L"Key").Password()))};

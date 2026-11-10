@@ -5,6 +5,7 @@
 #include "capture/Capture.h"
 #include "common/Platform.h"
 #include "common/Diagnostics.h"
+#include "common/Trace.h"
 #include "settings/Store.h"
 #include <winhttp.h>
 #include <algorithm>
@@ -25,6 +26,53 @@ constexpr size_t MaxResponse = 4 * 1024 * 1024;
 constexpr size_t MaxSegments = TranslationSegmentLimit;
 constexpr size_t MaxText = TranslationTextLimit;
 constexpr size_t MaxTotalText = TranslationTotalTextLimit;
+
+// Trace files carry the endpoint and method as plain ASCII; non-ASCII characters never appear in
+// either, so a byte-downcast keeps the record readable without a conversion failure path.
+std::string Narrow(const wchar_t* value) {
+    std::string result;
+    if (!value)
+        return result;
+    for (; *value; ++value)
+        result.push_back(*value < 128 ? static_cast<char>(*value) : '?');
+    return result;
+}
+// Header values carry credentials; the record keeps every header name and the shape of the request
+// while the secret replaced before it reaches disk.
+std::string RedactHeaders(std::string_view raw) {
+    static constexpr std::string_view sensitive[]{"authorization", "x-api-key", "x-goog-api-key",
+                                                  "ocp-apim-subscription-key", "ocp-apim-subscription-region"};
+    std::string result;
+    size_t start = 0;
+    while (start < raw.size()) {
+        const auto newline = raw.find("\r\n", start);
+        const bool last = newline == std::string_view::npos;
+        const auto line = raw.substr(start, last ? raw.size() - start : newline - start);
+        const auto colon = line.find(':');
+        if (colon != std::string_view::npos) {
+            const auto name = line.substr(0, colon);
+            std::string lower(name);
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const bool secret = std::any_of(std::begin(sensitive), std::end(sensitive),
+                                           [&](const std::string_view item) { return item == lower; });
+            result.append(name);
+            if (secret) {
+                result += ": <redacted>\r\n";
+            } else {
+                result.append(line.substr(colon));
+                result += "\r\n";
+            }
+        } else {
+            result.append(line);
+            result += "\r\n";
+        }
+        if (last)
+            break;
+        start = newline + 2;
+    }
+    return result;
+}
 
 [[noreturn]] void FormatError(const char* reason = "invalid_response") {
     DiagnosticEvent("response_rejected", {{"reason", reason}});
@@ -282,6 +330,7 @@ HttpResponse SendHttpRequest(const Settings& options, const std::string& apiKey,
         std::wstring headers =
             L"Content-Type: application/json\r\n" +
             (authentication.empty() ? L"Authorization: Bearer " + Wide(apiKey) + L"\r\n" : authentication);
+        TraceRequestHeaders(RedactHeaders(Narrow(headers.c_str())));
         state.Reset();
         DiagnosticSpan sending("http_send");
         Started(WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(headers.size()),
@@ -299,6 +348,21 @@ HttpResponse SendHttpRequest(const Settings& options, const std::string& apiKey,
                                  WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX))
             throw AppError("Requesting", "无法读取 API 响应");
         receiving.End("ok", {{"status", status}});
+        // The response header block carries request IDs, rate-limit hints, and the content type, so
+        // it belongs with the body in the record.
+        {
+            DWORD rawSize{};
+            WinHttpQueryHeaders(request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
+                                WINHTTP_NO_OUTPUT_BUFFER, &rawSize, WINHTTP_NO_HEADER_INDEX);
+            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && rawSize > 0 &&
+                rawSize <= 64 * 1024) {
+                std::wstring raw(rawSize / sizeof(wchar_t) + 1, L'\0');
+                if (WinHttpQueryHeaders(request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+                                        WINHTTP_HEADER_NAME_BY_INDEX, raw.data(), &rawSize,
+                                        WINHTTP_NO_HEADER_INDEX))
+                    TraceResponseHeaders(Narrow(raw.c_str()));
+            }
+        }
         HttpResponse response{static_cast<int>(status), {}};
         DWORD retryAfter{}, retrySize = sizeof(retryAfter);
         if (WinHttpQueryHeaders(request.value, WINHTTP_QUERY_RETRY_AFTER | WINHTTP_QUERY_FLAG_NUMBER,
@@ -343,6 +407,9 @@ HttpResponse SendHttpRequest(const Settings& options, const std::string& apiKey,
         }
         CheckStop(stop);
         reading.End("ok", {{"response_bytes", response.body.size()}});
+        // The complete response body reaches the trace before any parsing decision, so a rejected
+        // or malformed answer stays inspectable exactly as the service delivered it.
+        TraceResponse(static_cast<int>(status), response.body, Narrow(endpoint), Narrow(method));
         http.End("ok", {{"status", status}, {"response_bytes", response.body.size()}});
         return response;
     } catch (const Cancelled&) {
@@ -603,6 +670,8 @@ public:
             auto request = BuildRequest(image, context, options, strict, regions, coverage.missing);
             ConfigureCompatibleRequest(request, options, deepseek_);
             ++requestCount;
+            // Record the exact request object once configured, before serialization adds nothing.
+            TraceRequest(request, regions, image, strict, textOnly);
             DiagnosticSpan attempt(
                 "api_attempt",
                 {{"attempt", requestCount},
@@ -645,6 +714,7 @@ public:
                 result = coverage.Accept(std::move(result), regions, options.translateAll);
                 result.requestCount = requestCount;
                 parse.End("ok", {{"segments", result.segments.size()}, {"request_count", requestCount}});
+                TraceParsed(result);
                 CheckStop(stop);
                 return result;
             } catch (const AppError& error) {
@@ -674,10 +744,15 @@ bool HasRecognizedText(const std::vector<TextRegion>& regions) {
         return region.text.find_first_not_of(" \t\r\n") != std::string::npos;
     });
 }
+int EffectiveTranslationMode(const Settings&) {
+    // The screen path recognises text locally and sends only those passages to the service. The
+    // model translates text and contributes nothing to detection, placement or geometry.
+    return TranslationOcrText;
+}
 Settings SelectTranslationConnection(const Settings& options) {
     auto result = options;
     if (options.translationMode == TranslationAiVision && IsTextService(result.provider))
-        throw AppError("Vision", "AI 识图翻译需要支持图片的模型；专用文字服务请使用 OCR 文字翻译模式");
+        throw AppError("Vision", "当前服务只接受文字；请改用支持图片的模型");
     return result;
 }
 
@@ -748,20 +823,27 @@ TranslationResult ParseTranslation(const std::string& source, const std::vector<
                                                 [&](const auto& region) { return region.id == number; });
                 if (found == regions.end())
                     FormatError();
-                if (compact && !textOnly &&
-                    (found->text.empty() || !(found->confidence >= .85f && found->confidence <= 1.f)))
+                const bool reliable = found->confidence >= .85f && found->confidence <= 1.f;
+                // A short, low-confidence recognition is a fragment of artwork rather than a passage.
+                const bool fragment = found->text.size() < 8;
+                // A compact answer omits the original text, so it stands on its own only where the
+                // recognition is reliable or where the region carries a fragment of artwork. A
+                // recognized passage still needs the model to echo its original text back.
+                if (compact && !textOnly && (found->text.empty() || (!reliable && !fragment)))
                     FormatError();
-                // A geometry-only false positive may be explicitly confirmed as non-text.
-                // Never discard an empty response for a region with recognized source text.
-                if (!textOnly && !compact && found->text.empty() && item["original_text"].is_string() &&
-                    item["original_text"] == "" && item["translated_text"].is_string() &&
-                    item["translated_text"] == "")
+                // A geometry-only false positive may be explicitly confirmed as non-text. A fragment
+                // earns the same treatment: the prompt already lets the model reject those, so
+                // rejecting the whole response over them would cost every other region its
+                // translation.
+                if (!textOnly && !compact && (found->text.empty() || (!reliable && fragment)) &&
+                    item["original_text"].is_string() && item["original_text"] == "" &&
+                    item["translated_text"].is_string() && item["translated_text"] == "")
                     continue;
             }
             Segment segment;
             if (!textOnly && !compact)
                 segment.original = ReadText(item["original_text"], MaxText);
-            segment.translated = ReadText(item["translated_text"], MaxText);
+            segment.translated = ReadText(item["translated_text"], MaxText, true);
             if (regions.empty() || additional) {
                 const auto& box = item["bbox"];
                 ExactKeys(box, {"x", "y", "width", "height"});
@@ -799,6 +881,12 @@ TranslationResult ParseTranslation(const std::string& source, const std::vector<
                 FormatError();
             result.segments.push_back(std::move(segment));
         }
+        // An individual empty translation keeps its passage as source text, but a response that
+        // translates nothing describes a failed service rather than a page.
+        if (!result.segments.empty() &&
+            std::all_of(result.segments.begin(), result.segments.end(),
+                        [](const Segment& segment) { return segment.translated.empty(); }))
+            FormatError("empty_translation");
         if (!regions.empty())
             OrderSegments(result, regions);
         if (result.clippedBoxes)

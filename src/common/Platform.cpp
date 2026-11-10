@@ -1,7 +1,43 @@
 #include "Platform.h"
+#include "common/TextMetrics.h"
 #include <sstream>
 #include <iomanip>
 namespace sat {
+double EstimatedEm(std::string_view text) {
+    double em = 0;
+    size_t i = 0;
+    while (i < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        char32_t code = lead;
+        size_t length = 1;
+        if (lead < 0x80) {
+            code = lead;
+        } else if ((lead & 0xE0) == 0xC0) {
+            code = lead & 0x1F;
+            length = 2;
+        } else if ((lead & 0xF0) == 0xE0) {
+            code = lead & 0x0F;
+            length = 3;
+        } else if ((lead & 0xF8) == 0xF0) {
+            code = lead & 0x07;
+            length = 4;
+        }
+        if (i + length > text.size())
+            break;
+        for (size_t k = 1; k < length; ++k)
+            code = (code << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+        i += length;
+        if (code >= 0x2E80)
+            em += 1.0;
+        else if (code == ' ')
+            em += .3;
+        else if (code < 0x80)
+            em += .55;
+        else
+            em += .6;
+    }
+    return em;
+}
 std::wstring Wide(const std::string& v) {
     if (v.empty())
         return {};

@@ -1,0 +1,150 @@
+{
+  "duration_ms": 2140,
+  "height": 696,
+  "mode": 1,
+  "request_count": 1,
+  "segments": [
+    {
+      "bbox": {
+        "x": 300,
+        "y": 1,
+        "width": 336,
+        "height": 55
+      },
+      "original_text": "SERVANT",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "仆从",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 323,
+        "y": 79,
+        "width": 308,
+        "height": 50
+      },
+      "original_text": "エレシュキガル",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "埃勒什基加尔",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 337,
+        "y": 145,
+        "width": 277,
+        "height": 40
+      },
+      "original_text": "クラス：ランサー",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "职阶：猎人",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 56,
+        "y": 221,
+        "width": 489,
+        "height": 45
+      },
+      "original_text": "シュメル神話における冥界の神。",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "在施梅尔神话中，冥界的神祇。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 54,
+        "y": 266,
+        "width": 845,
+        "height": 132
+      },
+      "original_text": "槍のような檻を自在に操り、ある時は敵を串刺しにし、ある時は魂を閉じ込め、ある時は稲妻を起こす、おそるべき冥界の支配者。",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "自如操控如枪般的牢笼，时而刺穿敌人，时而囚禁灵魂，时而引出雷电，是令人敬畏的冥界主宰。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 54,
+        "y": 398,
+        "width": 846,
+        "height": 88
+      },
+      "original_text": "その誕生から冥界を管理する職務にあり、地上と自由を知る事なく神代と共に消えた女神。",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "自诞生以来便肩负着管理冥界的职责，她与神代一同消失，未曾知晓人间与自由。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 54,
+        "y": 486,
+        "width": 846,
+        "height": 130
+      },
+      "original_text": "この姿はエレシュキガル女神としてのものではなく、彼女に波長の近い人間の魂を依り代にした疑似サーヴァント状態。",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "这种形态并非作为埃勒什基加尔女神的本身，而是以与她波长相近的人类灵魂为依托，处于一种伪仆从状态。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 54,
+        "y": 618,
+        "width": 845,
+        "height": 218
+      },
+      "original_text": "冥界の女神らしく人間を監視するのが役割と語るが、「……あんまり大勢で冥界に来られても困るのよね……魂を閉じ込める檻を作るのもタイヘンだし……ちゃんと居心地のいい居場所を提供できるかしら……」このように、面倒見の良さが隠しきれていない。",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "虽然自称是冥界的女神，负责监视人类，但她说：“……要是太多人来冥界，可就麻烦了。建造能将灵魂囚禁的牢笼也挺费力的……难道还能提供一个舒适宜居的地方吗？”由此可见，她细致周到的体贴并非隐藏在表面之下。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 56,
+        "y": 838,
+        "width": 421,
+        "height": 43
+      },
+      "original_text": "まさに冥界の（赤い）天使。",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "简直就是冥界的（红色）天使。",
+      "untranslated": false
+    },
+    {
+      "bbox": {
+        "x": 197,
+        "y": 922,
+        "width": 557,
+        "height": 55
+      },
+      "original_text": "画面をタッチしてください",
+      "position_unavailable": false,
+      "source_line_height": 0.0,
+      "source_lines": [],
+      "translated_text": "请触摸画面",
+      "untranslated": false
+    }
+  ],
+  "source_language": "ja",
+  "width": 839
+}

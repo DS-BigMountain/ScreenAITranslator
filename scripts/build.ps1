@@ -115,3 +115,9 @@ if ($Package) {
     if ($signature.Status -notin @('Valid', 'NotSigned')) { throw "Installer signature verification failed: $($signature.Status)" }
     Write-Host "Installer ready: $setupPath"
 }
+# Every file written under the workspace inherits its low integrity label. Windows starts a low
+# integrity image as a low integrity process, and %TEMP% plus %LOCALAPPDATA% refuse such a process,
+# which surfaces as "Setup cannot create directory ... Error 5: Access is denied". Relabel the
+# delivery so the installer and the portable build run at medium integrity.
+& icacls.exe $distributionRoot /setintegritylevel Medium /T /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Delivery integrity label restore failed: $distributionRoot" }

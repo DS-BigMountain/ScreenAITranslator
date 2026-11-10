@@ -140,6 +140,9 @@ public:
                                                          deadline - Clock::now())
                                                          .count()}});
                 auto serialized = body.dump();
+                // Native protocols differ from the chat-completions shape, so the trace stores the
+                // body as sent; the response lands in the shared transport sink.
+                TraceRawRequest(body, image);
                 HttpResponse response;
                 try {
                     response = transport_(s, key, serialized, deadline, token, path, headers);
@@ -192,6 +195,7 @@ public:
                                                        : VisionCoordinates{});
                     result = coverage.Accept(std::move(result), regions, s.translateAll);
                     result.requestCount = attempts;
+                    TraceParsed(result);
                     return result;
                 } catch (const AppError& error) {
                     if (error.stage != "Parsing" || regions.empty() || retry >= 1)
@@ -314,6 +318,7 @@ public:
         }
         CheckStop(stop);
         result.requestCount = attempts;
+        TraceParsed(result);
         return result;
     }
 };

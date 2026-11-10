@@ -1,5 +1,6 @@
 #include "Overlay.h"
 #include "SpatialLayout.h"
+#include "TextRim.h"
 #include "capture/Capture.h"
 #include <d2d1.h>
 #include <algorithm>
@@ -25,95 +26,6 @@ RECT Clamp(RECT r, RECT screen) {
     r.bottom = r.top + h;
     return r;
 }
-// DirectWrite sends shaped glyph runs here; outline comes from the glyph geometry.
-class OutlinedRenderer final : public IDWriteTextRenderer {
-    ULONG refs_{1};
-    ID2D1RenderTarget* target_;
-    ID2D1Factory* factory_;
-    ID2D1Brush* fill_;
-    ID2D1Brush* edge_;
-    float stroke_;
-
-public:
-    OutlinedRenderer(ID2D1RenderTarget* t, ID2D1Factory* f, ID2D1Brush* fill, ID2D1Brush* edge, float stroke)
-        : target_(t), factory_(f), fill_(fill), edge_(edge), stroke_(stroke) {}
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID i, void** out) override {
-        if (!out)
-            return E_POINTER;
-        if (i == __uuidof(IUnknown) || i == __uuidof(IDWritePixelSnapping) ||
-            i == __uuidof(IDWriteTextRenderer)) {
-            *out = static_cast<IDWriteTextRenderer*>(this);
-            AddRef();
-            return S_OK;
-        }
-        *out = nullptr;
-        return E_NOINTERFACE;
-    }
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return ++refs_;
-    }
-    ULONG STDMETHODCALLTYPE Release() override {
-        auto n = --refs_;
-        if (!n)
-            delete this;
-        return n;
-    }
-    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* value) override {
-        *value = FALSE;
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* value) override {
-        D2D1_MATRIX_3X2_F m;
-        target_->GetTransform(&m);
-        static_assert(sizeof(m) == sizeof(*value));
-        memcpy(value, &m, sizeof(m));
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* value) override {
-        *value = 1;
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE,
-                                           const DWRITE_GLYPH_RUN* run, const DWRITE_GLYPH_RUN_DESCRIPTION*,
-                                           IUnknown*) override {
-        ComPtr<ID2D1PathGeometry> geometry;
-        HRESULT hr = factory_->CreatePathGeometry(&geometry);
-        if (FAILED(hr))
-            return hr;
-        ComPtr<ID2D1GeometrySink> sink;
-        hr = geometry->Open(&sink);
-        if (FAILED(hr))
-            return hr;
-        hr = run->fontFace->GetGlyphRunOutline(run->fontEmSize, run->glyphIndices, run->glyphAdvances,
-                                               run->glyphOffsets, run->glyphCount, run->isSideways,
-                                               run->bidiLevel % 2, sink.Get());
-        if (FAILED(hr))
-            return hr;
-        hr = sink->Close();
-        if (FAILED(hr))
-            return hr;
-        D2D1_MATRIX_3X2_F previous;
-        target_->GetTransform(&previous);
-        target_->SetTransform(D2D1::Matrix3x2F::Translation(x, y) * previous);
-        if (stroke_ > 0)
-            target_->DrawGeometry(geometry.Get(), edge_, 2 * stroke_);
-        target_->FillGeometry(geometry.Get(), fill_);
-        target_->SetTransform(previous);
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*,
-                                            IUnknown*) override {
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*,
-                                                IUnknown*) override {
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL,
-                                               IUnknown*) override {
-        return E_NOTIMPL;
-    }
-};
 } // namespace
 std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result, Image roi, RECT screenRoi,
                                        const Monitor& monitor, const Settings& settings, bool retainSource) {
@@ -152,6 +64,134 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result, Image ro
     block.viewport.right = std::min<LONG>(w, block.viewport.right);
     block.viewport.bottom = std::min<LONG>(h, block.viewport.bottom);
     block.fontSize = settings.autoFont ? 22 * scale : settings.fontSize * scale;
+    // Reading panel: a document-style column with centred short headings and left-aligned body text,
+    // mirroring the composed result window that dedicated translation apps use.
+    const bool readingPanel =
+        !settings.spatialOverlay && Width(block.viewport) >= 320 && Height(block.viewport) >= 240;
+    if (readingPanel) {
+        // Reading panel uses a solid theme plate: any translucency lets large source glyphs behind the
+        // capture show through as ghosts, which reads as text overlap rather than context.
+        block.background = RGB(16, 20, 28);
+        block.opacity = 1.f;
+        const float margin = std::max(12.f, std::round(18 * scale));
+        const float bodySize = std::clamp((settings.autoFont ? 18.f : settings.fontSize) * scale, 14.f, 40.f);
+        const float headingSize = std::min(bodySize * 1.55f, 48.f);
+        const float column = std::max(160.f, std::min(float(Width(block.viewport)) - 2 * margin, bodySize * 40.f));
+        const float left = float(block.viewport.left) + (Width(block.viewport) - column) / 2;
+        float y = float(block.viewport.top) + margin;
+        auto isHeading = [](const std::wstring& text) {
+            if (text.empty() || text.size() > 22)
+                return false;
+            const auto last = text.find_last_not_of(L" \t\r\n");
+            if (last == std::wstring::npos)
+                return false;
+            const std::wstring_view endings = L"。！？.!?；;：:…";
+            return endings.find(text[last]) == std::wstring_view::npos && text.find(L'\n') == std::wstring::npos;
+        };
+        const auto bodyOf = [](const Segment& segment) {
+            return Wide(segment.untranslated ? segment.original : segment.translated);
+        };
+        // A manga page reaches this panel as one strip per column, and a balloon wraps its sentence across
+        // neighbouring strips. Reading those strips back as one passage keeps a balloon on one paragraph.
+        // Every strip on its own would also pass the short-heading test, which turns the whole page into a
+        // centred list of fragments instead of readable prose.
+        std::vector<std::vector<size_t>> groups;
+        size_t strips = 0;
+        for (const auto& segment : result.segments) {
+            if (!segment.sourcePixels)
+                continue;
+            if (Height(*segment.sourcePixels) > Width(*segment.sourcePixels) * 6 / 5) {
+                ++strips;
+                continue;
+            }
+            // A balloon merged from neighbouring strips spans several of them, so the passage turns
+            // wide while every strip stays narrow. The strips describe the page shape.
+            if (!segment.sourceLines.empty() &&
+                std::all_of(segment.sourceLines.begin(), segment.sourceLines.end(), [](RECT line) {
+                    return Width(line) > 0 && Height(line) * 5 > Width(line) * 6;
+                }))
+                ++strips;
+        }
+        const bool columnPage =
+            strips * 2 > result.segments.size() &&
+            std::all_of(result.segments.begin(), result.segments.end(),
+                        [](const Segment& segment) { return segment.sourcePixels.has_value(); });
+        if (columnPage) {
+            std::vector<size_t> order(result.segments.size());
+            for (size_t i = 0; i < order.size(); ++i)
+                order[i] = i;
+            // A column page reads right to left, so the strips of one balloon arrive side by side.
+            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+                const RECT ra = *result.segments[a].sourcePixels, rb = *result.segments[b].sourcePixels;
+                return ra.left == rb.left ? ra.top > rb.top : ra.left > rb.left;
+            });
+            for (auto index : order) {
+                if (!groups.empty()) {
+                    const RECT next = *result.segments[index].sourcePixels;
+                    const RECT tail = *result.segments[groups.back().back()].sourcePixels;
+                    const float strip = float(std::max(1, Width(tail)));
+                    const LONG overlap = std::min(tail.bottom, next.bottom) - std::max(tail.top, next.top);
+                    const LONG spacing = tail.left - next.right;
+                    // Neighbouring strips of one balloon share most of their glyph run and sit within a
+                    // little over one strip width. Separate balloons or separate panels sit further apart.
+                    if (spacing >= -LONG(strip * .5f) && spacing <= LONG(strip * 1.9f) &&
+                        overlap * 100 > std::min(Height(tail), Height(next)) * 45) {
+                        groups.back().push_back(index);
+                        continue;
+                    }
+                }
+                groups.push_back({index});
+            }
+        }
+        std::vector<std::pair<std::wstring, bool>> paragraphs;
+        if (columnPage) {
+            for (const auto& group : groups) {
+                std::wstring body;
+                for (auto index : group)
+                    body += bodyOf(result.segments[index]);
+                if (!body.empty())
+                    paragraphs.emplace_back(std::move(body), false);
+            }
+        } else {
+            for (const auto& segment : result.segments) {
+                auto body = bodyOf(segment);
+                if (body.empty())
+                    continue;
+                const bool heading = isHeading(body);
+                paragraphs.emplace_back(std::move(body), heading);
+            }
+        }
+        for (const auto& [body, heading] : paragraphs) {
+            const float size = heading ? headingSize : bodySize;
+            const float lineSpacing = size * (heading ? 1.3f : 1.5f);
+            ComPtr<IDWriteTextFormat> paragraphFormat;
+            CheckHR(factory->CreateTextFormat(settings.font.c_str(), nullptr,
+                                              heading ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
+                                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size,
+                                              L"zh-CN", &paragraphFormat),
+                    "layout");
+            CheckHR(paragraphFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP), "layout");
+            CheckHR(paragraphFormat->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineSpacing, size * .8f),
+                    "layout");
+            CheckHR(paragraphFormat->SetTextAlignment(heading ? DWRITE_TEXT_ALIGNMENT_CENTER
+                                                              : DWRITE_TEXT_ALIGNMENT_LEADING),
+                    "layout");
+            OverlayParagraph paragraph;
+            paragraph.text = body;
+            paragraph.heading = heading;
+            paragraph.fontSize = size;
+            CheckHR(factory->CreateTextLayout(body.c_str(), UINT32(body.size()), paragraphFormat.Get(), column,
+                                              100000.f, &paragraph.layout),
+                    "layout");
+            DWRITE_TEXT_METRICS paragraphMetrics{};
+            CheckHR(paragraph.layout->GetMetrics(&paragraphMetrics), "layout");
+            paragraph.rect = {LONG(std::round(left)), LONG(std::round(y)), LONG(std::round(left + column)),
+                              LONG(std::round(y + paragraphMetrics.height))};
+            y += paragraphMetrics.height + (heading ? 6.f : 10.f) * scale;
+            block.paragraphs.push_back(std::move(paragraph));
+        }
+        block.contentHeight = y - block.viewport.top + margin;
+    }
     ComPtr<IDWriteTextFormat> format;
     CheckHR(factory->CreateTextFormat(settings.font.c_str(), nullptr, DWRITE_FONT_WEIGHT_MEDIUM,
                                       DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, block.fontSize,
@@ -170,8 +210,8 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result, Image ro
     }
     if (retainSource) {
         block.image = std::make_shared<Image>(std::move(roi));
-        if (!settings.spatialOverlay)
-            block.sourceResult = std::make_shared<TranslationResult>(result);
+        // Keep the structured result so the reading panel can rebuild its paragraph hierarchy later.
+        block.sourceResult = std::make_shared<TranslationResult>(result);
     }
     return {std::move(block)};
 }
@@ -183,6 +223,13 @@ void Overlay::Close() {
     dismissed_ = {};
     reselect_ = {};
     moved_ = {};
+    noticeActive_ = false;
+    noticeText_.clear();
+    noticeBackdrop_ = {};
+    if (focusShade_) {
+        DestroyWindow(focusShade_);
+        focusShade_ = nullptr;
+    }
     if (toolbar_) {
         DestroyWindow(toolbar_);
         toolbar_ = nullptr;
@@ -201,10 +248,10 @@ bool Overlay::Dragging() const {
 bool Overlay::DragBorder(const WindowData& data, POINT point) const {
     if (!moved_ || !Valid(data.block.monitorArea))
         return false;
-    const auto& active = data.reading && data.mode == 2 ? *data.reading : data.block;
+    const auto& active = Active(data);
     RECT client{0, 0, Width(active.screen), Height(active.screen)};
     if (!PtInRect(&client, point) ||
-        ((!data.block.image || data.mode == 2) && PtInRect(&active.closeButton, point)))
+        ((!active.image || data.mode == 2) && PtInRect(&active.closeButton, point)))
         return false;
     const int edge = std::max(4, MulDiv(6, data.dpi, 96));
     return point.x < edge || point.y < edge || point.x >= client.right - edge ||
@@ -231,6 +278,8 @@ void Overlay::MoveDrag(WindowData& data, POINT point) {
                     std::min(area.bottom - drag.region.bottom, area.bottom - drag.view.bottom));
     data.block.screen = drag.region;
     OffsetRect(&data.block.screen, dx, dy);
+    if (data.ai)
+        data.ai->screen = data.block.screen;
     if (data.reading && drag.reading) {
         data.reading->screen = *drag.reading;
         OffsetRect(&data.reading->screen, dx, dy);
@@ -246,6 +295,7 @@ void Overlay::MoveDrag(WindowData& data, POINT point) {
         SetWindowPos(data.hwnd, nullptr, view.left, view.top, 0, 0,
                      SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     PositionToolbar();
+    UpdateShadeHole();
 }
 void Overlay::RestoreContents(WindowData& data) {
     if (!data.dragPreview)
@@ -262,6 +312,8 @@ void Overlay::CancelDrag(WindowData& data) {
     data.drag.reset();
     data.pressed = false;
     data.block.screen = drag.region;
+    if (data.ai)
+        data.ai->screen = data.block.screen;
     if (data.reading && drag.reading)
         data.reading->screen = *drag.reading;
     SetWindowPos(data.hwnd, nullptr, drag.view.left, drag.view.top, 0, 0,
@@ -271,8 +323,22 @@ void Overlay::CancelDrag(WindowData& data) {
         ReleaseCapture();
     RestoreContents(data);
 }
+OverlayBlock& Overlay::Active(WindowData& data) {
+    if (data.mode == 2 && data.reading)
+        return *data.reading;
+    if (data.mode == 3 && data.ai)
+        return *data.ai;
+    return data.block;
+}
+const OverlayBlock& Overlay::Active(const WindowData& data) const {
+    if (data.mode == 2 && data.reading)
+        return *data.reading;
+    if (data.mode == 3 && data.ai)
+        return *data.ai;
+    return data.block;
+}
 void Overlay::Render(WindowData& window) {
-    const auto& block = window.reading && window.mode == 2 ? *window.reading : window.block;
+    const auto& block = Active(window);
     const auto& settings = window.settings;
     const auto dpi = window.dpi;
     int w = Width(block.screen), h = Height(block.screen);
@@ -311,7 +377,13 @@ void Overlay::Render(WindowData& window) {
         // Default white switches to dark on a light cover; explicitly chosen colors remain honored.
         foreground = ReadableTextColor(foreground, block.background);
         CheckHR(rt->CreateSolidColorBrush(ColorF(foreground), &fill), "overlay");
-        CheckHR(rt->CreateSolidColorBrush(ColorF(settings.outlineColor), &edge), "overlay");
+        // The inverse mode derives the rim from the rendered face colour, so the rim keeps its
+        // contrast when the face flips between a dark cover and a light one.
+        const COLORREF rim =
+            settings.outlineColorMode == 1
+                ? RGB(255 - GetRValue(foreground), 255 - GetGValue(foreground), 255 - GetBValue(foreground))
+                : settings.outlineColor;
+        CheckHR(rt->CreateSolidColorBrush(ColorF(rim), &edge), "overlay");
         rt->BeginDraw();
         rt->Clear(D2D1::ColorF(0, 0.f));
         auto drawSource = [&] {
@@ -338,8 +410,11 @@ void Overlay::Render(WindowData& window) {
                               background.Get());
             if (block.image && window.mode != 2) {
                 drawSource();
-                if (window.mode == 0)
-                    DrawPositioned(rt.Get(), block.positioned, settings.textColor);
+                // Both the recognized result and the one-off vision result paint the override layer; the
+                // original view and the reading panel keep their own drawings.
+                if (window.mode == 0 || window.mode == 3)
+                    DrawPositioned(rt.Get(), block.positioned, block.image.get(), settings.textColor, settings,
+                                   dpi);
                 edge->SetColor(ColorF(RGB(88, 119, 235)));
                 rt->DrawRectangle(D2D1::RectF(1, 1, float(w) - 1, float(h) - 1), edge.Get(), 2);
             } else {
@@ -347,12 +422,24 @@ void Overlay::Render(WindowData& window) {
                 auto area = D2D1::RectF(float(block.viewport.left), float(block.viewport.top),
                                         float(block.viewport.right), float(block.viewport.bottom));
                 rt->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED);
-                ComPtr<OutlinedRenderer> renderer;
-                renderer.Attach(new OutlinedRenderer(
-                    rt.Get(), factory.Get(), fill.Get(), edge.Get(),
-                    window.reading && window.mode == 2 ? 0.f : settings.outlineWidth * dpi / 96.f));
-                CheckHR(block.layout->Draw(nullptr, renderer.Get(), area.left, area.top - window.scroll),
-                        "overlay");
+                const float uiScale = dpi / 96.f;
+                const float outline = (window.reading && window.mode == 2) ? 0.f : settings.outlineWidth * uiScale;
+                if (!block.paragraphs.empty()) {
+                    // Reading panel: every paragraph owns its layout so headings centre independently.
+                    for (const auto& paragraph : block.paragraphs) {
+                        auto renderer = CreateRimRenderer(rt.Get(), factory.Get(), fill.Get(), edge.Get(),
+                                                          outline, settings.outlineStyle, uiScale);
+                        CheckHR(paragraph.layout->Draw(nullptr, renderer.Get(),
+                                                       float(paragraph.rect.left),
+                                                       float(paragraph.rect.top) - window.scroll),
+                                "overlay");
+                    }
+                } else {
+                    auto renderer = CreateRimRenderer(rt.Get(), factory.Get(), fill.Get(), edge.Get(), outline,
+                                                      settings.outlineStyle, uiScale);
+                    CheckHR(block.layout->Draw(nullptr, renderer.Get(), area.left, area.top - window.scroll),
+                            "overlay");
+                }
                 rt->PopAxisAlignedClip();
                 const float scale = dpi / 96.f;
                 ComPtr<ID2D1SolidColorBrush> frame, header, button, white;
@@ -470,18 +557,57 @@ void Overlay::Notice(const std::wstring& text, RECT anchor, const Monitor& m,
     s.autoFont = false;
     s.fontSize = 17;
     s.outlineWidth = 0;
+    // A notice carries the whole status line. Its box grows with the message instead of cutting the
+    // tail off at a fixed height, which used to hide the end of every longer status.
+    const int width = std::max(420, Width(anchor));
+    int rows = 1;
+    {
+        const int usable = width - 20;
+        int used = 0;
+        for (wchar_t ch : text) {
+            const int unit = ch < 128 ? 9 : 17;
+            if (used + unit > usable) {
+                ++rows;
+                used = 0;
+            }
+            used += unit;
+        }
+    }
+    const int height = std::min(240, 48 + rows * 22);
     Image image;
-    image.width = std::max(300, Width(anchor));
-    image.height = 70;
+    image.width = width;
+    image.height = height;
     image.bgra.resize(static_cast<size_t>(image.width) * image.height * 4, 28);
     for (size_t i = 3; i < image.bgra.size(); i += 4)
         image.bgra[i] = 255;
     TranslationResult r;
     r.segments.push_back({"", Utf8(text), {0, 0, 1000, 1000}});
-    RECT roi{anchor.left, anchor.top, anchor.left + image.width, anchor.top + 70};
+    RECT roi{anchor.left, anchor.top, anchor.left + width, anchor.top + height};
     roi = Clamp(roi, m.rect);
     auto blocks = BuildOverlay(r, image, roi, m, s, false);
+    // Keep the strip described here, so SetProgressText can repaint the same window with the next fixed
+    // status line while everything around it stays exactly as it is.
+    noticeActive_ = true;
+    noticeText_ = text;
+    noticeBackdrop_ = std::move(image);
+    noticeMonitor_ = m;
     Show(blocks, s, m.dpi, std::move(dismissed));
+}
+void Overlay::SetProgressText(const std::wstring& text) {
+    if (!noticeActive_ || text == noticeText_ || windows_.empty())
+        return;
+    noticeText_ = text;
+    Settings s;
+    s.spatialOverlay = false;
+    s.autoFont = false;
+    s.fontSize = 17;
+    s.outlineWidth = 0;
+    TranslationResult r;
+    r.segments.push_back({"", Utf8(text), {0, 0, 1000, 1000}});
+    auto& data = *windows_.front();
+    data.block =
+        BuildOverlay(r, noticeBackdrop_, data.block.screen, noticeMonitor_, s, false).front();
+    Render(data);
 }
 void Overlay::Progress(RECT region, const Monitor& monitor, Image frozen,
                        std::function<void()> dismissed) {
@@ -493,7 +619,9 @@ void Overlay::Progress(RECT region, const Monitor& monitor, Image frozen,
     else if (region.top - noticeHeight >= monitor.rect.top)
         anchor.top = region.top - noticeHeight;
     anchor.bottom = anchor.top + noticeHeight;
-    Notice(L"正在翻译… 点击 × 取消", anchor, monitor, std::move(dismissed));
+    // Recognition always runs first, so the first line describes it; the controller swaps the line when
+    // the work moves on to the service request.
+    Notice(L"文字识别中 · 点击 × 取消", anchor, monitor, std::move(dismissed));
     try {
         WNDCLASSW wc{};
         wc.hInstance = GetModuleHandleW(nullptr);
@@ -548,9 +676,9 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 break;
             case WM_LBUTTONDOWN: {
                 POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-                const auto& active = data->reading && data->mode == 2 ? *data->reading : data->block;
+                const auto& active = data->owner->Active(*data);
                 data->pressed =
-                    (!data->block.image || data->mode == 2) && PtInRect(&active.closeButton, point) != FALSE;
+                    (!active.image || data->mode == 2) && PtInRect(&active.closeButton, point) != FALSE;
                 if (!data->drag && data->owner->DragBorder(*data, point)) {
                     ClientToScreen(h, &point);
                     data->drag =
@@ -578,7 +706,7 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 if (data->drag) {
                     ClientToScreen(h, &point);
                     data->owner->MoveDrag(*data, point);
-                    auto region = data->block.screen;
+                    auto region = data->owner->Active(*data).screen;
                     bool changed = !EqualRect(&region, &data->drag->region);
                     data->drag.reset();
                     data->pressed = false;
@@ -591,7 +719,7 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                         data->owner->RestoreContents(*data);
                     return 0;
                 }
-                const auto& active = data->reading && data->mode == 2 ? *data->reading : data->block;
+                const auto& active = data->owner->Active(*data);
                 bool close = data->pressed && PtInRect(&active.closeButton, point);
                 data->pressed = false;
                 if (GetCapture() == h)
@@ -619,11 +747,11 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             case WM_MOUSEWHEEL: {
                 if (data->drag)
                     return 0;
-                if (data->block.image && data->mode != 2) {
+                if (data->owner->Active(*data).image && data->mode != 2) {
                     if (data->mode == 0) {
                         POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                         ScreenToClient(h, &point);
-                        for (auto it = data->block.positioned.rbegin(); it != data->block.positioned.rend();
+                        for (auto it = data->owner->Active(*data).positioned.rbegin(); it != data->owner->Active(*data).positioned.rend();
                              ++it)
                             if (PtInRect(&it->rect, point)) {
                                 if (it->suppressed)
@@ -640,10 +768,10 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     }
                     return 0;
                 }
-                const auto& active = data->reading && data->mode == 2 ? *data->reading : data->block;
+                const auto& active = data->owner->Active(*data);
                 auto maximum = std::max(0.f, active.contentHeight - Height(active.viewport));
                 data->scroll = std::clamp(data->scroll - GET_WHEEL_DELTA_WPARAM(w) / float(WHEEL_DELTA) *
-                                                             data->block.fontSize * 3,
+                                                             data->owner->Active(*data).fontSize * 3,
                                           0.f, maximum);
                 data->owner->Render(*data);
                 return 0;

@@ -119,7 +119,7 @@ void TextTranslationPage::Refresh() {
     bool active = busy_ || loading_;
     for (auto name : {L"SendText", L"TextInput", L"TextTarget", L"ClearConversation"})
         ui_->Get<Control>(name).IsEnabled(!active);
-    for (auto name : {L"AddImage", L"PasteImage"})
+    for (auto name : {L"AddImage"})
         ui_->Get<Control>(name).IsEnabled(!active && images_.size() < 4 &&
                                           !IsTextService(settings_.provider));
     ui_->Get<Button>(L"StopText")
@@ -603,8 +603,7 @@ void TextTranslationPage::Attach(xaml::FrameworkElement root, HWND owner, const 
             Error(L"无法打开图片选择器。");
         }
     });
-    ui_->Get<MenuFlyoutItem>(L"PasteImage").Click([this](auto const&, auto const&) { PasteImages(); });
-    ui_->Get<MenuFlyoutItem>(L"ClearConversation").Click([this](auto const&, auto const&) {
+    ui_->Get<Button>(L"ClearConversation").Click([this](auto const&, auto const&) {
         Cancel();
         turns_.clear();
         retry_.reset();

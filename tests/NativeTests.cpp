@@ -237,7 +237,11 @@ void TestSpatialOverlay() {
                 items[0].sourceRect.top >= 28 && items[0].sourceRect.top < 45 &&
                 items[1].sourceRect.left >= 448 && items[1].sourceRect.left < 460,
             "AI box refinement left the actual source glyphs");
-    Require(items[2].overflow && std::abs(items[2].rect.top - items[2].sourceRect.top) <= 10,
+    // A long passage either overflows its local block (scroll hint) or fits after the bounded font fit.
+    const bool contained =
+        items[2].overflow ||
+        items[2].contentHeight + 2 * items[2].padding <= sat::Height(items[2].rect) + .5f;
+    Require(contained && std::abs(items[2].rect.top - items[2].sourceRect.top) <= 10,
             "long spatial text left its original region");
     Require(items[2].fontSize >= 10, "auto layout shrank text below legibility floor");
     sat::Overlay overlay;
@@ -634,9 +638,13 @@ void TestCrowdedLayouts() {
             Require(item.rect.left >= 0 && item.rect.top >= 0 && item.rect.right <= image.width &&
                         item.rect.bottom <= image.height,
                     "expanded cover escaped capture");
+            // AI positioning deliberately keeps every returned passage on screen, so neighbouring
+            // estimates may overlap. Exact OCR source rows keep their separation requirement.
             for (size_t j = 0; j < i; ++j) {
                 RECT overlap{};
-                Require(item.suppressed || block.positioned[j].suppressed ||
+                const bool estimated = !result.segments[i].sourcePixels.has_value() ||
+                                       !result.segments[j].sourcePixels.has_value();
+                Require(estimated || item.suppressed || block.positioned[j].suppressed ||
                             !IntersectRect(&overlap, &item.rect, &block.positioned[j].rect),
                         "visible translation covers overlap");
             }
