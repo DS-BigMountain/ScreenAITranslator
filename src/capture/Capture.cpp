@@ -91,10 +91,10 @@ struct MappedTexture {
         context->Unmap(texture, 0);
     }
 };
-Image CopyStaticDesktop(const Monitor& monitor, std::stop_token stop) {
+std::optional<Image> CopyRectFromScreen(RECT screenRect, std::stop_token stop) {
     CheckStop(stop);
-    Image result{Width(monitor.rect), Height(monitor.rect),
-                 std::vector<unsigned char>(ImageBytes(Width(monitor.rect), Height(monitor.rect))),
+    const int width = Width(screenRect), height = Height(screenRect);
+    Image result{width, height, std::vector<unsigned char>(ImageBytes(width, height)),
                  CaptureBackend::GdiFallback};
     HDC screen = GetDC(nullptr);
     if (!screen)
@@ -118,8 +118,8 @@ Image CopyStaticDesktop(const Monitor& monitor, std::stop_token stop) {
         throw AppError("capture", "无法分配截图内存");
     }
     auto previous = SelectObject(memory, bitmap);
-    const BOOL copied = BitBlt(memory, 0, 0, result.width, result.height, screen, monitor.rect.left,
-                               monitor.rect.top, SRCCOPY | CAPTUREBLT);
+    const BOOL copied = BitBlt(memory, 0, 0, result.width, result.height, screen, screenRect.left,
+                               screenRect.top, SRCCOPY | CAPTUREBLT);
     GdiFlush();
     if (copied)
         std::memcpy(result.bgra.data(), pixels, result.bgra.size());
@@ -128,13 +128,19 @@ Image CopyStaticDesktop(const Monitor& monitor, std::stop_token stop) {
     DeleteDC(memory);
     ReleaseDC(nullptr, screen);
     if (!copied)
-        throw AppError("capture", "无法读取当前桌面画面");
+        return std::nullopt;
     for (size_t p = 3; p < result.bgra.size(); p += 4)
         result.bgra[p] = 255;
-    if (!HasDesktopPixels(result))
-        throw AppError("capture", "截图为空白，请重试或切换为窗口模式");
     CheckStop(stop);
     return result;
+}
+Image CopyStaticDesktop(const Monitor& monitor, std::stop_token stop) {
+    auto result = CopyRectFromScreen(monitor.rect, stop);
+    if (!result)
+        throw AppError("capture", "无法读取当前桌面画面");
+    if (!HasDesktopPixels(*result))
+        throw AppError("capture", "截图为空白，请重试或切换为窗口模式");
+    return std::move(*result);
 }
 } // namespace
 
@@ -317,6 +323,34 @@ Image CaptureMonitor(const Monitor& monitor, std::stop_token stop) {
     if (!HasDesktopPixels(result))
         return CopyStaticDesktop(monitor, stop);
     return result;
+}
+
+Image CaptureRegionQuick(const Monitor& monitor, RECT screenRect, std::stop_token stop) {
+    if (!Valid(screenRect) || screenRect.left < monitor.rect.left || screenRect.top < monitor.rect.top ||
+        screenRect.right > monitor.rect.right || screenRect.bottom > monitor.rect.bottom)
+        throw AppError("image", "截图选区越界");
+    if (auto quick = CopyRectFromScreen(screenRect, stop); quick && HasDesktopPixels(*quick))
+        return std::move(*quick);
+    RECT local = screenRect;
+    OffsetRect(&local, -monitor.rect.left, -monitor.rect.top);
+    return Crop(CaptureMonitor(monitor, stop), local);
+}
+
+bool FramesMatch(const Image& a, const Image& b) {
+    if (a.width != b.width || a.height != b.height || a.width <= 0 || a.height <= 0 ||
+        a.bgra.size() != b.bgra.size())
+        return false;
+    const size_t pixels = static_cast<size_t>(a.width) * a.height;
+    const size_t tolerance = std::min<size_t>(200, std::max<size_t>(16, pixels / 500));
+    size_t changed = 0;
+    for (size_t i = 0; i + 3 < a.bgra.size(); i += 4) {
+        const int diff = std::abs(int(a.bgra[i]) - int(b.bgra[i])) +
+                         std::abs(int(a.bgra[i + 1]) - int(b.bgra[i + 1])) +
+                         std::abs(int(a.bgra[i + 2]) - int(b.bgra[i + 2]));
+        if (diff > 24 && ++changed > tolerance)
+            return false;
+    }
+    return true;
 }
 
 Image Crop(const Image& image, RECT localRect) {

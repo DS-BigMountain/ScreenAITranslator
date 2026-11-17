@@ -7,6 +7,9 @@ std::optional<RECT> RestoreRegion(const FixedRegion& region, const std::vector<M
 FixedRegion NormalizeRegion(const Monitor& monitor, RECT screenRect);
 // All capture resources are created on demand and released with this call.
 Image CaptureMonitor(const Monitor& monitor, std::stop_token stop);
+// Fast region capture for continuous frame-stability polling; falls back to CaptureMonitor if BitBlt fails.
+Image CaptureRegionQuick(const Monitor& monitor, RECT screenRect, std::stop_token stop);
+bool FramesMatch(const Image& a, const Image& b);
 Image Crop(const Image& image, RECT localRect);
 std::vector<unsigned char> EncodeJpeg(const Image& image, int quality, std::stop_token stop);
 // Lossless companion for the request trace: the recorded capture reproduces source pixels exactly.

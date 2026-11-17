@@ -5,7 +5,7 @@ namespace winrt::Microsoft::UI::Xaml {
 struct FrameworkElement;
 }
 namespace sat {
-enum class SettingsAction { ClearContext, Translate, FixedTranslate };
+enum class SettingsAction { ClearContext, Translate, ContinuousTranslate, FixedTranslate };
 struct SettingsCallbacks {
     std::function<std::wstring(const Settings&, const std::string&)> apply;
     std::function<void(SettingsAction)> action;

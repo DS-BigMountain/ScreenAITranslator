@@ -245,7 +245,7 @@ void ValidateSettings(const Settings& s) {
             "Invalid appearance settings");
     Require(s.outlineColorMode >= 0 && s.outlineColorMode <= 1 && s.outlineStyle >= 0 && s.outlineStyle <= 2,
             "Invalid outline colour mode or style");
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         const auto& h = s.hotkeys[i];
         Require(h.key <= 255 && !(h.modifiers & ~(MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN)) &&
                     (h.key || !h.modifiers),
@@ -333,7 +333,7 @@ Settings Store::LoadSettings() {
         if (j.contains("hotkeys")) {
             const auto& keys = j.at("hotkeys");
             Require(keys.is_array() && (keys.size() == 3 || keys.size() == 4), "Invalid saved hotkeys");
-            for (int i = 0; i < 3; ++i) {
+            for (size_t i = 0; i < keys.size(); ++i) {
                 for (auto field : {"modifiers", "key"})
                     Require(keys.at(i).at(field).is_number_integer() &&
                                 keys.at(i).at(field).get<long long>() >= 0 &&

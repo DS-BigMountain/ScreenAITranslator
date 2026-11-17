@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('Release', 'Debug')][string]$Configuration = 'Release',
     [ValidateSet('Visual Studio 18 2026', 'Visual Studio 17 2022')][string]$Generator = 'Visual Studio 18 2026',
@@ -64,6 +64,19 @@ if (Test-Path -LiteralPath $stageRoot) {
 }
 New-Item -ItemType Directory -Force -Path $stageRoot, $distributionRoot, (Join-Path $stageRoot 'licenses') | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'ocr-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force
+# 清理已被服务端/增强权重遮蔽的回退权重，避免交付包携带运行期不会加载的冗余模型。
+foreach ($pair in @(
+    @('det-server.onnx', 'det.onnx'),
+    @('rec-ja-server.onnx', 'rec-ja.onnx'),
+    @('rec-en-server.onnx', 'rec-en.onnx'),
+    @('rec-ko-server.onnx', 'rec-ko.onnx')
+)) {
+    $preferred = Join-Path $stageRoot "models/$($pair[0])"
+    $shadowed = Join-Path $stageRoot "models/$($pair[1])"
+    if ((Test-Path -LiteralPath $preferred) -and (Test-Path -LiteralPath $shadowed)) {
+        Remove-Item -LiteralPath $shadowed -Force
+    }
+}
 Copy-Item -LiteralPath $appBinary -Destination (Join-Path $stageRoot $appExeName)
 Copy-Item -LiteralPath $builtIcon -Destination (Join-Path $stageRoot $iconName)
 Get-ChildItem -LiteralPath (Join-Path $buildRoot 'winui-runtime') | Copy-Item -Destination $stageRoot -Recurse -Force

@@ -90,7 +90,7 @@ void Selection::Paint() {
             IntersectClipRect(mem, r.left, r.top, r.right, r.bottom);
             draw(mem);
             RestoreDC(mem, -1);
-            HPEN pen = CreatePen(PS_SOLID, std::max(1, int(monitor_.dpi / 48)), RGB(72, 180, 255));
+            HPEN pen = CreatePen(PS_SOLID, std::max(1, int(monitor_.dpi / 48)), RGB(76, 141, 246));
             auto op = SelectObject(mem, pen);
             auto ob = SelectObject(mem, GetStockObject(NULL_BRUSH));
             Rectangle(mem, r.left, r.top, r.right, r.bottom);

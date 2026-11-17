@@ -4,11 +4,9 @@
 !/.clang-format
 !/CMakeLists.txt
 !/README.md
-!/CHANGELOG.md
 !/src/
 !/resources/
 !/third_party/
-!/tests/
 !/scripts/
 !/installer/
 !/cmake/
@@ -18,21 +16,16 @@
 !/scripts/Get-InnoSetup.ps1
 !/scripts/Get-WinUI.ps1
 !/scripts/Get-Ocr.ps1
-!/scripts/Test-Installer.ps1
 
 /installer/*
 !/installer/setup.iss
 !/installer/languages/
 
-# Keep source and test fixtures, not local notes or generated files.
+# Keep source and build files; exclude local notes, tests, and generated artifacts.
 *.md
 !/README.md
-!/CHANGELOG.md
-# Local design notes stay out of the source archive.
 /docs/
 *.log
-!/AGENTS.md
-!/tests/fixtures/upstream/SOURCES.md
 *.user
 *.pdb
 *.obj

@@ -111,7 +111,7 @@ struct SettingsWindow::Impl {
     xaml::Input::FocusManager::GotFocus_revoker focusGained;
     xaml::Input::FocusManager::LostFocus_revoker focusLost;
     xaml::FrameworkElement::ActualThemeChanged_revoker themeChanged;
-    Hotkey hotkeys[3]{};
+    Hotkey hotkeys[4]{};
     bool updating{};
     bool focusPending{};
     bool hotkeyFocusPending{};
@@ -132,7 +132,7 @@ struct SettingsWindow::Impl {
         for (; element; element = xaml::Media::VisualTreeHelper::GetParent(element)) {
             if (auto control = element.try_as<TextBox>()) {
                 auto name = control.Name();
-                if (name == L"Hotkey0" || name == L"Hotkey1" || name == L"Hotkey2")
+                if (name == L"Hotkey0" || name == L"Hotkey1" || name == L"Hotkey2" || name == L"Hotkey3")
                     return true;
             }
         }
@@ -492,7 +492,7 @@ void SettingsWindow::Build(const std::string& key) {
     text(L"OutlineColor", Color(settings_.outlineColor));
     number(L"OutlineWidth", settings_.outlineWidth);
     number(L"Opacity", settings_.backgroundOpacity);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         ui_->hotkeys[i] = settings_.hotkeys[i];
         auto name = L"Hotkey" + std::to_wstring(i);
         auto control = ui_->Get<TextBox>(name.c_str());
@@ -587,6 +587,7 @@ void SettingsWindow::Build(const std::string& key) {
     });
     for (auto [name, action] : std::initializer_list<std::pair<const wchar_t*, SettingsAction>>{
              {L"Translate", SettingsAction::Translate},
+             {L"ContinuousTranslate", SettingsAction::ContinuousTranslate},
              {L"TranslateFixed", SettingsAction::FixedTranslate},
              {L"ClearContext", SettingsAction::ClearContext}}) {
         button(name, [this, action] {

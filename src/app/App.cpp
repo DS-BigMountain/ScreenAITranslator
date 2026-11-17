@@ -23,10 +23,17 @@
 #include <algorithm>
 namespace sat {
 namespace {
-constexpr UINT UiMessage = WM_APP + 1, TrayMessage = WM_APP + 2;
-constexpr UINT_PTR HideTimer = 1, ContextTimer = 2, IdleTimer = 3;
+constexpr UINT UiMessage = WM_APP + 1, TrayMessage = WM_APP + 2, ContinuousClickMessage = WM_APP + 3,
+               ContinuousEscapeMessage = WM_APP + 4;
+constexpr UINT_PTR HideTimer = 1, ContextTimer = 2, IdleTimer = 3, PollTimer = 4;
 enum class Stage { Idle, Capture, Selecting, Preprocessing, Requesting, Layout, Displaying };
 enum TrayCommand { OpenSettings = 100, ExitApp = 105, OpenLogs = 106 };
+bool IsPointInWindow(HWND hwnd, POINT pt) {
+    if (!hwnd || !IsWindowVisible(hwnd))
+        return false;
+    RECT r{};
+    return GetWindowRect(hwnd, &r) && PtInRect(&r, pt) != FALSE;
+}
 std::wstring Executable() {
     std::wstring p(32768, 0);
     auto n = GetModuleFileNameW(nullptr, p.data(), static_cast<DWORD>(p.size()));
@@ -36,7 +43,7 @@ std::wstring Executable() {
 class Hotkeys {
     HWND window_{};
     std::vector<int> registered_;
-    Hotkey values_[3]{};
+    Hotkey values_[4]{};
     bool suspended_{};
     void Release() {
         for (int id : registered_)
@@ -70,18 +77,18 @@ public:
             return {};
         }
         // Re-register as one transaction so changing an existing action can reuse its key.
-        Hotkey previous[3];
+        Hotkey previous[4];
         std::copy(std::begin(values_), std::end(values_), previous);
         Release();
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 4; ++i) {
             auto k = s.hotkeys[i];
             if (k.key && !RegisterHotKey(window_, i + 1, k.modifiers | MOD_NOREPEAT, k.key)) {
                 Release();
-                for (int j = 0; j < 3; ++j)
+                for (int j = 0; j < 4; ++j)
                     if (previous[j].key &&
                         RegisterHotKey(window_, j + 1, previous[j].modifiers | MOD_NOREPEAT, previous[j].key))
                         registered_.push_back(j + 1);
-                const wchar_t* names[]{L"普通截图翻译", L"翻译上次区域", L"打开设置"};
+                const wchar_t* names[]{L"普通截图翻译", L"翻译上次区域", L"打开设置", L"连续翻译"};
                 return std::wstring(names[i]) + L"快捷键已被占用，设置未保存。";
             }
             if (k.key)
@@ -100,6 +107,7 @@ class App {
     Settings settings_;
     PersistentState state_;
     std::optional<FixedRegion> sessionRegion_;
+    bool sessionContinuous_{};
     std::string key_;
     std::wstring recovery_;
     std::function<std::unique_ptr<ITranslationProvider>(const std::string&)> providerFactory_;
@@ -109,11 +117,22 @@ class App {
     Overlay overlay_, progress_;
     TranslationContext context_;
     Worker worker_;
+    Worker monitorWorker_;
     std::mutex queueMutex_;
     std::deque<std::function<void()>> queue_;
     bool shuttingDown_{};
     unsigned long long generation_{};
     Stage stage_{Stage::Idle};
+    enum class ContinuousState { Inactive, Selecting, Translating, Displaying, Waiting };
+    ContinuousState continuous_{ContinuousState::Inactive};
+    unsigned long long continuousEpoch_{};
+    inline static App* activeHookApp_{};
+    HHOOK mouseHook_{}, keyHook_{};
+    bool ignoreNextButtonUp_{};
+    bool monitorInFlight_{};
+    std::optional<Image> baselineFrame_;
+    std::optional<Image> lastSample_;
+    int stableCount_{};
     Monitor currentMonitor_;
     RECT anchor_{};
     bool trayAdded_{};
@@ -131,7 +150,8 @@ class App {
         nlohmann::json value = {{"version", 1},
                                 {"context", nlohmann::json::array()},
                                 {"expires", context_.ExpiresAt()},
-                                {"recovery", Utf8(recovery_)}};
+                                {"recovery", Utf8(recovery_)},
+                                {"continuous", sessionContinuous_}};
         for (const auto& item : context_.Get(settings_.contextEnabled, settings_.contextSize))
             value["context"].push_back({item.original, item.translated});
         if (sessionRegion_) {
@@ -151,6 +171,7 @@ class App {
         if (value.at("version") != 1)
             throw AppError("idle", "Unsupported resume state");
         recovery_ = Wide(value.at("recovery").get<std::string>());
+        sessionContinuous_ = value.value("continuous", false);
         if (value.contains("region")) {
             const auto& r = value.at("region");
             sessionRegion_ = FixedRegion{Wide(r.at(0).get<std::string>()),
@@ -174,7 +195,8 @@ class App {
         // Hidden settings still hold unsaved drafts. Only explicitly closed windows
         // may be discarded; active requests, overlays and queued UI work also block handoff.
         if (!idleRestart_ || !usedResources_ || shuttingDown_ || stage_ != Stage::Idle || apiActive_ ||
-            settingsWindow_.Window() || selection_.Window() || overlay_.Count() || progress_.Count())
+            continuous_ != ContinuousState::Inactive || settingsWindow_.Window() || selection_.Window() ||
+            overlay_.Count() || progress_.Count())
             return;
         if (!worker_.Idle() || !settingsWindow_.BackgroundIdle()) {
             SetTimer(window_, IdleTimer, 1000, nullptr);
@@ -267,12 +289,121 @@ class App {
             settingsWindow_.Status(Wide(Sanitize(e.what(), key_)));
         }
     }
+    static LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+        if (nCode == HC_ACTION && activeHookApp_) {
+            const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+            const bool down = wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN ||
+                              wParam == WM_MBUTTONDOWN || wParam == WM_XBUTTONDOWN;
+            const bool up = wParam == WM_LBUTTONUP || wParam == WM_RBUTTONUP ||
+                            wParam == WM_MBUTTONUP || wParam == WM_XBUTTONUP;
+            if (down || up)
+                activeHookApp_->HandleHookMouse(down, info->pt);
+        }
+        return CallNextHookEx(nullptr, nCode, wParam, lParam);
+    }
+    static LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+        if (nCode == HC_ACTION && activeHookApp_ && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
+            const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+            if (info->vkCode == VK_ESCAPE &&
+                (GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0 &&
+                (GetAsyncKeyState(VK_MENU) & 0x8000) == 0 &&
+                (GetAsyncKeyState(VK_LWIN) & 0x8000) == 0 &&
+                (GetAsyncKeyState(VK_RWIN) & 0x8000) == 0 &&
+                activeHookApp_->HandleHookEscape())
+                return 1;
+        }
+        return CallNextHookEx(nullptr, nCode, wParam, lParam);
+    }
+    void HandleHookMouse(bool down, POINT pt) {
+        if (continuous_ == ContinuousState::Inactive || continuous_ == ContinuousState::Selecting)
+            return;
+        const bool onControl = overlay_.IsControlPoint(pt) || progress_.IsControlPoint(pt) ||
+                               IsPointInWindow(settingsWindow_.Window(), pt);
+        if (down) {
+            ignoreNextButtonUp_ = onControl;
+            if (!onControl)
+                PostMessageW(window_, ContinuousClickMessage, 1, 0);
+        } else {
+            const bool ignored = ignoreNextButtonUp_;
+            ignoreNextButtonUp_ = false;
+            if (!ignored && !onControl)
+                PostMessageW(window_, ContinuousClickMessage, 0, 0);
+        }
+    }
+    bool HandleHookEscape() {
+        if (continuous_ == ContinuousState::Inactive)
+            return false;
+        PostMessageW(window_, ContinuousEscapeMessage, 0, 0);
+        return true;
+    }
+    void InstallContinuousHooks() {
+        activeHookApp_ = this;
+        if (!mouseHook_)
+            mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
+        if (!keyHook_)
+            keyHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, GetModuleHandleW(nullptr), 0);
+    }
+    void RemoveContinuousHooks() {
+        if (mouseHook_) {
+            UnhookWindowsHookEx(mouseHook_);
+            mouseHook_ = nullptr;
+        }
+        if (keyHook_) {
+            UnhookWindowsHookEx(keyHook_);
+            keyHook_ = nullptr;
+        }
+        if (activeHookApp_ == this)
+            activeHookApp_ = nullptr;
+        ignoreNextButtonUp_ = false;
+    }
+    void ShowContinuousBadge(const std::wstring& status) {
+        if (!Valid(anchor_) || currentMonitor_.id.empty())
+            return;
+        overlay_.ShowContinuousBadge(anchor_, currentMonitor_, status, [this] {
+            Post([this] { ExitContinuous(); });
+        });
+    }
+    void ResetContinuousStability() {
+        ++continuousEpoch_;
+        monitorWorker_.Cancel();
+        monitorInFlight_ = false;
+        baselineFrame_.reset();
+        lastSample_.reset();
+        stableCount_ = 0;
+        SetTimer(window_, PollTimer, 100, nullptr);
+    }
+    void EnterContinuousWaiting(const wchar_t* badgeText = L"连续翻译中 · 等待翻页") {
+        continuous_ = ContinuousState::Waiting;
+        SetStage(Stage::Idle);
+        ShowContinuousBadge(badgeText);
+        ResetContinuousStability();
+    }
+    void ExitContinuous() {
+        KillTimer(window_, PollTimer);
+        ++continuousEpoch_;
+        monitorWorker_.Cancel();
+        continuous_ = ContinuousState::Inactive;
+        monitorInFlight_ = false;
+        baselineFrame_.reset();
+        lastSample_.reset();
+        stableCount_ = 0;
+        RemoveContinuousHooks();
+        overlay_.CloseContinuousBadge();
+        Cancel();
+    }
     void Error(const AppError& e) {
         DiagnosticContext context(generation_);
         DiagnosticSpan failure("ui_error");
         failure.Fail(e);
         std::wstring message = Wide(Sanitize(e.what(), key_));
         settingsWindow_.Status(message);
+        if (continuous_ != ContinuousState::Inactive) {
+            progress_.Close();
+            SetStage(Stage::Idle);
+            continuous_ = ContinuousState::Displaying;
+            ShowContinuousBadge(L"连续翻译异常 · " + message);
+            return;
+        }
         Notice(message);
     }
     void Notice(const std::wstring& text) {
@@ -299,12 +430,19 @@ class App {
         if (!progress_.Count()) {
             RECT local = anchor_;
             OffsetRect(&local, -currentMonitor_.rect.left, -currentMonitor_.rect.top);
-            progress_.Progress(anchor_, currentMonitor_, Crop(screenshot, local), [this, id] {
-                Post([this, id] {
-                    if (id == generation_)
-                        Cancel();
-                });
-            });
+            progress_.Progress(
+                anchor_, currentMonitor_, Crop(screenshot, local),
+                [this, id] {
+                    Post([this, id] {
+                        if (id == generation_) {
+                            if (continuous_ != ContinuousState::Inactive)
+                                ExitContinuous();
+                            else
+                                Cancel();
+                        }
+                    });
+                },
+                continuous_ != ContinuousState::Inactive);
         }
         SetStage(Stage::Preprocessing);
     }
@@ -328,19 +466,175 @@ class App {
         selection_.Close();
         CloseOverlay();
     }
-    bool CommitSelection(const Monitor& monitor, std::optional<RECT> chosen, bool reselect) {
+    bool CommitSelection(const Monitor& monitor, std::optional<RECT> chosen, bool reselect, bool continuous) {
         if (!chosen)
             return false;
         auto region = NormalizeRegion(monitor, *chosen);
         anchor_ = *chosen;
         sessionRegion_ = std::move(region);
+        sessionContinuous_ = continuous;
         if (reselect)
             ContextChanged();
         return true;
     }
-    void Begin(bool fixed, bool reselect = false) {
+    void RunTranslationTask(unsigned long long id, const Monitor& monitor, RECT region,
+                            std::shared_ptr<Image> existing = nullptr) {
+        auto options = settings_;
+        auto history = context_.Get(options.contextEnabled, options.contextSize);
+        auto secret = std::make_shared<Secret>(key_);
+        const bool recordBaseline = continuous_ != ContinuousState::Inactive && !baselineFrame_;
+        const auto epoch = continuousEpoch_;
+        worker_.Submit([this, id, epoch, monitor, region, options, history, secret, recordBaseline,
+                        existing = std::move(existing)](std::stop_token stop) mutable {
+            DiagnosticContext diagnosticContext(id);
+            try {
+                ComScope com;
+                if (!existing) {
+                    DiagnosticSpan capture("capture");
+                    try {
+                        CheckStop(stop);
+                        DwmFlush();
+                        existing = std::make_shared<Image>(CaptureMonitor(monitor, stop));
+                        CheckStop(stop);
+                        capture.End("ok", {{"width", existing->width}, {"height", existing->height}});
+                    } catch (const Cancelled&) {
+                        capture.End("cancelled");
+                        throw;
+                    } catch (const AppError& e) {
+                        capture.Fail(e);
+                        throw;
+                    } catch (...) {
+                        capture.End("error");
+                        throw AppError("capture", "屏幕截图失败");
+                    }
+                } else if (recordBaseline) {
+                    DwmFlush();
+                }
+                if (recordBaseline) {
+                    try {
+                        auto baseline = CaptureRegionQuick(monitor, region, stop);
+                        Post([this, id, epoch, baseline = std::move(baseline)]() mutable {
+                            if (id == generation_ && epoch == continuousEpoch_ &&
+                                continuous_ == ContinuousState::Translating && !baselineFrame_)
+                                baselineFrame_ = std::move(baseline);
+                        });
+                    } catch (const Cancelled&) {
+                        throw;
+                    } catch (...) {
+                    }
+                }
+                Translate(id, monitor, std::move(existing), region, options, history, secret->value, stop);
+            } catch (const Cancelled&) {
+            } catch (const AppError& e) {
+                Post([this, id, e] {
+                    if (id == generation_)
+                        Error(e);
+                });
+            } catch (...) {
+                Post([this, id] {
+                    if (id == generation_)
+                        Error(AppError("translation", "翻译处理失败"));
+                });
+            }
+        });
+    }
+    void OnContinuousClick(bool down) {
+        if (continuous_ == ContinuousState::Inactive || continuous_ == ContinuousState::Selecting)
+            return;
+        if (down) {
+            if (continuous_ == ContinuousState::Displaying || continuous_ == ContinuousState::Translating) {
+                ++generation_;
+                worker_.Cancel();
+                CloseOverlay();
+                EnterContinuousWaiting();
+            } else if (continuous_ == ContinuousState::Waiting) {
+                ResetContinuousStability();
+            }
+        } else if (continuous_ == ContinuousState::Waiting) {
+            ResetContinuousStability();
+        }
+    }
+    void HandleMonitorSample(Image sample) {
+        if (continuous_ == ContinuousState::Translating || continuous_ == ContinuousState::Displaying) {
+            if (!baselineFrame_)
+                return;
+            if (FramesMatch(*baselineFrame_, sample))
+                return;
+            // Any region pixel change during translation or display exits display/translating and waits
+            // for the new page to settle across 3 consecutive 0.1 s checks.
+            ++generation_;
+            worker_.Cancel();
+            CloseOverlay();
+            baselineFrame_.reset();
+            lastSample_ = std::move(sample);
+            stableCount_ = 0;
+            continuous_ = ContinuousState::Waiting;
+            SetStage(Stage::Idle);
+            ShowContinuousBadge(L"连续翻译中 · 检测到画面变化");
+            return;
+        }
+        if (continuous_ != ContinuousState::Waiting)
+            return;
+        if (!lastSample_) {
+            lastSample_ = std::move(sample);
+            stableCount_ = 0;
+            return;
+        }
+        if (FramesMatch(*lastSample_, sample)) {
+            ++stableCount_;
+            lastSample_ = std::move(sample);
+            if (stableCount_ >= 3) {
+                baselineFrame_ = std::move(lastSample_);
+                lastSample_.reset();
+                stableCount_ = 0;
+                continuous_ = ContinuousState::Translating;
+                overlay_.CloseContinuousBadge();
+                SetStage(Stage::Capture);
+                RunTranslationTask(++generation_, currentMonitor_, anchor_);
+            }
+        } else {
+            stableCount_ = 0;
+            lastSample_ = std::move(sample);
+        }
+    }
+    void OnPollTimer() {
+        if (continuous_ == ContinuousState::Inactive || continuous_ == ContinuousState::Selecting ||
+            monitorInFlight_ || !Valid(anchor_))
+            return;
+        if (continuous_ == ContinuousState::Translating && !baselineFrame_)
+            return;
+        if (continuous_ == ContinuousState::Displaying && (!baselineFrame_ || !overlay_.CaptureExcluded()))
+            return;
+        monitorInFlight_ = true;
+        const auto epoch = continuousEpoch_;
+        const auto monitor = currentMonitor_;
+        const auto region = anchor_;
+        monitorWorker_.Submit([this, epoch, monitor, region](std::stop_token stop) {
+            try {
+                ComScope com;
+                auto sample = CaptureRegionQuick(monitor, region, stop);
+                CheckStop(stop);
+                Post([this, epoch, sample = std::move(sample)]() mutable {
+                    if (epoch != continuousEpoch_ || continuous_ == ContinuousState::Inactive ||
+                        continuous_ == ContinuousState::Selecting)
+                        return;
+                    monitorInFlight_ = false;
+                    HandleMonitorSample(std::move(sample));
+                });
+            } catch (const Cancelled&) {
+            } catch (...) {
+                Post([this, epoch] {
+                    if (epoch == continuousEpoch_)
+                        monitorInFlight_ = false;
+                });
+            }
+        });
+    }
+    void Begin(bool fixed, bool reselect = false, std::optional<bool> continuousOverride = std::nullopt) {
         usedResources_ = true;
-        Cancel();
+        const bool continuous =
+            continuousOverride.value_or(fixed && !reselect && sessionRegion_ ? sessionContinuous_ : false);
+        ExitContinuous();
         auto id = generation_;
         if (key_.empty()) {
             ShowSettings();
@@ -369,10 +663,19 @@ class App {
         if (settingsWindow_.Window())
             ShowWindow(settingsWindow_.Window(), SW_HIDE);
         SetStage(Stage::Capture);
-        auto options = settings_;
-        auto history = context_.Get(options.contextEnabled, options.contextSize);
-        auto secret = std::make_shared<Secret>(key_);
-        worker_.Submit([this, id, monitor, region, options, history, secret, reselect](std::stop_token stop) {
+        if (region) {
+            if (continuous) {
+                sessionContinuous_ = true;
+                continuous_ = ContinuousState::Translating;
+                InstallContinuousHooks();
+                SetTimer(window_, PollTimer, 100, nullptr);
+            }
+            RunTranslationTask(id, monitor, *region);
+            return;
+        }
+        if (continuous)
+            continuous_ = ContinuousState::Selecting;
+        worker_.Submit([this, id, monitor, reselect, continuous](std::stop_token stop) {
             DiagnosticContext diagnosticContext(id);
             DiagnosticSpan capture("capture");
             try {
@@ -382,16 +685,12 @@ class App {
                 auto image = std::make_shared<Image>(CaptureMonitor(monitor, stop));
                 CheckStop(stop);
                 capture.End("ok", {{"width", image->width}, {"height", image->height}});
-                if (region) {
-                    Translate(id, monitor, std::move(image), *region, options, history, secret->value, stop);
-                    return;
-                }
-                Post([this, id, monitor, image, reselect] {
+                Post([this, id, monitor, image, reselect, continuous] {
                     if (id != generation_)
                         return;
                     SetStage(Stage::Selecting);
                     selection_.Show(
-                        monitor, image, [this, id, monitor, image, reselect](std::optional<RECT> chosen) {
+                        monitor, image, [this, id, monitor, image, reselect, continuous](std::optional<RECT> chosen) {
                             if (id != generation_)
                                 return;
                             if (chosen) {
@@ -406,35 +705,22 @@ class App {
                                     return;
                                 }
                             }
-                            Post([this, id, monitor, image, chosen, reselect] {
+                            Post([this, id, monitor, image, chosen, reselect, continuous] {
                                 if (id != generation_)
                                     return;
-                                if (!CommitSelection(monitor, chosen, reselect)) {
-                                    SetStage(Stage::Idle);
+                                if (!CommitSelection(monitor, chosen, reselect, continuous)) {
+                                    if (continuous)
+                                        ExitContinuous();
+                                    else
+                                        SetStage(Stage::Idle);
                                     return;
                                 }
-                                auto options = settings_;
-                                auto history = context_.Get(options.contextEnabled, options.contextSize);
-                                auto secret = std::make_shared<Secret>(key_);
-                                worker_.Submit([this, id, monitor, image, region = *chosen, options, history,
-                                                secret](std::stop_token nextStop) mutable {
-                                    try {
-                                        ComScope com;
-                                        Translate(id, monitor, std::move(image), region, options, history,
-                                                  secret->value, nextStop);
-                                    } catch (const Cancelled&) {
-                                    } catch (const AppError& e) {
-                                        Post([this, id, e] {
-                                            if (id == generation_)
-                                                Error(e);
-                                        });
-                                    } catch (...) {
-                                        Post([this, id] {
-                                            if (id == generation_)
-                                                Error(AppError("translation", "翻译处理失败"));
-                                        });
-                                    }
-                                });
+                                if (continuous) {
+                                    continuous_ = ContinuousState::Translating;
+                                    InstallContinuousHooks();
+                                    SetTimer(window_, PollTimer, 100, nullptr);
+                                }
+                                RunTranslationTask(id, monitor, *chosen, image);
                             });
                         });
                 });
@@ -505,7 +791,15 @@ class App {
                             const Settings& options, const Monitor& monitor) {
         if (id != generation_)
             return;
+        const bool passthrough = continuous_ != ContinuousState::Inactive;
         if (prepared.result.segments.empty()) {
+            if (passthrough) {
+                progress_.Close();
+                SetStage(Stage::Idle);
+                continuous_ = ContinuousState::Displaying;
+                ShowContinuousBadge(L"连续翻译中 · 当前区域未识别到文字");
+                return;
+            }
             Notice(L"未识别到文字");
             return;
         }
@@ -513,61 +807,40 @@ class App {
         const auto& blocks = prepared.blocks;
         const auto ocrMs = prepared.ocrMs, apiMs = prepared.apiMs, total = prepared.totalMs;
         const bool textOnly = prepared.textOnly;
-        std::wstring warning;
-        size_t suppressed = 0;
-        for (const auto& block : blocks)
-            suppressed += std::count_if(block.positioned.begin(), block.positioned.end(),
-                                        [](const auto& item) { return item.suppressed; });
-        if (textOnly && (prepared.unrecognizedLines || prepared.lowConfidenceRegions)) {
-            warning = L"OCR：" + std::to_wstring(prepared.unrecognizedLines) + L" 行未识别，" +
-                      std::to_wstring(prepared.lowConfidenceRegions) +
-                      L" 个区域置信度偏低；可检查原文语言设置。";
-        }
-        if (result.clippedBoxes) {
-            if (!warning.empty())
-                warning += L" ";
-            warning += std::to_wstring(result.clippedBoxes) + L" 个文字框已在本地调整。";
-        }
-        if (result.unpositionedSegments || result.untranslatedSegments || result.ignoredSegments) {
-            if (!warning.empty())
-                warning += L" ";
-            warning += L"翻译结果：" + std::to_wstring(result.unpositionedSegments) + L" 段无法定位，" +
-                       std::to_wstring(result.untranslatedSegments) + L" 段未完成翻译，" +
-                       std::to_wstring(result.ignoredSegments) + L" 个空或无效片段；请查看全文阅读。";
-        }
-        if (suppressed) {
-            if (!warning.empty())
-                warning += L" ";
-            warning += std::to_wstring(suppressed) + L" 段未采用原位覆盖；内容保留在全文阅读。";
-        }
         DiagnosticContext context(id);
         DiagnosticSpan display("display");
         overlay_.Show(
             blocks, options, monitor.dpi,
             [this, id] {
                 Post([this, id] {
-                    if (id == generation_)
-                        CloseOverlay();
+                    if (id == generation_) {
+                        if (continuous_ != ContinuousState::Inactive)
+                            ExitContinuous();
+                        else
+                            CloseOverlay();
+                    }
                 });
             },
             [this, id] {
                 Post([this, id] {
                     if (id == generation_ && stage_ == Stage::Displaying)
-                        Begin(false);
+                        Begin(false, true, continuous_ != ContinuousState::Inactive);
                 });
             },
-            [this, id, monitor](RECT region) {
-                Post([this, id, monitor, region] {
-                    if (id != generation_ || stage_ != Stage::Displaying)
-                        return;
-                    // The fixed path closes the old overlay before capturing fresh screen pixels.
-                    sessionRegion_ = NormalizeRegion(monitor, region);
-                    Begin(true);
-                });
-            });
+            passthrough ? std::function<void(RECT)>{}
+                        : [this, id, monitor](RECT region) {
+                              Post([this, id, monitor, region] {
+                                  if (id != generation_ || stage_ != Stage::Displaying)
+                                      return;
+                                  // The fixed path closes the old overlay before capturing fresh screen pixels.
+                                  sessionRegion_ = NormalizeRegion(monitor, region);
+                                  sessionContinuous_ = false;
+                                  Begin(true);
+                              });
+                          },
+            passthrough);
         progress_.Close();
         SetStage(Stage::Displaying);
-        overlay_.SetWarning(warning);
         // The toolbar carries one one-off vision pass: it reads the same selection straight from the image
         // and lands as another switchable view, leaving the saved translation flow untouched.
         overlay_.SetAiRequest([this] { RequestAiView(); });
@@ -577,12 +850,17 @@ class App {
         });
         if (options.spatialOverlay && noVisiblePlacement)
             overlay_.ShowFullReading();
-        // The result takes over the screen: everything outside the selection dims and keeps its input, and
-        // the toolbar's close button or Esc ends the view.
-        try {
-            overlay_.ShowFocusShade();
-        } catch (const AppError& e) {
-            overlay_.SetWarning(Wide(e.what()));
+        if (passthrough) {
+            overlay_.CloseContinuousBadge();
+            continuous_ = ContinuousState::Displaying;
+        } else {
+            // The result takes over the screen: everything outside the selection dims and keeps its input, and
+            // the toolbar's close button or Esc ends the view.
+            try {
+                overlay_.ShowFocusShade();
+            } catch (const AppError& e) {
+                overlay_.SetWarning(Wide(e.what()));
+            }
         }
         if (options.contextEnabled) {
             context_.Add(result, options.contextSize);
@@ -595,7 +873,7 @@ class App {
                                std::to_wstring(ocrMs) +
                                L" ms · API " + std::to_wstring(apiMs) + L" ms · 请求 " +
                                std::to_wstring(result.requestCount) + L" 次 · 本次处理 " +
-                               std::to_wstring(total) + L" ms" + (warning.empty() ? L"" : L" · " + warning));
+                               std::to_wstring(total) + L" ms");
         display.End();
     }
     // One vision pass over the same selection. The request reads the captured image directly, carries its
@@ -610,21 +888,22 @@ class App {
             overlay_.SetWarning(L"请先框选区域");
             return;
         }
+        auto sourceImage = overlay_.SourceImage();
+        if (!sourceImage || sourceImage->width <= 0 || sourceImage->height <= 0) {
+            overlay_.SetWarning(L"当前视图缺少原图，请重新框选");
+            return;
+        }
         const auto id = generation_;
         const auto region = anchor_;
         const auto monitor = currentMonitor_;
         auto options = settings_;
         auto secret = std::make_shared<Secret>(key_);
-        worker_.Submit([this, id, region, monitor, options, secret](std::stop_token stop) {
+        worker_.Submit([this, id, region, monitor, options, secret,
+                        sourceImage = std::move(sourceImage)](std::stop_token stop) {
             DiagnosticContext context(id);
             try {
                 ComScope com;
-                DwmFlush();
-                auto full = CaptureMonitor(monitor, stop);
-                RECT local = region;
-                OffsetRect(&local, -monitor.rect.left, -monitor.rect.top);
-                auto cropped = Crop(full, local);
-                full = {};
+                Image cropped = *sourceImage;
                 Settings routed = options;
                 routed.translationMode = TranslationAiVision;
                 // A long edge of 1600 px keeps a full-screen selection inside one request, while a dialog
@@ -687,7 +966,7 @@ class App {
             } catch (...) {
                 Post([this, id] {
                     if (id == generation_)
-                        overlay_.SetWarning(L"AI 识别未完成，请重试");
+                        overlay_.SetWarning(L"AI 识图未完成，请重试");
                 });
             }
         });
@@ -712,7 +991,7 @@ class App {
             }
             throw;
         }
-        Cancel();
+        ExitContinuous();
         ContextChanged();
         settings_ = std::move(updated);
         // A saved toggle takes effect immediately: the next translation writes or skips its record.
@@ -802,6 +1081,8 @@ class App {
         });
     }
     void ShowSettings(bool visible = true) {
+        if (visible && continuous_ != ContinuousState::Inactive)
+            ExitContinuous();
         usedResources_ = true;
         KillTimer(window_, IdleTimer);
         SettingsCallbacks cb;
@@ -836,7 +1117,10 @@ class App {
                 ContextChanged();
                 break;
             case SettingsAction::Translate:
-                Begin(false);
+                Begin(false, false, false);
+                break;
+            case SettingsAction::ContinuousTranslate:
+                Begin(false, false, true);
                 break;
             case SettingsAction::FixedTranslate:
                 Begin(true);
@@ -892,18 +1176,27 @@ class App {
         case UiMessage:
             Dispatch();
             return 0;
+        case ContinuousClickMessage:
+            OnContinuousClick(w != 0);
+            return 0;
+        case ContinuousEscapeMessage:
+            ExitContinuous();
+            return 0;
         case WM_HOTKEY:
             if (hotkeys_->Suspended())
                 return 0;
             switch (w) {
             case 1:
-                Begin(false);
+                Begin(false, false, false);
                 break;
             case 2:
                 Begin(true);
                 break;
             case 3:
                 ShowSettings();
+                break;
+            case 4:
+                Begin(false, false, true);
                 break;
             }
             return 0;
@@ -924,9 +1217,11 @@ class App {
                 ContextChanged();
             else if (w == IdleTimer)
                 TryIdle();
+            else if (w == PollTimer)
+                OnPollTimer();
             return 0;
         case WM_DISPLAYCHANGE:
-            Cancel();
+            ExitContinuous();
             currentMonitor_ = {};
             if (sessionRegion_ && !RestoreRegion(*sessionRegion_, EnumerateMonitors())) {
                 sessionRegion_.reset();
@@ -943,7 +1238,7 @@ class App {
             DestroyWindow(h);
             return 0;
         case WM_DESTROY: {
-            Cancel();
+            ExitContinuous();
             {
                 std::lock_guard lock(queueMutex_);
                 shuttingDown_ = true;
@@ -974,6 +1269,8 @@ public:
           providerFactory_(std::move(factory)), background_(background), idleRestart_(std::move(idleRestart)),
           resume_(std::move(resume)) {}
     ~App() {
+        RemoveContinuousHooks();
+        monitorWorker_.Stop();
         worker_.Stop();
         if (!key_.empty())
             SecureZeroMemory(key_.data(), key_.size());

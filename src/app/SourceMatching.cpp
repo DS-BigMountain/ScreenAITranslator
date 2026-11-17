@@ -101,10 +101,11 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
     for (const auto& region : regions) {
         // A vertical passage wraps across strips, so its balloon rectangle is what a model box can
         // describe. Pairing it whole keeps every strip for the layout, which sets one glyph per row.
-        const bool column = !region.lines.empty() &&
-                            std::all_of(region.lines.begin(), region.lines.end(), [](RECT line) {
-                                return Width(line) > 0 && Height(line) * 5 > Width(line) * 6;
-                            });
+        const size_t tallStrips = std::count_if(region.lines.begin(), region.lines.end(), [](RECT line) {
+            return Width(line) > 0 && Height(line) * 5 > Width(line) * 6;
+        });
+        const bool column = !region.lines.empty() && tallStrips >= 1 &&
+                            tallStrips * 2 >= region.lines.size();
         if (!region.lines.empty() && !column) {
             for (const auto& line : region.lines)
                 if (Valid(line))
@@ -187,9 +188,7 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
         const double rowWidth = std::max(8.f, float(Width(lines[anchor].rect)));
         const double bandSize = double(lines[anchor].height) / .86f;
         const bool outgrows = em * bandSize > rowWidth * 1.15;
-        // One continuation row per passage: a wrapped line continues below its anchor, while a
-        // longer paragraph is rare enough on screen that the anchor row already describes it.
-        while (outgrows && owned[s].size() < 2) {
+        while (owned[s].size() < size_t(MaximumPassageRows)) {
             const RECT last = lines[owned[s].back()].rect;
             size_t best = lines.size();
             float bestGap = std::numeric_limits<float>::max();
@@ -198,7 +197,10 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
                     continue;
                 if (HorizontalShare(last, lines[l].rect) < .2f)
                     continue;
-                if (float(Width(lines[l].rect)) > float(Width(last)) * .95f)
+                const bool insideModel = VerticalShare(model, lines[l].rect) >= .35f &&
+                                         HorizontalShare(model, lines[l].rect) >= .30f;
+                if (!insideModel && (!outgrows || owned[s].size() >= 2 ||
+                                     float(Width(lines[l].rect)) > float(Width(last)) * .95f))
                     continue;
                 const float gap = float(lines[l].rect.top - last.bottom);
                 // A continuation row follows the anchor with a real gap. Touching or overlapping bands
@@ -212,7 +214,7 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
             }
             if (best == lines.size())
                 break;
-            if (sourceEm <= rowWidth / bandSize * .9)
+            if (VerticalShare(model, lines[best].rect) < .35f && sourceEm <= rowWidth / bandSize * .9)
                 break;
             lines[best].claimed = true;
             owned[s].push_back(best);
@@ -231,6 +233,7 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
         // rows, so measuring overlap against that union would pull vertically adjacent rows in.
         const RECT band = lines[owned[s][0]].rect;
         const LONG bandHeight = Height(band);
+        const int anchorRegion = lines[owned[s][0]].regionId;
         bool grew = true;
         while (grew && owned[s].size() < size_t(MaximumPassageRows)) {
             grew = false;
@@ -245,11 +248,15 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
                 if (sharedRows < bandHeight * .7f)
                     continue;
                 const LONG gap = std::max(united.left, row.left) - std::min(united.right, row.right);
+                const bool sameRegion = lines[l].regionId == anchorRegion;
+                if (!sameRegion &&
+                    (gap > std::max<LONG>(2, bandHeight / 4) || HorizontalShare(model, row) < .65f))
+                    continue;
                 if (gap > std::max<LONG>(4, Width(row) / 2))
                     continue;
                 RECT merged{};
                 UnionRect(&merged, &united, &row);
-                if (float(Width(merged)) > float(Width(model)) * 1.6f)
+                if (float(Width(merged)) > float(Width(model)) * 1.45f)
                     continue;
                 lines[l].claimed = true;
                 owned[s].push_back(l);

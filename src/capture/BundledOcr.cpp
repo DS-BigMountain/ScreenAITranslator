@@ -286,9 +286,9 @@ std::vector<float> Tensor(const Image& image, RECT crop, int width, int height, 
 // smaller expansion, which is what keeps thin vertical strokes and kana apart on artwork.
 struct DbParams {
     float threshold{.3f};
-    float minAverage{.55f};
+    float minAverage{.48f};
     float unclip{1.6f};
-    size_t minPixels{6};
+    size_t minPixels{4};
 };
 std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams params = {}) {
     auto shape = output.GetTensorTypeAndShapeInfo().GetShape();
@@ -300,6 +300,7 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
     std::vector<unsigned char> seen(size_t(w) * h);
     std::vector<int> pending;
     std::vector<RECT> boxes;
+    std::vector<RECT> rawBoxes;
     for (int p = 0; p < w * h; ++p) {
         if (seen[p] || map[p] < params.threshold)
             continue;
@@ -343,31 +344,149 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
         rect.bottom = std::min<LONG>(image.height, rect.bottom);
         if (Width(rect) < 3 || Height(rect) < 5)
             continue;
+        RECT raw{std::clamp<LONG>(LONG(std::floor(double(l) * image.width / w)), rect.left, rect.right),
+                 std::clamp<LONG>(LONG(std::floor(double(t) * image.height / h)), rect.top, rect.bottom),
+                 std::clamp<LONG>(LONG(std::ceil(double(r + 1) * image.width / w)), rect.left, rect.right),
+                 std::clamp<LONG>(LONG(std::ceil(double(b + 1) * image.height / h)), rect.top, rect.bottom)};
         // A tall box is either a vertical column or a rotated line. Both reach recognition; the
         // recognizer decides which reading the crop supports.
         boxes.push_back(rect);
+        rawBoxes.push_back(raw);
     }
-    // Recognition expansion can touch adjacent baselines. Split the shared margin at
-    // their centre midpoint so a crop cannot import ascenders/descenders from its neighbour.
+    // Recognition expansion can touch adjacent baselines or neighbouring UI pills on the same row.
+    // Split the shared margin at their midpoint so a crop cannot import strokes from its neighbour.
     const auto expanded = boxes;
     for (size_t i = 0; i < boxes.size(); ++i)
         for (size_t j = 0; j < boxes.size(); ++j) {
             if (i == j)
                 continue;
             auto a = expanded[i], b = expanded[j];
-            int overlap = std::min(a.right, b.right) - std::max(a.left, b.left);
-            int ca = (a.top + a.bottom) / 2, cb = (b.top + b.bottom) / 2, delta = cb - ca;
-            if (overlap < std::min(Width(a), Width(b)) * .5f ||
-                std::abs(delta) < std::min(Height(a), Height(b)) * .5f)
-                continue;
-            if (a.bottom > b.top && b.bottom > a.top) {
-                int split = (ca + cb) / 2;
-                if (delta > 0)
-                    boxes[i].bottom = std::min<LONG>(boxes[i].bottom, split);
-                else
-                    boxes[i].top = std::max<LONG>(boxes[i].top, split);
+            int overlapX = std::min(a.right, b.right) - std::max(a.left, b.left);
+            int overlapY = std::min(a.bottom, b.bottom) - std::max(a.top, b.top);
+            int ca = (a.top + a.bottom) / 2, cb = (b.top + b.bottom) / 2, deltaY = cb - ca;
+            if (overlapX >= std::min(Width(a), Width(b)) * .5f &&
+                std::abs(deltaY) >= std::min(Height(a), Height(b)) * .5f) {
+                if (a.bottom > b.top && b.bottom > a.top) {
+                    int split = (ca + cb) / 2;
+                    if (deltaY > 0)
+                        boxes[i].bottom = std::min<LONG>(boxes[i].bottom, split);
+                    else
+                        boxes[i].top = std::max<LONG>(boxes[i].top, split);
+                }
+            }
+            // Same-row horizontal neighbours whose unexpanded kernels were disjoint must not cross after
+            // unclip padding.
+            if (overlapY >= std::min(Height(a), Height(b)) * .45f &&
+                std::abs(deltaY) <= std::min(Height(a), Height(b)) * .55f) {
+                if (rawBoxes[i].right <= rawBoxes[j].left && a.right > b.left - 1) {
+                    const LONG splitX = (rawBoxes[i].right + rawBoxes[j].left) / 2;
+                    if (splitX > boxes[i].left + 3)
+                        boxes[i].right = std::min<LONG>(boxes[i].right, splitX);
+                } else if (rawBoxes[j].right <= rawBoxes[i].left && b.right > a.left - 1) {
+                    const LONG splitX = (rawBoxes[j].right + rawBoxes[i].left + 1) / 2;
+                    if (splitX < boxes[i].right - 3)
+                        boxes[i].left = std::max<LONG>(boxes[i].left, splitX);
+                }
             }
         }
+    // Split wide horizontal boxes that bridge across separate UI buttons, pill borders or column gaps.
+    std::vector<RECT> splitBoxes;
+    splitBoxes.reserve(boxes.size());
+    auto key12 = [](const unsigned char* p) {
+        return (int(p[2] >> 4) << 8) | (int(p[1] >> 4) << 4) | (p[0] >> 4);
+    };
+    for (const RECT& rect : boxes) {
+        const int bw = Width(rect), bh = Height(rect);
+        if (bh < 10 || bh > 72 || bw <= bh * 2 || image.bgra.size() != size_t(image.width) * image.height * 4) {
+            splitBoxes.push_back(rect);
+            continue;
+        }
+        std::array<size_t, 4096> hist{};
+        size_t totalSampled = 0;
+        for (int y = rect.top; y < rect.bottom; ++y)
+            for (int x = rect.left; x < rect.right; ++x) {
+                ++hist[key12(&image.bgra[(size_t(y) * image.width + x) * 4])];
+                ++totalSampled;
+            }
+        if (!totalSampled) {
+            splitBoxes.push_back(rect);
+            continue;
+        }
+        const int mode = int(std::max_element(hist.begin(), hist.end()) - hist.begin());
+        const int br = ((mode >> 8) & 15) * 16 + 8;
+        const int bg = ((mode >> 4) & 15) * 16 + 8;
+        const int bb = (mode & 15) * 16 + 8;
+        const int y0 = std::min<int>(rect.bottom - 1, rect.top + std::max(1, bh / 8));
+        const int y1 = std::max<int>(y0 + 1, rect.bottom - std::max(1, bh / 8));
+        std::vector<int> colInk(size_t(bw), 0);
+        for (int x = 0; x < bw; ++x) {
+            const int sx = rect.left + x;
+            int ink = 0, minDiff = 999, maxDiff = 0;
+            for (int sy = y0; sy < y1; ++sy) {
+                const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
+                const int d = std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb);
+                if (d >= 56)
+                    ++ink;
+                minDiff = std::min(minDiff, d);
+                maxDiff = std::max(maxDiff, d);
+            }
+            // A subtle vertical container border has uniform colour from top to bottom.
+            const bool uniformVerticalLine = (y1 - y0 >= 8) && (maxDiff - minDiff <= 24) && maxDiff < 160;
+            colInk[size_t(x)] = uniformVerticalLine ? 0 : ink;
+        }
+        // Suppress isolated 1-2 px vertical border strokes flanked by empty padding on both sides.
+        for (int x = 3; x + 4 < bw; ++x) {
+            if (colInk[size_t(x)] > 0 && colInk[size_t(x - 1)] == 0 && colInk[size_t(x - 2)] == 0 &&
+                colInk[size_t(x - 3)] == 0) {
+                int run = 1;
+                while (x + run < bw && colInk[size_t(x + run)] > 0 && run <= 3)
+                    ++run;
+                if (run <= 2 && x + run + 2 < bw && colInk[size_t(x + run)] == 0 &&
+                    colInk[size_t(x + run + 1)] == 0 && colInk[size_t(x + run + 2)] == 0) {
+                    for (int k = 0; k < run; ++k)
+                        colInk[size_t(x + k)] = 0;
+                }
+            }
+        }
+        const int minSplitGap = std::max(12, int(std::lround(bh * .62f)));
+        std::vector<std::pair<int, int>> segments;
+        int segStart = -1, gapStart = -1;
+        for (int x = 0; x < bw; ++x) {
+            if (colInk[size_t(x)] > 0) {
+                if (segStart < 0) {
+                    segStart = x;
+                } else if (gapStart >= 0 && x - gapStart >= minSplitGap) {
+                    if (gapStart - segStart >= 4 && segments.size() + 1 < 8) {
+                        segments.push_back({segStart, gapStart});
+                        segStart = x;
+                    }
+                }
+                gapStart = -1;
+            } else if (segStart >= 0 && gapStart < 0) {
+                gapStart = x;
+            }
+        }
+        if (segStart >= 0) {
+            const int segEnd = gapStart >= 0 ? gapStart : bw;
+            if (segEnd - segStart >= 4)
+                segments.push_back({segStart, segEnd});
+        }
+        if (segments.size() <= 1) {
+            splitBoxes.push_back(rect);
+        } else {
+            for (size_t s = 0; s < segments.size(); ++s) {
+                const int padX = std::max(2, bh / 5);
+                const int leftLimit = s == 0 ? 0 : (segments[s - 1].second + segments[s].first) / 2;
+                const int rightLimit =
+                    s + 1 == segments.size() ? bw : (segments[s].second + segments[s + 1].first) / 2;
+                const LONG subLeft = rect.left + std::max(leftLimit, segments[s].first - padX);
+                const LONG subRight = rect.left + std::min(rightLimit, segments[s].second + padX);
+                if (subRight - subLeft >= 4 && splitBoxes.size() < 512)
+                    splitBoxes.push_back({subLeft, rect.top, subRight, rect.bottom});
+            }
+        }
+    }
+    boxes = std::move(splitBoxes);
     std::sort(boxes.begin(), boxes.end(),
               [](RECT a, RECT b) { return a.top == b.top ? a.left < b.left : a.top < b.top; });
     return boxes;
@@ -402,6 +521,21 @@ float UpsideDownScore(const float* data) {
         return 0.f;
     return 1.f / (1.f + std::exp(margin));
 }
+struct TimeoutGuard {
+    std::atomic<bool> timedOut{false};
+    std::mutex mutex;
+    std::condition_variable_any cv;
+    std::jthread thread;
+    explicit TimeoutGuard(Ort::RunOptions& run, std::chrono::seconds limit = std::chrono::seconds(15))
+        : thread([this, &run, limit](std::stop_token done) {
+              std::unique_lock lock(mutex);
+              cv.wait_for(lock, done, limit, [] { return false; });
+              if (!done.stop_requested()) {
+                  timedOut = true;
+                  run.SetTerminate();
+              }
+          }) {}
+};
 } // namespace
 std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_token stop, bool geometryOnly,
                                        bool preserveGeometry, bool retainLowConfidenceText,
@@ -422,19 +556,9 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
     CheckStop(stop);
     Ort::RunOptions run;
     std::stop_callback cancel(stop, [&] { run.SetTerminate(); });
-    std::atomic<bool> timedOut = false;
-    std::mutex timerMutex;
-    std::condition_variable_any timerCv;
-    std::jthread watchdog([&](std::stop_token done) {
-        std::unique_lock timerLock(timerMutex);
-        timerCv.wait_for(timerLock, done, std::chrono::seconds(15), [] { return false; });
-        if (!done.stop_requested()) {
-            timedOut = true;
-            run.SetTerminate();
-        }
-    });
+    TimeoutGuard watchdog(run);
     try {
-        float scale = std::min(1.f, 1280.f / std::max(image.width, image.height));
+        float scale = std::min(1.f, 1600.f / std::max(image.width, image.height));
         int w = std::max(32, int(std::round(image.width * scale / 32)) * 32),
             h = std::max(32, int(std::round(image.height * scale / 32)) * 32);
         std::vector<RECT> boxes;
@@ -573,8 +697,14 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                     std::min(1., units * Height(line.rect) / std::max(1, Width(line.rect)));
                 return float(line.confidence * (.6 + .4 * coverage));
             };
+            std::error_code modelEc;
+            const bool hasUnifiedModel =
+                std::filesystem::is_regular_file(AppDirectory() / L"models/rec-ja-server.onnx", modelEc);
+            const std::array<int, 3> autoOrder =
+                hasUnifiedModel ? std::array<int, 3>{OcrJapanese, OcrKorean, OcrEnglish}
+                                : std::array<int, 3>{OcrEnglish, OcrJapanese, OcrKorean};
             std::vector<int> lineLanguages;
-            for (int language : {OcrEnglish, OcrJapanese, OcrKorean}) {
+            for (int language : autoOrder) {
                 if (mode != OcrLocalAuto && language != mode)
                     continue;
                 DiagnosticSpan recognitionLoad("ocr_recognizer_load", {{"ocr_mode", language}});
@@ -604,16 +734,16 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                             lineLanguages[i] = language;
                         }
                 }
-                double score = 0, weight = 0;
-                float minimum = 1.f;
+                double score = 0, weight = 0, lowWeight = 0;
                 for (const auto& line : lines) {
                     const double importance = std::sqrt(double(std::max(1, Width(line.rect))));
                     const float confidence = quality(line);
                     score += confidence * importance;
                     weight += importance;
-                    minimum = std::min(minimum, confidence);
+                    if (confidence < .72f)
+                        lowWeight += importance;
                 }
-                if (mode != OcrLocalAuto || (score / std::max(1., weight) >= .90 && minimum >= .80f))
+                if (mode != OcrLocalAuto || (score / std::max(1., weight) >= .88 && lowWeight <= weight * .10))
                     break;
             }
             if (mode == OcrLocalAuto) {
@@ -631,7 +761,7 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
             if (!preserveGeometry)
                 throw;
             DiagnosticEvent("ocr_fallback",
-                            {{"reason", timedOut ? "recognition_timeout" : "recognition_failed"},
+                            {{"reason", watchdog.timedOut ? "recognition_timeout" : "recognition_failed"},
                              {"boxes", boxes.size()},
                              {"recognized_lines", lines.size()}});
             // Recognition failure must not reload and rerun a detector that already succeeded.
@@ -651,7 +781,7 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                 line.text = " ";
                 line.confidence = 0.f;
             }
-        if (timedOut)
+        if (watchdog.timedOut)
             throw AppError("ocr", "OCR time limit exceeded");
         CheckStop(stop);
         // Low confidence must not silently constrain vision translation to incomplete OCR IDs.
@@ -660,8 +790,8 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
         return lines;
     } catch (const Ort::Exception&) {
         CheckStop(stop);
-        DiagnosticEvent("ocr_error", {{"reason", timedOut ? "timeout" : "inference_failed"}});
-        throw AppError("ocr", timedOut ? "OCR time limit exceeded" : "Bundled OCR inference failed");
+        DiagnosticEvent("ocr_error", {{"reason", watchdog.timedOut ? "timeout" : "inference_failed"}});
+        throw AppError("ocr", watchdog.timedOut ? "OCR time limit exceeded" : "Bundled OCR inference failed");
     }
 }
 bool MangaOcrAvailable() {
@@ -687,6 +817,7 @@ std::vector<TextLine> RecognizeMangaBundled(const Image& image, std::stop_token 
         return {};
     Ort::RunOptions run;
     std::stop_callback cancel(stop, [&] { run.SetTerminate(); });
+    TimeoutGuard watchdog(run);
     auto detection = DiagnosticSpan("ocr_detect_manga");
     try {
         // Official geometry: long side 960, or the pixel budget of a 3:4 page for long strips.
@@ -741,11 +872,14 @@ std::vector<TextLine> RecognizeMangaBundled(const Image& image, std::stop_token 
                     return a.rect.right > b.rect.right;
                 return a.rect.top < b.rect.top;
             });
+        if (watchdog.timedOut)
+            throw AppError("ocr", "Manga OCR time limit exceeded");
         return lines;
     } catch (const Ort::Exception&) {
-        detection.Fail(AppError("ocr", "Manga OCR inference failed"));
+        const bool timedOut = watchdog.timedOut.load();
+        detection.Fail(AppError("ocr", timedOut ? "Manga OCR time limit exceeded" : "Manga OCR inference failed"));
         CheckStop(stop);
-        throw AppError("ocr", "Manga OCR inference failed");
+        throw AppError("ocr", timedOut ? "Manga OCR time limit exceeded" : "Manga OCR inference failed");
     }
 }
 } // namespace sat

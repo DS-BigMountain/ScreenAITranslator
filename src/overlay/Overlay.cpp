@@ -71,7 +71,7 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result, Image ro
     if (readingPanel) {
         // Reading panel uses a solid theme plate: any translucency lets large source glyphs behind the
         // capture show through as ghosts, which reads as text overlap rather than context.
-        block.background = RGB(16, 20, 28);
+        block.background = overlay_theme::Surface;
         block.opacity = 1.f;
         const float margin = std::max(12.f, std::round(18 * scale));
         const float bodySize = std::clamp((settings.autoFont ? 18.f : settings.fontSize) * scale, 14.f, 40.f);
@@ -216,10 +216,15 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result, Image ro
     return {std::move(block)};
 }
 Overlay::~Overlay() {
+    CloseContinuousBadge();
     Close();
 }
 void Overlay::Close() {
     warning_.clear();
+    aiPending_ = false;
+    aiHighlight_ = false;
+    passthrough_ = false;
+    captureExcluded_ = true;
     dismissed_ = {};
     reselect_ = {};
     moved_ = {};
@@ -244,6 +249,11 @@ void Overlay::Close() {
 bool Overlay::Dragging() const {
     return std::any_of(windows_.begin(), windows_.end(),
                        [](const auto& window) { return window->drag.has_value(); });
+}
+std::shared_ptr<const Image> Overlay::SourceImage() const {
+    if (windows_.empty())
+        return nullptr;
+    return windows_.front()->block.image;
 }
 bool Overlay::DragBorder(const WindowData& data, POINT point) const {
     if (!moved_ || !Valid(data.block.monitorArea))
@@ -304,6 +314,7 @@ void Overlay::RestoreContents(WindowData& data) {
     Render(data);
     if (toolbar_)
         ShowWindow(toolbar_, SW_SHOWNOACTIVATE);
+    UpdateShadeHole();
 }
 void Overlay::CancelDrag(WindowData& data) {
     if (!data.drag)
@@ -322,6 +333,7 @@ void Overlay::CancelDrag(WindowData& data) {
     if (GetCapture() == data.hwnd)
         ReleaseCapture();
     RestoreContents(data);
+    UpdateShadeHole();
 }
 OverlayBlock& Overlay::Active(WindowData& data) {
     if (data.mode == 2 && data.reading)
@@ -398,37 +410,46 @@ void Overlay::Render(WindowData& window) {
         };
         if (window.dragPreview) {
             // Processing retains the selected frame; moving a result keeps the desktop visible.
-            if (window.progressFrame && block.image)
+            if (window.progressFrame && !passthrough_ && block.image)
                 drawSource();
-            edge->SetColor(ColorF(window.progressFrame ? RGB(72, 180, 255) : RGB(88, 119, 235)));
-            const float stroke = std::min(std::max(1.f, 2 * dpi / 96.f), float(std::min(w, h)) / 2);
+            edge->SetColor(ColorF(overlay_theme::Accent));
+            const float stroke = std::min(std::max(1.5f, 1.5f * dpi / 96.f), float(std::min(w, h)) / 2);
             rt->DrawRectangle(D2D1::RectF(stroke / 2, stroke / 2, w - stroke / 2, h - stroke / 2), edge.Get(),
                               stroke);
         } else {
             rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-            rt->FillRectangle(D2D1::RectF(0, 0, static_cast<float>(w), static_cast<float>(h)),
-                              background.Get());
             if (block.image && window.mode != 2) {
+                rt->FillRectangle(D2D1::RectF(0, 0, static_cast<float>(w), static_cast<float>(h)),
+                                  background.Get());
                 drawSource();
                 // Both the recognized result and the one-off vision result paint the override layer; the
                 // original view and the reading panel keep their own drawings.
                 if (window.mode == 0 || window.mode == 3)
                     DrawPositioned(rt.Get(), block.positioned, block.image.get(), settings.textColor, settings,
                                    dpi);
-                edge->SetColor(ColorF(RGB(88, 119, 235)));
-                rt->DrawRectangle(D2D1::RectF(1, 1, float(w) - 1, float(h) - 1), edge.Get(), 2);
+                edge->SetColor(ColorF(overlay_theme::Accent));
+                const float stroke = std::max(1.5f, 1.5f * dpi / 96.f);
+                rt->DrawRectangle(D2D1::RectF(stroke / 2, stroke / 2, float(w) - stroke / 2,
+                                              float(h) - stroke / 2),
+                                  edge.Get(), stroke);
             } else {
+                const float scale = dpi / 96.f;
+                const float radius = std::min(8.f * scale, float(std::min(w, h)) * .25f);
+                const float stroke = std::min(std::max(1.f, 1.5f * scale), float(std::min(w, h)) / 2);
+                const D2D1_ROUNDED_RECT card{
+                    D2D1::RectF(stroke / 2, stroke / 2, float(w) - stroke / 2, float(h) - stroke / 2),
+                    radius, radius};
+                rt->FillRoundedRectangle(card, background.Get());
                 // Clip all translated text to the selected region's content area. Long text scrolls.
                 auto area = D2D1::RectF(float(block.viewport.left), float(block.viewport.top),
                                         float(block.viewport.right), float(block.viewport.bottom));
                 rt->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED);
-                const float uiScale = dpi / 96.f;
-                const float outline = (window.reading && window.mode == 2) ? 0.f : settings.outlineWidth * uiScale;
+                const float outline = (window.reading && window.mode == 2) ? 0.f : settings.outlineWidth * scale;
                 if (!block.paragraphs.empty()) {
                     // Reading panel: every paragraph owns its layout so headings centre independently.
                     for (const auto& paragraph : block.paragraphs) {
                         auto renderer = CreateRimRenderer(rt.Get(), factory.Get(), fill.Get(), edge.Get(),
-                                                          outline, settings.outlineStyle, uiScale);
+                                                          outline, settings.outlineStyle, scale);
                         CheckHR(paragraph.layout->Draw(nullptr, renderer.Get(),
                                                        float(paragraph.rect.left),
                                                        float(paragraph.rect.top) - window.scroll),
@@ -436,31 +457,44 @@ void Overlay::Render(WindowData& window) {
                     }
                 } else {
                     auto renderer = CreateRimRenderer(rt.Get(), factory.Get(), fill.Get(), edge.Get(), outline,
-                                                      settings.outlineStyle, uiScale);
+                                                      settings.outlineStyle, scale);
                     CheckHR(block.layout->Draw(nullptr, renderer.Get(), area.left, area.top - window.scroll),
                             "overlay");
                 }
                 rt->PopAxisAlignedClip();
-                const float scale = dpi / 96.f;
-                ComPtr<ID2D1SolidColorBrush> frame, header, button, white;
-                CheckHR(rt->CreateSolidColorBrush(D2D1::ColorF(0.2f, 0.65f, 1.f, 1.f), &frame), "overlay");
-                CheckHR(rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.12f, 0.19f, 1.f), &header),
-                        "overlay");
-                CheckHR(rt->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.16f, 0.2f, 1.f), &button), "overlay");
-                CheckHR(rt->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 1.f), &white), "overlay");
-                float headerBottom = float(block.closeButton.bottom + 1);
-                rt->FillRectangle(D2D1::RectF(0, 0, float(w), headerBottom), header.Get());
+                ComPtr<ID2D1SolidColorBrush> frame, header, divider, button, white, muted;
+                CheckHR(rt->CreateSolidColorBrush(ColorF(overlay_theme::Accent), &frame), "overlay");
+                CheckHR(rt->CreateSolidColorBrush(ColorF(overlay_theme::Header), &header), "overlay");
+                CheckHR(rt->CreateSolidColorBrush(ColorF(overlay_theme::Border), &divider), "overlay");
+                const COLORREF closeColor =
+                    window.pressed ? overlay_theme::CloseHeld
+                                   : (window.closeHover ? overlay_theme::CloseHover : overlay_theme::CloseRest);
+                CheckHR(rt->CreateSolidColorBrush(ColorF(closeColor), &button), "overlay");
+                CheckHR(rt->CreateSolidColorBrush(ColorF(overlay_theme::TextPrimary), &white), "overlay");
+                CheckHR(rt->CreateSolidColorBrush(ColorF(overlay_theme::TextSecondary), &muted), "overlay");
+                const float headerBottom = float(block.closeButton.bottom + 1);
+                rt->PushAxisAlignedClip(D2D1::RectF(0, 0, float(w), headerBottom), D2D1_ANTIALIAS_MODE_ALIASED);
+                rt->FillRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(stroke / 2, stroke / 2, float(w) - stroke / 2,
+                                                  headerBottom + radius),
+                                      radius, radius),
+                    header.Get());
+                rt->PopAxisAlignedClip();
+                rt->DrawLine(D2D1::Point2F(stroke, headerBottom), D2D1::Point2F(float(w) - stroke, headerBottom),
+                             divider.Get(), std::max(1.f, scale));
                 const auto& close = block.closeButton;
-                auto closeRect =
-                    D2D1::RectF(float(close.left), float(close.top), float(close.right), float(close.bottom));
-                rt->FillRectangle(closeRect, button.Get());
-                float inset = std::max(1.f, Width(close) * 0.3f);
+                const float btnPad = std::max(2.f, 3.f * scale);
+                auto closeRect = D2D1::RectF(float(close.left) + btnPad, float(close.top) + btnPad,
+                                             float(close.right) - btnPad, float(close.bottom) - btnPad);
+                const float btnRadius = std::min(4.f * scale, (closeRect.right - closeRect.left) * .3f);
+                rt->FillRoundedRectangle(D2D1::RoundedRect(closeRect, btnRadius, btnRadius), button.Get());
+                float inset = std::max(1.5f, (closeRect.right - closeRect.left) * 0.32f);
                 rt->DrawLine(D2D1::Point2F(closeRect.left + inset, closeRect.top + inset),
                              D2D1::Point2F(closeRect.right - inset, closeRect.bottom - inset), white.Get(),
-                             std::max(1.f, 1.5f * scale));
+                             std::max(1.f, 1.4f * scale));
                 rt->DrawLine(D2D1::Point2F(closeRect.right - inset, closeRect.top + inset),
                              D2D1::Point2F(closeRect.left + inset, closeRect.bottom - inset), white.Get(),
-                             std::max(1.f, 1.5f * scale));
+                             std::max(1.f, 1.4f * scale));
                 if (w > 100 * scale && headerBottom > 16 * scale) {
                     ComPtr<IDWriteTextFormat> title;
                     auto writer = WriteFactory();
@@ -471,13 +505,12 @@ void Overlay::Render(WindowData& window) {
                             "overlay");
                     title->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                     title->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-                    const wchar_t* caption = moved_ ? L"译文 · 拖动边框，松手重译"
-                                             : block.contentHeight > Height(block.viewport)
-                                                 ? L"译文 · 滚轮查看"
-                                                 : L"译文";
+                    const wchar_t* caption =
+                        noticeActive_ ? (windows_.size() > 1 ? L"翻译进度" : L"提示")
+                                      : (window.mode == 2 ? L"全文阅读" : L"译文");
                     rt->DrawText(caption, static_cast<UINT32>(wcslen(caption)), title.Get(),
-                                 D2D1::RectF(8 * scale, 0, float(close.left) - 4 * scale, headerBottom),
-                                 white.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                                 D2D1::RectF(10 * scale, 0, float(close.left) - 4 * scale, headerBottom),
+                                 muted.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
                 }
                 if (block.contentHeight > Height(block.viewport)) {
                     const float track = float(Height(block.viewport)),
@@ -485,13 +518,13 @@ void Overlay::Render(WindowData& window) {
                                     std::min(track, std::max(8 * scale, track * track / block.contentHeight));
                     const float top =
                         block.viewport.top + (track - thumb) * window.scroll / (block.contentHeight - track);
-                    rt->FillRectangle(
-                        D2D1::RectF(float(w) - 5 * scale, top, float(w) - 2 * scale, top + thumb),
+                    rt->FillRoundedRectangle(
+                        D2D1::RoundedRect(
+                            D2D1::RectF(float(w) - 6 * scale, top, float(w) - 2 * scale, top + thumb),
+                            2 * scale, 2 * scale),
                         frame.Get());
                 }
-                const float stroke = std::min(std::max(1.f, 2 * scale), float(std::min(w, h)) / 2);
-                rt->DrawRectangle(D2D1::RectF(stroke / 2, stroke / 2, w - stroke / 2, h - stroke / 2),
-                                  frame.Get(), stroke);
+                rt->DrawRoundedRectangle(card, frame.Get(), stroke);
             }
         }
         CheckHR(rt->EndDraw(), "overlay");
@@ -512,11 +545,12 @@ void Overlay::Render(WindowData& window) {
 }
 void Overlay::Show(const std::vector<OverlayBlock>& blocks, const Settings& settings, UINT dpi,
                    std::function<void()> dismissed, std::function<void()> reselect,
-                   std::function<void(RECT)> moved) {
+                   std::function<void(RECT)> moved, bool passthrough) {
     Close();
     dismissed_ = std::move(dismissed);
     reselect_ = std::move(reselect);
-    moved_ = std::move(moved);
+    moved_ = passthrough ? std::function<void(RECT)>{} : std::move(moved);
+    passthrough_ = passthrough;
     WNDCLASSW wc{};
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = L"SAT.Overlay";
@@ -533,12 +567,16 @@ void Overlay::Show(const std::vector<OverlayBlock>& blocks, const Settings& sett
             data->mode = settings.spatialOverlay ? 0 : 2;
             auto ptr = data.get();
             windows_.push_back(std::move(data));
-            ptr->hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                                        wc.lpszClassName, L"翻译结果 · 右上角关闭", WS_POPUP, b.screen.left,
-                                        b.screen.top, Width(b.screen), Height(b.screen), nullptr, nullptr,
-                                        wc.hInstance, ptr);
+            DWORD exStyle = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            if (passthrough)
+                exStyle |= WS_EX_TRANSPARENT;
+            ptr->hwnd = CreateWindowExW(exStyle, wc.lpszClassName, L"翻译结果 · 右上角关闭", WS_POPUP,
+                                        b.screen.left, b.screen.top, Width(b.screen), Height(b.screen),
+                                        nullptr, nullptr, wc.hInstance, ptr);
             if (!ptr->hwnd)
                 throw AppError("overlay", "无法创建翻译层");
+            if (passthrough)
+                captureExcluded_ = SetWindowDisplayAffinity(ptr->hwnd, 0x00000011) != FALSE;
             Render(*ptr);
             ShowWindow(ptr->hwnd, SW_SHOWNOACTIVATE);
         }
@@ -551,7 +589,7 @@ void Overlay::Show(const std::vector<OverlayBlock>& blocks, const Settings& sett
     }
 }
 void Overlay::Notice(const std::wstring& text, RECT anchor, const Monitor& m,
-                     std::function<void()> dismissed) {
+                     std::function<void()> dismissed, bool excludeFromCapture) {
     Settings s;
     s.spatialOverlay = false;
     s.autoFont = false;
@@ -577,21 +615,31 @@ void Overlay::Notice(const std::wstring& text, RECT anchor, const Monitor& m,
     Image image;
     image.width = width;
     image.height = height;
-    image.bgra.resize(static_cast<size_t>(image.width) * image.height * 4, 28);
-    for (size_t i = 3; i < image.bgra.size(); i += 4)
-        image.bgra[i] = 255;
+    image.bgra.resize(static_cast<size_t>(image.width) * image.height * 4);
+    constexpr auto surfaceB = static_cast<unsigned char>((overlay_theme::Surface >> 16) & 0xFF);
+    constexpr auto surfaceG = static_cast<unsigned char>((overlay_theme::Surface >> 8) & 0xFF);
+    constexpr auto surfaceR = static_cast<unsigned char>(overlay_theme::Surface & 0xFF);
+    for (size_t i = 0; i < image.bgra.size(); i += 4) {
+        image.bgra[i] = surfaceB;
+        image.bgra[i + 1] = surfaceG;
+        image.bgra[i + 2] = surfaceR;
+        image.bgra[i + 3] = 255;
+    }
     TranslationResult r;
     r.segments.push_back({"", Utf8(text), {0, 0, 1000, 1000}});
     RECT roi{anchor.left, anchor.top, anchor.left + width, anchor.top + height};
     roi = Clamp(roi, m.rect);
     auto blocks = BuildOverlay(r, image, roi, m, s, false);
-    // Keep the strip described here, so SetProgressText can repaint the same window with the next fixed
-    // status line while everything around it stays exactly as it is.
+    // Show calls Close(), so the notice state must be armed afterward and the header repainted.
+    Show(blocks, s, m.dpi, std::move(dismissed));
+    if (excludeFromCapture && !windows_.empty() && windows_.front()->hwnd)
+        SetWindowDisplayAffinity(windows_.front()->hwnd, 0x00000011);
     noticeActive_ = true;
     noticeText_ = text;
     noticeBackdrop_ = std::move(image);
     noticeMonitor_ = m;
-    Show(blocks, s, m.dpi, std::move(dismissed));
+    if (!windows_.empty())
+        Render(*windows_.front());
 }
 void Overlay::SetProgressText(const std::wstring& text) {
     if (!noticeActive_ || text == noticeText_ || windows_.empty())
@@ -610,18 +658,24 @@ void Overlay::SetProgressText(const std::wstring& text) {
     Render(data);
 }
 void Overlay::Progress(RECT region, const Monitor& monitor, Image frozen,
-                       std::function<void()> dismissed) {
+                       std::function<void()> dismissed, bool continuous) {
     // Retain the exact translation input while the notice occupies a separate strip.
     RECT anchor = region;
     const int noticeHeight = 70;
-    if (region.bottom + noticeHeight <= monitor.rect.bottom)
+    const int gap = MulDiv(8, monitor.dpi, 96);
+    if (region.bottom + gap + noticeHeight <= monitor.rect.bottom)
+        anchor.top = region.bottom + gap;
+    else if (region.top - gap - noticeHeight >= monitor.rect.top)
+        anchor.top = region.top - gap - noticeHeight;
+    else if (region.bottom + noticeHeight <= monitor.rect.bottom)
         anchor.top = region.bottom;
     else if (region.top - noticeHeight >= monitor.rect.top)
         anchor.top = region.top - noticeHeight;
     anchor.bottom = anchor.top + noticeHeight;
     // Recognition always runs first, so the first line describes it; the controller swaps the line when
     // the work moves on to the service request.
-    Notice(L"文字识别中 · 点击 × 取消", anchor, monitor, std::move(dismissed));
+    Notice(L"文字识别中 · 点击 × 取消", anchor, monitor, std::move(dismissed), continuous);
+    passthrough_ = continuous;
     try {
         WNDCLASSW wc{};
         wc.hInstance = GetModuleHandleW(nullptr);
@@ -644,8 +698,11 @@ void Overlay::Progress(RECT region, const Monitor& monitor, Image frozen,
                                     Width(region), Height(region), nullptr, nullptr, wc.hInstance, ptr);
         if (!ptr->hwnd)
             throw AppError("overlay", "无法创建处理中的选区边框");
+        if (continuous)
+            captureExcluded_ = SetWindowDisplayAffinity(ptr->hwnd, 0x00000011) != FALSE;
         Render(*ptr);
         ShowWindow(ptr->hwnd, SW_SHOWNOACTIVATE);
+        Render(*windows_.front());
     } catch (...) {
         Close();
         throw;
@@ -679,6 +736,8 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 const auto& active = data->owner->Active(*data);
                 data->pressed =
                     (!active.image || data->mode == 2) && PtInRect(&active.closeButton, point) != FALSE;
+                if (data->pressed)
+                    data->owner->Render(*data);
                 if (!data->drag && data->owner->DragBorder(*data, point)) {
                     ClientToScreen(h, &point);
                     data->drag =
@@ -689,16 +748,33 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 SetCapture(h);
                 return 0;
             }
-            case WM_MOUSEMOVE:
+            case WM_MOUSEMOVE: {
+                POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                 if (data->drag) {
                     if (!(w & MK_LBUTTON)) {
                         data->owner->CancelDrag(*data);
                         return 0;
                     }
-                    POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                     ClientToScreen(h, &point);
                     data->owner->MoveDrag(*data, point);
                     SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                    return 0;
+                }
+                const auto& active = data->owner->Active(*data);
+                const bool hover =
+                    (!active.image || data->mode == 2) && PtInRect(&active.closeButton, point) != FALSE;
+                if (hover != data->closeHover) {
+                    data->closeHover = hover;
+                    data->owner->Render(*data);
+                }
+                TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0};
+                TrackMouseEvent(&track);
+                return 0;
+            }
+            case WM_MOUSELEAVE:
+                if (data->closeHover) {
+                    data->closeHover = false;
+                    data->owner->Render(*data);
                 }
                 return 0;
             case WM_LBUTTONUP: {
@@ -720,7 +796,8 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     return 0;
                 }
                 const auto& active = data->owner->Active(*data);
-                bool close = data->pressed && PtInRect(&active.closeButton, point);
+                const bool wasPressed = data->pressed;
+                bool close = wasPressed && PtInRect(&active.closeButton, point);
                 data->pressed = false;
                 if (GetCapture() == h)
                     ReleaseCapture();
@@ -728,6 +805,8 @@ LRESULT CALLBACK Overlay::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     auto cb = data->owner->dismissed_;
                     if (cb)
                         cb();
+                } else if (wasPressed) {
+                    data->owner->Render(*data);
                 }
                 return 0;
             }

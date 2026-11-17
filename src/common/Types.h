@@ -73,7 +73,7 @@ struct Settings {
     bool startup{true}, tray{true};
     bool textCtrlEnter{};
     std::string textTargetLanguage{"zh-Hans"};
-    Hotkey hotkeys[3]{};
+    Hotkey hotkeys[4]{};
     std::string provider{"deepseek"};
     std::wstring baseUrl{L"https://api.deepseek.com"};
     std::string model{"deepseek-flash"};
