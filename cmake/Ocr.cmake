@@ -12,7 +12,8 @@ if(NOT EXISTS "${SAT_ORT_INCLUDE}/onnxruntime_cxx_api.h")
 endif()
 # Optional strongest-available weights. Their presence upgrades detection,
 # recognition and text-line orientation in place; absence keeps the mobile path.
-foreach(model IN ITEMS det-server.onnx rec-ja-server.onnx rec-en-server.onnx rec-ko-server.onnx cls.onnx
+foreach(model IN ITEMS det-server.onnx rec-ja-server.onnx rec-en-server.onnx rec-ko-server.onnx
+                       rec-latin.onnx rec-ru.onnx rec-th.onnx rec-ar.onnx rec-el.onnx rec-hi.onnx cls.onnx
                        manga_det.onnx manga_rec.onnx ppocrv6_dict.txt)
   if(EXISTS "${SAT_OCR_RUNTIME}/models/${model}")
     message(STATUS "Bundled OCR enhancement available: ${model}")
@@ -37,9 +38,9 @@ function(sat_deploy_ocr target)
               "$<TARGET_FILE_DIR:${target}>/models/${model}"
       VERBATIM)
   endforeach()
-  # Manga engine (PP-OCRv6_manga): optional weights plus the recognition dictionary that ships
-  # beside them. A build without them routes every capture to the general engine.
-  foreach(model IN ITEMS manga_det.onnx manga_rec.onnx ppocrv6_dict.txt)
+  # Optional multilingual PP-OCRv5 weights and manga engine (PP-OCRv6_manga).
+  foreach(model IN ITEMS rec-latin.onnx rec-ru.onnx rec-th.onnx rec-ar.onnx rec-el.onnx rec-hi.onnx
+                         manga_det.onnx manga_rec.onnx ppocrv6_dict.txt)
     if(EXISTS "${SAT_OCR_RUNTIME}/models/${model}")
       add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SAT_OCR_RUNTIME}/models/${model}"

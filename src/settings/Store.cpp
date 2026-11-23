@@ -172,6 +172,9 @@ std::string UnprotectSecret(const std::string& encrypted) {
 
 void ValidateSettings(const Settings& s) {
     (void)FindTextTarget(s.textTargetLanguage);
+    (void)FindTextTarget(s.screenTargetLanguage);
+    if (!s.sourceLanguage.empty() && s.sourceLanguage != "auto")
+        (void)FindTextTarget(s.sourceLanguage);
     (void)Preset(s.provider);
     (void)ParseRequestParameters(s.requestParameters);
     {
@@ -230,9 +233,7 @@ void ValidateSettings(const Settings& s) {
             "Invalid service region");
     Require(ValidTranslationMode(s.translationMode), "Invalid translation mode");
     Require(ValidOcrMode(s.ocrMode), "Invalid OCR mode");
-    Require(s.translationMode != TranslationOcrText ||
-                (s.ocrMode == OcrLocalAuto || s.ocrMode == OcrEnglish || s.ocrMode == OcrJapanese ||
-                 s.ocrMode == OcrKorean),
+    Require(s.translationMode != TranslationOcrText || IsLocalOcrLanguage(s.ocrMode),
             "OCR text mode requires a local recognition language");
     Require(s.quality >= 0 && s.quality <= 2 && s.contextSize >= 5 && s.contextSize <= 10,
             "Invalid quality or context count (5 to 10)");
@@ -279,6 +280,8 @@ Settings Store::LoadSettings() {
         READ_FIELD(tray);
         READ_FIELD(textCtrlEnter);
         READ_FIELD(textTargetLanguage);
+        READ_FIELD(screenTargetLanguage);
+        READ_FIELD(sourceLanguage);
         READ_FIELD(provider);
         READ_FIELD(model);
         READ_FIELD(timeoutSeconds);
@@ -359,6 +362,8 @@ void Store::SaveSettings(const Settings& s) {
     WRITE_FIELD(tray);
     WRITE_FIELD(textCtrlEnter);
     WRITE_FIELD(textTargetLanguage);
+    WRITE_FIELD(screenTargetLanguage);
+    WRITE_FIELD(sourceLanguage);
     WRITE_FIELD(provider);
     WRITE_FIELD(model);
     WRITE_FIELD(timeoutSeconds);

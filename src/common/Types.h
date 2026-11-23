@@ -31,6 +31,7 @@ struct Segment {
 };
 struct TranslationResult {
     std::string language;
+    std::vector<std::string> detectedLanguages;
     std::vector<Segment> segments;
     std::vector<RECT> protectedRegions;
     // Recognized text rows that no translated passage claimed. The overlay rebuilds their surface so
@@ -73,6 +74,8 @@ struct Settings {
     bool startup{true}, tray{true};
     bool textCtrlEnter{};
     std::string textTargetLanguage{"zh-Hans"};
+    std::string screenTargetLanguage{"zh-Hans"};
+    std::string sourceLanguage{"auto"};
     Hotkey hotkeys[4]{};
     std::string provider{"deepseek"};
     std::wstring baseUrl{L"https://api.deepseek.com"};

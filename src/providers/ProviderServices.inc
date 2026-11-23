@@ -225,7 +225,21 @@ public:
             segment.sourceLineHeight = r.lineHeight;
             result.protectedRegions.push_back(r.rect);
         }
+        const auto& targetLang = FindTextTarget(s.screenTargetLanguage);
         if (protocol_ == ApiProtocol::QwenMt) {
+            const std::string qwenTarget =
+                std::string_view(targetLang.id) == "zh-Hans" ? "Chinese" : targetLang.english;
+            std::string qwenSource = "auto";
+            if (IsLocalOcrLanguage(s.ocrMode) && s.ocrMode != OcrLocalAuto && s.ocrMode != OcrLatin) {
+                const char* mappedId = TargetIdFromOcrMode(s.ocrMode);
+                if (mappedId && mappedId[0]) {
+                    try {
+                        const auto& srcLang = FindTextTarget(mappedId);
+                        qwenSource = std::string_view(srcLang.id) == "zh-Hans" ? "Chinese" : srcLang.english;
+                    } catch (const AppError&) {
+                    }
+                }
+            }
             // Qwen-MT accepts one plain source passage, not a fabricated JSON protocol.
             // Three bounded workers preserve source IDs and share one overall deadline.
             std::atomic<size_t> next{};
@@ -234,7 +248,7 @@ public:
             std::vector<std::future<void>> workers;
             auto diagnosticOperation = DiagnosticOperation();
             for (size_t worker = 0; worker < std::min<size_t>(3, regions.size()); ++worker)
-                workers.push_back(std::async(std::launch::async, [&, diagnosticOperation] {
+                workers.push_back(std::async(std::launch::async, [&, diagnosticOperation, qwenTarget, qwenSource] {
                     DiagnosticContext context(diagnosticOperation);
                     try {
                         for (;;) {
@@ -246,7 +260,7 @@ public:
                                 {"model", s.model},
                                 {"messages", Json::array({{{"role", "user"}, {"content", regions[i].text}}})},
                                 {"translation_options",
-                                 {{"source_lang", "auto"}, {"target_lang", "Chinese"}}}};
+                                 {{"source_lang", qwenSource}, {"target_lang", qwenTarget}}}};
                             result.segments[i].translated =
                                 ReadText(Json(NativeContent(protocol_, post(body, L"/chat/completions",
                                                                             cancellation.get_token()))),
@@ -271,8 +285,29 @@ public:
             if (failure)
                 std::rethrow_exception(failure);
         } else {
+            if (protocol_ == ApiProtocol::DeepL && (!targetLang.deepL || !targetLang.deepL[0]))
+                throw AppError("settings", "DeepL 暂不支持当前目标语言，请切换其他模型服务。");
             // Both translation APIs preserve array order. Limit batch size and bytes so
             // long screenshots stay within service limits without losing region mapping.
+            std::wstring azurePath = L"/translate?api-version=3.0&to=" + Wide(targetLang.id);
+            std::string deepLSource;
+            if (IsLocalOcrLanguage(s.ocrMode) && s.ocrMode != OcrLocalAuto && s.ocrMode != OcrLatin) {
+                const char* mappedId = TargetIdFromOcrMode(s.ocrMode);
+                if (mappedId && mappedId[0]) {
+                    try {
+                        const auto& srcLang = FindTextTarget(mappedId);
+                        if (protocol_ == ApiProtocol::AzureTranslator)
+                            azurePath += L"&from=" + Wide(srcLang.id);
+                        else if (protocol_ == ApiProtocol::DeepL && srcLang.deepL && srcLang.deepL[0]) {
+                            std::string_view code = srcLang.deepL;
+                            if (auto dash = code.find('-'); dash != std::string_view::npos)
+                                code = code.substr(0, dash);
+                            deepLSource = std::string(code);
+                        }
+                    } catch (const AppError&) {
+                    }
+                }
+            }
             for (size_t begin = 0; begin < regions.size();) {
                 size_t end = begin, bytes = 0;
                 Json texts = Json::array();
@@ -286,8 +321,12 @@ public:
                     throw AppError("Requesting", "单个文字区域超出翻译服务限制");
                 Json body =
                     protocol_ == ApiProtocol::DeepL
-                        ? Json{{"text", texts}, {"target_lang", "ZH-HANS"}, {"split_sentences", "nonewlines"}}
+                        ? Json{{"text", texts},
+                               {"target_lang", targetLang.deepL},
+                               {"split_sentences", "nonewlines"}}
                         : texts;
+                if (protocol_ == ApiProtocol::DeepL && !deepLSource.empty())
+                    body["source_lang"] = deepLSource;
                 if (protocol_ == ApiProtocol::DeepL && s.contextEnabled && !context.empty()) {
                     std::string previous;
                     for (const auto& item : context) {
@@ -298,8 +337,7 @@ public:
                     body["context"] = previous;
                 }
                 auto root = post(body,
-                                 protocol_ == ApiProtocol::DeepL ? L"/translate"
-                                                                 : L"/translate?api-version=3.0&to=zh-Hans",
+                                 protocol_ == ApiProtocol::DeepL ? L"/translate" : azurePath,
                                  stop);
                 try {
                     const auto& items = protocol_ == ApiProtocol::DeepL ? root.at("translations") : root;

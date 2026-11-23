@@ -1,6 +1,7 @@
 #include "SpatialLayout.h"
 #include "TextRim.h"
 #include "capture/Capture.h"
+#include "common/TextMetrics.h"
 #include <dwrite_1.h>
 #include <algorithm>
 #include <cmath>
@@ -440,49 +441,46 @@ float InkBand(float band) {
 }
 // Writing systems and character classes decide which part of the em box the ink fills.
 struct TextTraits {
-    bool cjk{}, upper{}, lower{}, ascender{}, descender{}, digit{};
+    bool cjk{}, upper{}, lower{}, ascender{}, descender{}, digit{}, complexScript{}, stackedMarks{};
 };
 TextTraits AnalyzeText(const std::string& text) {
     TextTraits traits;
-    size_t i = 0;
-    while (i < text.size()) {
-        const auto lead = static_cast<unsigned char>(text[i]);
-        char32_t code = 0;
-        size_t length = 1;
-        if (lead < 0x80) {
-            code = lead;
-        } else if ((lead & 0xE0) == 0xC0) {
-            code = lead & 0x1F;
-            length = 2;
-        } else if ((lead & 0xF0) == 0xE0) {
-            code = lead & 0x0F;
-            length = 3;
-        } else if ((lead & 0xF8) == 0xF0) {
-            code = lead & 0x07;
-            length = 4;
-        } else {
-            ++i;
-            continue;
-        }
-        if (i + length > text.size())
-            break;
-        for (size_t k = 1; k < length; ++k)
-            code = (code << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
-        i += length;
+    for (size_t i = 0; i < text.size();) {
+        const char32_t code = NextCodePoint(text, i);
         if ((code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF) ||
-            (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFF00 && code <= 0xFF60))
+            (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFF00 && code <= 0xFF60)) {
             traits.cjk = true;
-        else if (code >= U'A' && code <= U'Z')
+        } else if (code >= U'A' && code <= U'Z') {
             traits.upper = true;
-        else if (code >= U'0' && code <= U'9')
+        } else if (code >= U'0' && code <= U'9') {
             traits.digit = true;
-        else if (code >= U'a' && code <= U'z') {
+        } else if (code >= U'a' && code <= U'z') {
             traits.lower = true;
             const auto letter = wchar_t(code);
             if (std::wstring_view(L"bdfhklt").find(letter) != std::wstring_view::npos)
                 traits.ascender = true;
             if (std::wstring_view(L"gjpqy").find(letter) != std::wstring_view::npos)
                 traits.descender = true;
+        } else if ((code >= 0x00C0 && code <= 0x00D6) || (code >= 0x00D8 && code <= 0x00DE) ||
+                   (code >= 0x0391 && code <= 0x03AB) || (code >= 0x0400 && code <= 0x042F)) {
+            traits.upper = true;
+        } else if ((code >= 0x00DF && code <= 0x024F) || (code >= 0x1E00 && code <= 0x1EFF) ||
+                   (code >= 0x03AC && code <= 0x03CE) || (code >= 0x0430 && code <= 0x04FF)) {
+            traits.lower = true;
+            if (code >= 0x00E0 && code <= 0x00FE)
+                traits.ascender = true;
+            if (code == 0x00E7 || code == 0x00FE || code == 0x0434 || code == 0x0440 || code == 0x0443 ||
+                code == 0x0444 || code == 0x0446 || code == 0x0449 || code == 0x03B3 || code == 0x03B7 ||
+                code == 0x03BC || code == 0x03C1 || code == 0x03C6 || code == 0x03C7 || code == 0x03C8 ||
+                code == 0x03C2)
+                traits.descender = true;
+        } else if ((code >= 0x0600 && code <= 0x06FF) || (code >= 0x0750 && code <= 0x077F) ||
+                   (code >= 0x08A0 && code <= 0x08FF) || (code >= 0x0900 && code <= 0x097F) ||
+                   (code >= 0x0E00 && code <= 0x0E7F)) {
+            traits.complexScript = true;
+            if (IsCombiningMark(code) || code == 0x0E1B || code == 0x0E1D || code == 0x0E1F ||
+                code == 0x0E2C || code == 0x0E0E || code == 0x0E0F || code == 0x0E24 || code == 0x0E26)
+                traits.stackedMarks = true;
         }
     }
     return traits;
@@ -497,6 +495,8 @@ float GlyphBandRatio(const TextTraits& traits) {
     // which vertical extremes appear.
     if (traits.cjk)
         return 1.f;
+    if (traits.complexScript)
+        return traits.stackedMarks ? .92f : .80f;
     if (traits.descender)
         return .95f;
     if (traits.upper || traits.ascender || traits.digit)
@@ -510,6 +510,8 @@ float GlyphBandRatio(const TextTraits& traits) {
 float GlyphCoreRatio(const TextTraits& traits) {
     if (traits.cjk)
         return .78f;
+    if (traits.complexScript)
+        return .60f;
     if (!traits.lower)
         return .70f;
     return .56f;
@@ -566,7 +568,7 @@ bool HasSeparateTextLines(const std::string& original) {
             return false;
         auto last = text.find_last_not_of(L" \t\r", end - 1);
         if (last == std::wstring::npos || last < start ||
-            std::wstring_view(L"。！？.!?】]").find(text[last]) == std::wstring_view::npos)
+            std::wstring_view(L"。！？.!?】]؟؛۔।॥").find(text[last]) == std::wstring_view::npos)
             return false;
         ++complete;
         start = end + 1;
@@ -593,21 +595,57 @@ std::wstring NormalizeAsciiAlnum(std::wstring_view text) {
     }
     return out;
 }
-bool ShouldKeepOriginalPixels(const Segment& s) {
+bool ShouldKeepOriginalPixels(const Segment& s, bool cjkTarget) {
     if (!s.sourcePixels.has_value() || s.translated.empty())
         return false;
     const std::wstring wTrans = Wide(s.translated);
-    if (HasTargetScript(wTrans))
+    if (cjkTarget && HasTargetScript(wTrans))
         return false;
     const std::wstring normTrans = NormalizeAsciiAlnum(wTrans);
     const std::wstring normOrig = NormalizeAsciiAlnum(Wide(s.original));
-    if (normTrans.empty())
+    if (cjkTarget && normTrans.empty())
         return true;
-    if (normTrans == normOrig)
+    if (!normTrans.empty() && normTrans == normOrig)
         return true;
-    if (normTrans.size() <= 2 && wTrans.size() <= 4)
+    if (cjkTarget && normTrans.size() <= 2 && wTrans.size() <= 4)
         return true;
     return false;
+}
+DWRITE_TEXT_METRICS MeasureTextLayout(IDWriteFactory* factory, const std::wstring& font,
+                                      const std::wstring& body, float fontSize, float lineSpacing,
+                                      float maxWidth, bool bold, bool centerAligned, bool wrap,
+                                      ComPtr<IDWriteTextLayout>& layout) {
+    ComPtr<IDWriteTextFormat> format;
+    const DWRITE_FONT_WEIGHT fontWeight = bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+    CheckHR(factory->CreateTextFormat(font.c_str(), nullptr, fontWeight, DWRITE_FONT_STYLE_NORMAL,
+                                      DWRITE_FONT_STRETCH_NORMAL, fontSize, L"zh-CN", &format),
+            "layout");
+    CheckHR(format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP),
+            "layout");
+    const bool rtl = HasRtlScript(body);
+    const bool complexVertical = HasComplexVerticalScript(body);
+    if (rtl)
+        CheckHR(format->SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT), "layout");
+    CheckHR(format->SetTextAlignment(centerAligned ? DWRITE_TEXT_ALIGNMENT_CENTER
+                                                   : DWRITE_TEXT_ALIGNMENT_LEADING),
+            "layout");
+    const float effectiveSpacing = complexVertical ? std::max(lineSpacing, fontSize * 1.35f) : lineSpacing;
+    const float baseline = complexVertical ? fontSize * .95f : fontSize * .8f;
+    CheckHR(format->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, effectiveSpacing, baseline),
+            "layout");
+    layout.Reset();
+    CheckHR(factory->CreateTextLayout(body.c_str(), UINT32(body.size()), format.Get(), maxWidth, 100000.f,
+                                      &layout),
+            "layout");
+    if (!rtl && !complexVertical) {
+        ComPtr<IDWriteTextLayout1> spaced;
+        if (SUCCEEDED(layout.As(&spaced)))
+            spaced->SetCharacterSpacing(0.f, fontSize * .02f, 0.f,
+                                        DWRITE_TEXT_RANGE{0, UINT32(body.size())});
+    }
+    DWRITE_TEXT_METRICS metrics{};
+    CheckHR(layout->GetMetrics(&metrics), "layout");
+    return metrics;
 }
 } // namespace
 std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, const Image& image,
@@ -638,6 +676,10 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
     const RECT bounds{0, 0, image.width, image.height};
     const float scale = dpi / 96.f;
     std::vector<RECT> protectedRegions = result.protectedRegions;
+    const bool cjkTarget = settings.screenTargetLanguage == "zh-Hans" ||
+                           settings.screenTargetLanguage == "zh-Hant" ||
+                           settings.screenTargetLanguage == "ja" ||
+                           settings.screenTargetLanguage == "ko";
     for (size_t i = 0; i < output.size(); ++i) {
         const auto& s = segments[i];
         if (s.positionUnavailable) {
@@ -647,7 +689,7 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
         auto r = s.sourcePixels.value_or(MapBox(s.box, image));
         RECT clipped{};
         IntersectRect(&clipped, &r, &bounds);
-        if (ShouldKeepOriginalPixels(s)) {
+        if (ShouldKeepOriginalPixels(s, cjkTarget)) {
             output[i].suppressed = true;
             if (Valid(clipped))
                 protectedRegions.push_back(clipped);
@@ -884,11 +926,12 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
             const std::wstring wTrans = Wide(segment.translated);
             const std::wstring wOrig = Wide(segment.original);
             constexpr std::wstring_view kProsePunct =
-                L"。，、；：？！“”‘’「」『』【】（）()[].,;:?!\"";
+                L"。，、；：？！“”‘’「」『』【】（）()[].,;:?!\"؟؛،।॥";
             const bool hasProsePunct = wTrans.find_first_of(kProsePunct) != std::wstring::npos ||
                                        wOrig.find_first_of(kProsePunct) != std::wstring::npos;
             const bool isShortLabel = !hasProsePunct && !wTrans.empty() && wTrans.size() <= 14 &&
                                       wOrig.size() <= 32;
+            const bool rtlSource = HasRtlScript(wOrig);
             bool hasLeftAlignedPeer = false;
             bool centerAlignedHeadingPair = false;
             for (size_t j = 0; j < output.size(); ++j) {
@@ -898,8 +941,9 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                 const int vGap = other.top >= source.bottom
                                      ? int(other.top - source.bottom)
                                      : (source.top >= other.bottom ? int(source.top - other.bottom) : 0);
-                const int leftDiff = std::abs(int(source.left - other.left));
-                if (leftDiff <= std::max(14, int(detectedHeight * .9f)) &&
+                const int edgeDiff = rtlSource ? std::abs(int(source.right - other.right))
+                                               : std::abs(int(source.left - other.left));
+                if (edgeDiff <= std::max(14, int(detectedHeight * .9f)) &&
                     vGap <= std::max(120, int(detectedHeight * 6.f))) {
                     bool sameSurface = true;
                     if (surfaceColors[i].has_value() && surfaceColors[j].has_value()) {
@@ -914,9 +958,15 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                 }
                 if (other.right <= source.left || other.left >= source.right)
                     continue;
-                if (item.detectedLines.size() == 1 && !hasProsePunct && detectedHeight >= 22.f &&
+                const bool startsLowercaseAscii = !wOrig.empty() && wOrig[0] >= L'a' && wOrig[0] <= L'z';
+                const bool headingHeightJump =
+                    (coreHeights[i] > 0.f && coreHeights[j] > 0.f)
+                        ? (coreHeights[i] >= coreHeights[j] * 1.30f)
+                        : (lineHeights[j] > 0.f && detectedHeight >= lineHeights[j] * 1.45f);
+                if (item.detectedLines.size() == 1 && !hasProsePunct && !startsLowercaseAscii &&
+                    wOrig.size() <= 40 && detectedHeight >= 22.f &&
                     other.top >= source.bottom - 2 && vGap <= std::max(20, int(detectedHeight * 1.4f)) &&
-                    lineHeights[j] > 0.f && detectedHeight >= lineHeights[j] * 1.35f) {
+                    headingHeightJump) {
                     item.bold = true;
                 }
                 if (isShortLabel && item.detectedLines.size() == 1 && vGap <= std::max(18, int(detectedHeight * 1.4f))) {
@@ -1027,10 +1077,10 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                     area.bottom = std::min(area.bottom, (source.bottom + other.top) / 2);
             }
             if (segment.sourcePixels && other.top < area.bottom && other.bottom > area.top) {
-                if (other.right <= source.left)
-                    area.left = std::max(area.left, (source.left + other.right + 1) / 2);
-                if (other.left >= source.right)
-                    area.right = std::min(area.right, (source.right + other.left) / 2);
+                if (other.right <= source.left + 8 && other.left < source.left)
+                    area.left = std::max(area.left, std::min(source.right - 1, (source.left + other.right + 1) / 2));
+                if (other.left >= source.right - 8 && other.right > source.right)
+                    area.right = std::min(area.right, std::max(source.left + 1, (source.right + other.left) / 2));
             }
         }
         // Do not let padding expand across table borders or cell dividers, and bound right-hand
@@ -1099,7 +1149,8 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
             for (const auto& other : protectedRegions) {
                 if (!Valid(other) || EqualRect(&other, &source) || Conflicts(source, other))
                     continue;
-                if (other.top < area.bottom && other.bottom > area.top && other.left >= source.right)
+                if (other.top < area.bottom && other.bottom > area.top &&
+                    other.left >= source.right - 8 && other.right > source.right)
                     maxOverhang = std::min(maxOverhang, float(std::max(0L, other.left - area.right)));
             }
             const LONG scanEnd = std::min<LONG>(image.width, area.right + LONG(kOverhangAllowance));
@@ -1332,8 +1383,20 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                 }
                 // Protect structural horizontal/vertical borders, table grid lines and form rules so
                 // glyph erasure never punches holes in table outlines or underlines outside text rows.
+                const auto insideOtherRegion = [&](int sx, int sy) -> bool {
+                    for (const auto& other : protectedRegions) {
+                        if (!Valid(other) || EqualRect(&other, &source))
+                            continue;
+                        if (sx >= other.left - 1 && sx < other.right + 1 &&
+                            sy >= other.top - 1 && sy < other.bottom + 1)
+                            return true;
+                    }
+                    return false;
+                };
                 const auto outsideImgInk = [&](int sx, int sy) -> bool {
                     if (sx < 0 || sx >= image.width || sy < 0 || sy >= image.height)
+                        return false;
+                    if (insideOtherRegion(sx, sy))
                         return false;
                     const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
                     const int dSurf = std::abs(int(p[2]) - GetRValue(surfaceRef)) +
@@ -1394,7 +1457,8 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                             (outsideImgInk(int(region.right) + 1, sy) ||
                              outsideImgInk(int(region.right) + 2, sy));
                         const bool outsideRule =
-                            outsideSourceY && runLen >= std::max(16, int(detectedHeight * 1.1f));
+                            outsideSourceY && runLen >= std::max(16, int(detectedHeight * 1.1f)) &&
+                            !insideOtherRegion(int(region.left) + (x0 + x1) / 2, sy);
                         if (fullSpan || continuesLeft || continuesRight || outsideRule) {
                             for (int k = x0; k < x1; ++k) {
                                 int up = y, down = y;
@@ -1437,7 +1501,7 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                         }
                         const int y1 = (y > y0 && !rawInk[size_t(y - 1) * coverWidth + x]) ? y - 1 : y;
                         const int runLen = y1 - y0;
-                        if (runLen < 10)
+                        if (runLen < 12)
                             continue;
                         int thinRows = 0, clearRows = 0;
                         for (int k = y0; k < y1; ++k) {
@@ -1457,6 +1521,9 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                         }
                         if (thinRows * 10 < runLen * 7)
                             continue;
+                        const int syMid = int(region.top) + (y0 + y1) / 2;
+                        if (insideOtherRegion(sx, syMid))
+                            continue;
                         const bool continuesTop =
                             y0 <= 1 && region.top >= 3 &&
                             (outsideImgInk(sx, int(region.top) - 2) ||
@@ -1465,11 +1532,15 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                             y1 >= coverHeight - 1 && region.bottom + 2 < image.height &&
                             (outsideImgInk(sx, int(region.bottom) + 1) ||
                              outsideImgInk(sx, int(region.bottom) + 2));
-                        const bool outsideBorder =
-                            outsideSourceX && runLen >= std::max(10, int(detectedHeight * .8f));
-                        const bool isolatedFullSpan =
-                            runLen >= std::max(28, int(coverHeight * .75f)) && clearRows * 10 >= runLen * 8;
-                        if (continuesTop || continuesBottom || outsideBorder || isolatedFullSpan) {
+                        // A genuine vertical divider or table rule either continues past the cover
+                        // bounds (outside neighboring text boxes) or spans the full cover height
+                        // outside source text; glyph stems ("l", "I", "1", "m", "d") never qualify.
+                        const bool continuousDivider =
+                            (continuesTop || continuesBottom) && runLen >= std::max(14, int(coverHeight * .65f));
+                        const bool edgeFrameBorder =
+                            outsideSourceX && runLen >= std::max(14, coverHeight - 2) &&
+                            clearRows * 10 >= runLen * 8;
+                        if (continuousDivider || edgeFrameBorder) {
                             for (int k = y0; k < y1; ++k) {
                                 int l = x, r = x;
                                 while (l > 0 && x - l < 4 && rawInk[size_t(k) * coverWidth + (l - 1)])
@@ -1727,6 +1798,32 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                 padded.top = std::max<LONG>(0, padded.top);
                 padded.right = std::min<LONG>(image.width, padded.right);
                 padded.bottom = std::min<LONG>(image.height, padded.bottom);
+                if (segment.sourcePixels) {
+                    for (const auto& other : protectedRegions) {
+                        if (!Valid(other) || EqualRect(&other, &source) || Conflicts(source, other))
+                            continue;
+                        if (other.top < padded.bottom && other.bottom > padded.top) {
+                            if (other.right <= source.left)
+                                padded.left = std::max(padded.left, (source.left + other.right + 1) / 2);
+                            else if (other.right <= source.left + 8 && other.left < source.left)
+                                padded.left = std::max(padded.left, source.left);
+                            if (other.left >= source.right)
+                                padded.right = std::min(padded.right, (source.right + other.left) / 2);
+                            else if (other.left >= source.right - 8 && other.right > source.right)
+                                padded.right = std::min(padded.right, source.right);
+                        }
+                        if (other.left < padded.right && other.right > padded.left) {
+                            if (other.bottom <= source.top)
+                                padded.top = std::max(padded.top, (source.top + other.bottom + 1) / 2);
+                            else if (other.bottom <= source.top + 8 && other.top < source.top)
+                                padded.top = std::max(padded.top, source.top);
+                            if (other.top >= source.bottom)
+                                padded.bottom = std::min(padded.bottom, (source.bottom + other.top) / 2);
+                            else if (other.top >= source.bottom - 8 && other.bottom > source.bottom)
+                                padded.bottom = std::min(padded.bottom, source.bottom);
+                        }
+                    }
+                }
                 EraseRow block{padded, item.background, item.background, item.background, item.background, false, padded};
                 block.cover = buildCover(padded, item.background);
                 if (!block.cover.empty())
@@ -1827,7 +1924,11 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
                 if (ch == L'\n' && at > 0 && at + 1 < text.size() && text[at - 1] != L'\n' &&
                     text[at + 1] != L'\n' && text[at + 1] != L'\r') {
                     auto previous = reflowed.empty() ? L' ' : reflowed.back(), next = text[at + 1];
-                    if (previous < 0x2e80 && next < 0x2e80 && previous != L' ' && next != L' ')
+                    auto noBreakSpaceScript = [](wchar_t c) {
+                        return c >= 0x2E80 || (c >= 0x0E00 && c <= 0x0EFF) || (c >= 0x1780 && c <= 0x17FF);
+                    };
+                    if (!noBreakSpaceScript(previous) && !noBreakSpaceScript(next) &&
+                        previous != L' ' && next != L' ')
                         reflowed += L' ';
                     continue;
                 }
@@ -1836,7 +1937,7 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
             text = std::move(reflowed);
         }
         prep.text = std::move(text);
-        constexpr std::wstring_view kProsePunct = L"。，、；：？！“”‘’「」『』【】（）()[].,;:?!\"";
+        constexpr std::wstring_view kProsePunct = L"。，、；：？！“”‘’「」『』【】（）()[].,;:?!\"؟؛،।॥";
         const std::wstring wOrig = Wide(segment.original);
         const bool hasProsePunct = prep.text.find_first_of(kProsePunct) != std::wstring::npos ||
                                    wOrig.find_first_of(kProsePunct) != std::wstring::npos;
@@ -1845,32 +1946,8 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
             !hasProsePunct && item.detectedLines.size() <= 1 && prep.text.size() <= 8;
         auto measure = [&](const std::wstring& body, float fontSize, float lineSpacing,
                            ComPtr<IDWriteTextLayout>& layout, bool wrap) {
-            ComPtr<IDWriteTextFormat> format;
-            const DWRITE_FONT_WEIGHT fontWeight =
-                item.bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
-            CheckHR(factory->CreateTextFormat(settings.font.c_str(), nullptr, fontWeight,
-                                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, fontSize,
-                                              L"zh-CN", &format),
-                    "layout");
-            CheckHR(format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP
-                                                 : DWRITE_WORD_WRAPPING_NO_WRAP),
-                    "layout");
-            CheckHR(format->SetTextAlignment(item.centerAligned ? DWRITE_TEXT_ALIGNMENT_CENTER
-                                                                : DWRITE_TEXT_ALIGNMENT_LEADING),
-                    "layout");
-            CheckHR(format->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineSpacing, fontSize * .8f),
-                    "layout");
-            layout.Reset();
-            CheckHR(factory->CreateTextLayout(body.c_str(), UINT32(body.size()), format.Get(), prep.width,
-                                              100000.f, &layout),
-                    "layout");
-            ComPtr<IDWriteTextLayout1> spaced;
-            if (SUCCEEDED(layout.As(&spaced)))
-                spaced->SetCharacterSpacing(0.f, fontSize * .02f, 0.f,
-                                            DWRITE_TEXT_RANGE{0, UINT32(body.size())});
-            DWRITE_TEXT_METRICS metrics{};
-            CheckHR(layout->GetMetrics(&metrics), "layout");
-            return metrics;
+            return MeasureTextLayout(factory.Get(), settings.font, body, fontSize, lineSpacing,
+                                     prep.width, item.bold, item.centerAligned, wrap, layout);
         };
         float preferred = settings.fontSize * scale;
         if (settings.autoFont) {
@@ -2057,32 +2134,8 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
         auto pitchFor = [&](float fontSize) { return fontSize * prep.pitchRatio; };
         auto measure = [&](const std::wstring& body, float fontSize, float lineSpacing,
                            ComPtr<IDWriteTextLayout>& layout, bool wrap) {
-            ComPtr<IDWriteTextFormat> format;
-            const DWRITE_FONT_WEIGHT fontWeight =
-                item.bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
-            CheckHR(factory->CreateTextFormat(settings.font.c_str(), nullptr, fontWeight,
-                                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, fontSize,
-                                              L"zh-CN", &format),
-                    "layout");
-            CheckHR(format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP
-                                                 : DWRITE_WORD_WRAPPING_NO_WRAP),
-                    "layout");
-            CheckHR(format->SetTextAlignment(item.centerAligned ? DWRITE_TEXT_ALIGNMENT_CENTER
-                                                                : DWRITE_TEXT_ALIGNMENT_LEADING),
-                    "layout");
-            CheckHR(format->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineSpacing, fontSize * .8f),
-                    "layout");
-            layout.Reset();
-            CheckHR(factory->CreateTextLayout(body.c_str(), UINT32(body.size()), format.Get(), prep.width,
-                                              100000.f, &layout),
-                    "layout");
-            ComPtr<IDWriteTextLayout1> spaced;
-            if (SUCCEEDED(layout.As(&spaced)))
-                spaced->SetCharacterSpacing(0.f, fontSize * .02f, 0.f,
-                                            DWRITE_TEXT_RANGE{0, UINT32(body.size())});
-            DWRITE_TEXT_METRICS metrics{};
-            CheckHR(layout->GetMetrics(&metrics), "layout");
-            return metrics;
+            return MeasureTextLayout(factory.Get(), settings.font, body, fontSize, lineSpacing,
+                                     prep.width, item.bold, item.centerAligned, wrap, layout);
         };
         const auto exceedsRows = [&](const DWRITE_TEXT_METRICS& m, float fontSize, size_t maxRows) {
             if (!maxRows)
@@ -2209,7 +2262,7 @@ std::vector<PositionedText> LayoutPositioned(const TranslationResult& result, co
     }
     return output;
 }
-COLORREF ReadableTextColor(COLORREF preferred, COLORREF background) {
+COLORREF ReadableTextColor(COLORREF preferred, COLORREF background, bool preservePolarity) {
     auto luminance = [](COLORREF c) {
         auto linear = [](int v) {
             double s = v / 255.;
@@ -2227,12 +2280,25 @@ COLORREF ReadableTextColor(COLORREF preferred, COLORREF background) {
     constexpr double minimumContrast = 3.0;
     if (contrast(preferred) >= minimumContrast)
         return preferred;
-    // Keep the measured hue and move only its lightness until the pair separates, so a blue link
-    // stays blue and a warm caption keeps its warmth. The direction follows the endpoint that
-    // separates best from the surface underneath.
     const double blackContrast = contrast(RGB(0, 0, 0));
     const double whiteContrast = contrast(RGB(255, 255, 255));
-    const int target = blackContrast >= whiteContrast ? 0 : 255;
+    int target = blackContrast >= whiteContrast ? 0 : 255;
+    double requiredContrast = minimumContrast;
+    // When preferred comes directly from the original UI glyph (e.g. white text on iMessage blue,
+    // iOS green, or coral orange buttons), preserve its light/dark polarity whenever that endpoint
+    // offers viable separation (>= 2.0) instead of flipping white UI text to dark grey.
+    if (preservePolarity) {
+        const bool lighterPref = luminance(preferred) >= luminance(background);
+        const double sameEndContrast = lighterPref ? whiteContrast : blackContrast;
+        if (sameEndContrast >= 2.0) {
+            if (contrast(preferred) >= 2.15)
+                return preferred;
+            target = lighterPref ? 255 : 0;
+            requiredContrast = std::min(minimumContrast, sameEndContrast - .02);
+        }
+    }
+    // Keep the measured hue and move only its lightness until the pair separates, so a blue link
+    // stays blue and a warm caption keeps its warmth.
     for (int step = 1; step <= 16; ++step) {
         const float t = float(step) / 16.f;
         auto mix = [&](int channel) {
@@ -2240,7 +2306,7 @@ COLORREF ReadableTextColor(COLORREF preferred, COLORREF background) {
         };
         const COLORREF candidate =
             RGB(mix(GetRValue(preferred)), mix(GetGValue(preferred)), mix(GetBValue(preferred)));
-        if (contrast(candidate) >= minimumContrast)
+        if (contrast(candidate) >= requiredContrast)
             return candidate;
     }
     return target == 0 ? RGB(0, 0, 0) : RGB(255, 255, 255);
@@ -2405,26 +2471,43 @@ void DrawPositioned(ID2D1RenderTarget* target, const std::vector<PositionedText>
             }
             measured = RGB(int(sums[0] / count), int(sums[1] / count), int(sums[2] / count));
         }
-        const COLORREF textFill = ReadableTextColor(item.sourceColor.value_or(textColor), measured);
+        const COLORREF textFill =
+            ReadableTextColor(item.sourceColor.value_or(textColor), measured, item.sourceColor.has_value());
         brush->SetColor(color(textFill));
         // The inverse mode derives the rim from the rendered face colour, exactly as the reading
         // panel does, so the outline keeps its contrast on a dark cover as well as a light one.
         // When matchTextColor places dark or coloured ink on a light rebuilt surface while the
         // outline remains at the default black (paired with default white text), align the rim with
         // the surface so grey captions and coloured links do not acquire a dark crust.
+        // On saturated mid-tone UI surfaces (e.g. blue/green chat bubbles or buttons) carrying light
+        // text, a softened darker tint of the surface keeps strokes crisp without a black crust.
         const float surfLum =
             .299f * GetRValue(measured) + .587f * GetGValue(measured) + .114f * GetBValue(measured);
+        const int surfChroma =
+            std::max({int(GetRValue(measured)), int(GetGValue(measured)), int(GetBValue(measured))}) -
+            std::min({int(GetRValue(measured)), int(GetGValue(measured)), int(GetBValue(measured))});
         const float fillLum =
             .299f * GetRValue(textFill) + .587f * GetGValue(textFill) + .114f * GetBValue(textFill);
+        const bool vibrantLightTextSurface =
+            surfLum >= 95.f && surfLum <= 190.f && surfChroma >= 60 && fillLum >= 210.f;
+        const COLORREF shadedSurface =
+            RGB(int(GetRValue(measured) * .45f), int(GetGValue(measured) * .45f),
+                int(GetBValue(measured) * .45f));
         COLORREF rimColor = settings.outlineColor;
         if (settings.outlineColorMode == 1) {
-            rimColor = (surfLum >= 140.f && fillLum < surfLum)
-                           ? measured
-                           : RGB(255 - GetRValue(textFill), 255 - GetGValue(textFill),
-                                 255 - GetBValue(textFill));
+            if (surfLum >= 140.f && fillLum < surfLum)
+                rimColor = measured;
+            else if (vibrantLightTextSurface)
+                rimColor = shadedSurface;
+            else
+                rimColor = RGB(255 - GetRValue(textFill), 255 - GetGValue(textFill),
+                               255 - GetBValue(textFill));
         } else if (settings.matchTextColor && item.sourceColor.has_value() &&
                    settings.outlineColor == RGB(0, 0, 0) && surfLum >= 140.f && fillLum < surfLum) {
             rimColor = measured;
+        } else if (settings.matchTextColor && item.sourceColor.has_value() &&
+                   settings.outlineColor == RGB(0, 0, 0) && vibrantLightTextSurface) {
+            rimColor = shadedSurface;
         }
         rimBrush->SetColor(color(rimColor));
         // The clip keeps the replacement on its surface while honouring the overhang the fit search

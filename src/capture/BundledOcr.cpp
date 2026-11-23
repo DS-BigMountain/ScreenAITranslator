@@ -1,9 +1,11 @@
 #include "BundledOcr.h"
 #include "common/Diagnostics.h"
+#include "common/TextMetrics.h"
 #define ORT_API_MANUAL_INIT
 #include <onnxruntime_cxx_api.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <fstream>
@@ -22,19 +24,76 @@ std::filesystem::path AppDirectory() {
     return std::filesystem::path(path).parent_path();
 }
 // Preferred model first; the directory scan covers staged builds that ship one variant only.
+struct ModelCandidate {
+    const wchar_t* name;
+    const char* variant;
+};
 struct ModelFile {
     std::filesystem::path path;
     const char* variant;
 };
-ModelFile PickModel(const std::filesystem::path& root,
-                    std::initializer_list<std::pair<const wchar_t*, const char*>> candidates) {
+std::optional<ModelFile> FindModel(const std::filesystem::path& root,
+                                   std::initializer_list<ModelCandidate> candidates) {
     std::error_code error;
-    for (const auto& [name, variant] : candidates) {
-        const auto path = root / name;
+    for (const auto& candidate : candidates) {
+        const auto path = root / candidate.name;
         if (std::filesystem::is_regular_file(path, error))
-            return {path, variant};
+            return ModelFile{path, candidate.variant};
     }
+    return std::nullopt;
+}
+ModelFile PickModel(const std::filesystem::path& root, std::initializer_list<ModelCandidate> candidates) {
+    if (auto found = FindModel(root, candidates))
+        return *found;
     throw AppError("ocr", "Bundled OCR model unavailable");
+}
+std::initializer_list<ModelCandidate> RecognizerCandidates(int mode) {
+    static constexpr std::initializer_list<ModelCandidate> kEnglish{
+        {L"models/rec-en-server.onnx", "server"}, {L"models/rec-en.onnx", "mobile"}};
+    static constexpr std::initializer_list<ModelCandidate> kKorean{
+        {L"models/rec-ko-server.onnx", "server"}, {L"models/rec-ko.onnx", "mobile"}};
+    static constexpr std::initializer_list<ModelCandidate> kJapanese{
+        {L"models/rec-ja-server.onnx", "server"}, {L"models/rec-ja.onnx", "mobile"}};
+    static constexpr std::initializer_list<ModelCandidate> kLatin{
+        {L"models/rec-latin.onnx", "mobile"},
+        {L"models/rec-ja-server.onnx", "server"},
+        {L"models/rec-en.onnx", "mobile"}};
+    static constexpr std::initializer_list<ModelCandidate> kRussian{{L"models/rec-ru.onnx", "mobile"}};
+    static constexpr std::initializer_list<ModelCandidate> kThai{{L"models/rec-th.onnx", "mobile"}};
+    static constexpr std::initializer_list<ModelCandidate> kArabic{{L"models/rec-ar.onnx", "mobile"}};
+    static constexpr std::initializer_list<ModelCandidate> kGreek{
+        {L"models/rec-el.onnx", "mobile"}, {L"models/rec-ja-server.onnx", "server"}};
+    static constexpr std::initializer_list<ModelCandidate> kDevanagari{{L"models/rec-hi.onnx", "mobile"}};
+    switch (mode) {
+    case OcrEnglish:
+        return kEnglish;
+    case OcrKorean:
+        return kKorean;
+    case OcrChinese:
+    case OcrJapanese:
+        return kJapanese;
+    case OcrLatin:
+        return kLatin;
+    case OcrRussian:
+        return kRussian;
+    case OcrThai:
+        return kThai;
+    case OcrArabic:
+        return kArabic;
+    case OcrGreek:
+        return kGreek;
+    case OcrDevanagari:
+        return kDevanagari;
+    default:
+        throw AppError("ocr", "Invalid OCR mode");
+    }
+}
+bool HasDedicatedRecognizer(const std::filesystem::path& root, int mode) {
+    std::error_code error;
+    const auto candidates = RecognizerCandidates(mode);
+    if (candidates.size() == 0)
+        return false;
+    return std::filesystem::is_regular_file(root / candidates.begin()->name, error);
 }
 struct Model {
     Ort::Session session{nullptr};
@@ -139,16 +198,7 @@ struct Engine {
         }
         if (!recognizer) {
             const auto root = AppDirectory();
-            ModelFile picked;
-            if (mode == OcrEnglish)
-                picked = PickModel(root, {{L"models/rec-en-server.onnx", "server"},
-                                          {L"models/rec-en.onnx", "mobile"}});
-            else if (mode == OcrKorean)
-                picked = PickModel(root, {{L"models/rec-ko-server.onnx", "server"},
-                                          {L"models/rec-ko.onnx", "mobile"}});
-            else
-                picked = PickModel(root, {{L"models/rec-ja-server.onnx", "server"},
-                                          {L"models/rec-ja.onnx", "mobile"}});
+            const ModelFile picked = PickModel(root, RecognizerCandidates(mode));
             recognizer = std::make_unique<Model>(*env, *options, picked.path, true);
             recognizerVariant = picked.variant;
             DiagnosticEvent("ocr_recognizer_selected",
@@ -365,6 +415,7 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
             int overlapY = std::min(a.bottom, b.bottom) - std::max(a.top, b.top);
             int ca = (a.top + a.bottom) / 2, cb = (b.top + b.bottom) / 2, deltaY = cb - ca;
             if (overlapX >= std::min(Width(a), Width(b)) * .5f &&
+                std::min(Height(a), Height(b)) >= std::max(Height(a), Height(b)) * .45f &&
                 std::abs(deltaY) >= std::min(Height(a), Height(b)) * .5f) {
                 if (a.bottom > b.top && b.bottom > a.top) {
                     int split = (ca + cb) / 2;
@@ -419,6 +470,7 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
         const int y0 = std::min<int>(rect.bottom - 1, rect.top + std::max(1, bh / 8));
         const int y1 = std::max<int>(y0 + 1, rect.bottom - std::max(1, bh / 8));
         std::vector<int> colInk(size_t(bw), 0);
+        std::vector<unsigned char> colBorder(size_t(bw), 0);
         for (int x = 0; x < bw; ++x) {
             const int sx = rect.left + x;
             int ink = 0, minDiff = 999, maxDiff = 0;
@@ -432,9 +484,21 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
             }
             // A subtle vertical container border has uniform colour from top to bottom.
             const bool uniformVerticalLine = (y1 - y0 >= 8) && (maxDiff - minDiff <= 24) && maxDiff < 160;
+            if (uniformVerticalLine && minDiff >= 20)
+                colBorder[size_t(x)] = 1;
             colInk[size_t(x)] = uniformVerticalLine ? 0 : ink;
         }
-        // Suppress isolated 1-2 px vertical border strokes flanked by empty padding on both sides.
+        // Suppress isolated 1-2 px continuous vertical border strokes that span from the top edge
+        // to the bottom edge of the box; narrow standalone glyphs ("i", "l", "1") never touch both
+        // vertical edges and must remain intact.
+        auto edgeHasInk = [&](int sx, int sy) {
+            if (sy < 0 || sy >= image.height)
+                return false;
+            const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
+            const int d = std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb);
+            return d >= 44;
+        };
+        const int minBorderRows = std::max(6, ((y1 - y0) * 4) / 5);
         for (int x = 3; x + 4 < bw; ++x) {
             if (colInk[size_t(x)] > 0 && colInk[size_t(x - 1)] == 0 && colInk[size_t(x - 2)] == 0 &&
                 colInk[size_t(x - 3)] == 0) {
@@ -443,20 +507,41 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
                     ++run;
                 if (run <= 2 && x + run + 2 < bw && colInk[size_t(x + run)] == 0 &&
                     colInk[size_t(x + run + 1)] == 0 && colInk[size_t(x + run + 2)] == 0) {
-                    for (int k = 0; k < run; ++k)
-                        colInk[size_t(x + k)] = 0;
+                    bool fullHeightStroke = true;
+                    for (int k = 0; k < run; ++k) {
+                        const int sx = rect.left + x + k;
+                        if (colInk[size_t(x + k)] < minBorderRows ||
+                            !edgeHasInk(sx, rect.top) || !edgeHasInk(sx, rect.bottom - 1)) {
+                            fullHeightStroke = false;
+                            break;
+                        }
+                    }
+                    if (fullHeightStroke) {
+                        for (int k = 0; k < run; ++k) {
+                            colInk[size_t(x + k)] = 0;
+                            colBorder[size_t(x + k)] = 1;
+                        }
+                    }
                 }
             }
         }
-        const int minSplitGap = std::max(12, int(std::lround(bh * .62f)));
+        const int plainSplitGap = std::max(18, int(std::lround(bh * 1.15f)));
+        const int borderedSplitGap = std::max(10, int(std::lround(bh * .55f)));
         std::vector<std::pair<int, int>> segments;
         int segStart = -1, gapStart = -1;
         for (int x = 0; x < bw; ++x) {
             if (colInk[size_t(x)] > 0) {
                 if (segStart < 0) {
                     segStart = x;
-                } else if (gapStart >= 0 && x - gapStart >= minSplitGap) {
-                    if (gapStart - segStart >= 4 && segments.size() + 1 < 8) {
+                } else if (gapStart >= 0) {
+                    bool hasBorder = false;
+                    for (int gx = gapStart; gx < x; ++gx)
+                        if (colBorder[size_t(gx)]) {
+                            hasBorder = true;
+                            break;
+                        }
+                    const int minSplitGap = hasBorder ? borderedSplitGap : plainSplitGap;
+                    if (x - gapStart >= minSplitGap && gapStart - segStart >= 4 && segments.size() + 1 < 8) {
                         segments.push_back({segStart, gapStart});
                         segStart = x;
                     }
@@ -512,6 +597,193 @@ std::pair<std::string, float> Decode(const Ort::Value& output, const std::vector
         previous = index;
     }
     return {text, count ? float(confidence / count) : 0.f};
+}
+void AppendUtf8(std::string& out, char32_t code) {
+    if (code < 0x80) {
+        out.push_back(static_cast<char>(code));
+    } else if (code < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else if (code < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (code >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    }
+}
+char32_t MirrorBidiBracket(char32_t code) {
+    switch (code) {
+    case U'(': return U')';
+    case U')': return U'(';
+    case U'[': return U']';
+    case U']': return U'[';
+    case U'{': return U'}';
+    case U'}': return U'{';
+    case U'<': return U'>';
+    case U'>': return U'<';
+    case 0x00AB: return 0x00BB;
+    case 0x00BB: return 0x00AB;
+    default: return code;
+    }
+}
+bool IsStrongLtrCodePoint(char32_t code) {
+    return (code >= U'A' && code <= U'Z') || (code >= U'a' && code <= U'z') ||
+           (code >= 0x00C0 && code <= 0x024F) || (code >= 0x0370 && code <= 0x052F) ||
+           (code >= 0x0900 && code <= 0x0EFF) || (code >= 0x1E00 && code <= 0x1EFF) ||
+           (code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF);
+}
+bool IsNumberCodePoint(char32_t code) {
+    return (code >= U'0' && code <= U'9') || (code >= 0x0660 && code <= 0x0669) ||
+           (code >= 0x06F0 && code <= 0x06F9);
+}
+bool HasGreekScript(std::string_view utf8) {
+    for (size_t i = 0; i < utf8.size();) {
+        const char32_t code = NextCodePoint(utf8, i);
+        if ((code >= 0x0370 && code <= 0x03FF) || (code >= 0x1F00 && code <= 0x1FFF))
+            return true;
+    }
+    return false;
+}
+bool HasCyrillicScript(std::string_view utf8) {
+    for (size_t i = 0; i < utf8.size();) {
+        const char32_t code = NextCodePoint(utf8, i);
+        if (code >= 0x0400 && code <= 0x052F)
+            return true;
+    }
+    return false;
+}
+bool HasLatinLetters(std::string_view utf8) {
+    for (size_t i = 0; i < utf8.size();) {
+        const char32_t code = NextCodePoint(utf8, i);
+        if ((code >= U'A' && code <= U'Z') || (code >= U'a' && code <= U'z') ||
+            (code >= 0x00C0 && code <= 0x024F))
+            return true;
+    }
+    return false;
+}
+// PP-OCRv6_rec_small maps Cyrillic letters onto visually similar ASCII letters (e.g. В->B, Т->T,
+// М->M, р->p, и->u, с->c), producing words with mid-word lowercase->uppercase jumps like "IpuBeT".
+bool LooksLikeMisreadCyrillic(std::string_view utf8) {
+    int suspiciousWords = 0;
+    bool inWord = false, seenLower = false, wordSuspicious = false;
+    int wordLen = 0;
+    for (unsigned char ch : utf8) {
+        if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+            const bool upper = ch >= 'A' && ch <= 'Z';
+            if (!inWord) {
+                inWord = true;
+                seenLower = !upper;
+                wordSuspicious = false;
+                wordLen = 1;
+            } else {
+                ++wordLen;
+                if (!upper)
+                    seenLower = true;
+                else if (seenLower)
+                    wordSuspicious = true;
+            }
+        } else {
+            if (inWord && wordSuspicious && wordLen >= 3)
+                ++suspiciousWords;
+            inWord = seenLower = wordSuspicious = false;
+            wordLen = 0;
+        }
+    }
+    if (inWord && wordSuspicious && wordLen >= 3)
+        ++suspiciousWords;
+    return suspiciousWords >= 1;
+}
+// Arabic CTC recognition runs left-to-right across the image, producing visual order.
+// Applying UBA L2/L4 converts visual order back to logical reading order while keeping
+// embedded numbers, Latin runs, and combining marks intact.
+std::string ReorderVisualToLogical(std::string_view utf8) {
+    if (!HasRtlScript(utf8))
+        return std::string(utf8);
+    struct Cluster {
+        std::vector<char32_t> codes;
+        int dir{-1}; // 1=RTL, 0=LTR, 2=Number, -1=Neutral
+        int level{0};
+    };
+    std::vector<Cluster> clusters;
+    for (size_t i = 0; i < utf8.size();) {
+        const char32_t code = NextCodePoint(utf8, i);
+        if (IsCombiningMark(code) && !clusters.empty()) {
+            clusters.back().codes.push_back(code);
+            continue;
+        }
+        int dir = -1;
+        if (IsNumberCodePoint(code))
+            dir = 2;
+        else if (IsRtlCodePoint(code))
+            dir = 1;
+        else if (IsStrongLtrCodePoint(code))
+            dir = 0;
+        clusters.push_back({{code}, dir, 0});
+    }
+    if (clusters.empty())
+        return {};
+    bool baseRtl = true;
+    for (const auto& c : clusters) {
+        if (c.dir == 1) {
+            baseRtl = true;
+            break;
+        }
+        if (c.dir == 0) {
+            baseRtl = false;
+            break;
+        }
+    }
+    const int baseDir = baseRtl ? 1 : 0;
+    auto effDir = [&](int dir) { return dir == 2 ? 1 : dir; };
+    for (size_t i = 0; i < clusters.size();) {
+        if (clusters[i].dir != -1) {
+            ++i;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < clusters.size() && clusters[j].dir == -1)
+            ++j;
+        const int left = i > 0 ? (clusters[i - 1].dir == 2 && !baseRtl ? 0 : effDir(clusters[i - 1].dir)) : baseDir;
+        const int right =
+            j < clusters.size() ? (clusters[j].dir == 2 && !baseRtl ? 0 : effDir(clusters[j].dir)) : baseDir;
+        const int resolved = (left == right) ? left : baseDir;
+        for (size_t k = i; k < j; ++k)
+            clusters[k].dir = resolved;
+        i = j;
+    }
+    for (auto& c : clusters) {
+        if (c.dir == 1)
+            c.level = 1;
+        else if (c.dir == 2)
+            c.level = 2;
+        else
+            c.level = baseRtl ? 2 : 0;
+        if ((c.level & 1) != 0 && c.codes.size() == 1)
+            c.codes[0] = MirrorBidiBracket(c.codes[0]);
+    }
+    for (int lvl = 2; lvl >= 1; --lvl) {
+        for (size_t i = 0; i < clusters.size();) {
+            if (clusters[i].level < lvl) {
+                ++i;
+                continue;
+            }
+            size_t j = i + 1;
+            while (j < clusters.size() && clusters[j].level >= lvl)
+                ++j;
+            std::reverse(clusters.begin() + i, clusters.begin() + j);
+            i = j;
+        }
+    }
+    std::string out;
+    out.reserve(utf8.size());
+    for (const auto& c : clusters)
+        for (char32_t code : c.codes)
+            AppendUtf8(out, code);
+    return out;
 }
 // Text-line orientation is a 0/180 classification. RapidOCR applies cls_thresh=0.9,
 // so a weak 180-degree preference keeps the crop as detected.
@@ -638,7 +910,7 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                 orientation.End("skipped");
         }
         CheckStop(stop);
-        auto recognize = [&](Model& model, RECT box, bool rotated) {
+        auto recognize = [&](Model& model, RECT box, bool rotated, bool rtlOrder) {
             CheckStop(stop);
             const int inputHeight = model.InputHeight(48);
             const int fixedWidth = model.InputWidth();
@@ -664,6 +936,8 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                                      rotated && !vertical && !quarter, vertical, quarter, blocks);
                 auto output = model.Run(pixels, width, inputHeight, run);
                 auto [text, score] = Decode(output, model.alphabet);
+                if (rtlOrder && !text.empty())
+                    text = ReorderVisualToLogical(text);
                 return TextLine{box, std::move(text), score};
             };
             if (!tall)
@@ -690,34 +964,81 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
         try {
             auto quality = [](const TextLine& line) {
                 double units = 0;
-                for (unsigned char ch : line.text)
-                    if ((ch & 0xc0) != 0x80)
-                        units += ch < 128 ? .55 : .95;
+                for (size_t i = 0; i < line.text.size();) {
+                    const char32_t code = NextCodePoint(line.text, i);
+                    if (IsCombiningMark(code))
+                        continue;
+                    if ((code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF) ||
+                        (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFF00 && code <= 0xFFEF))
+                        units += .95;
+                    else
+                        units += .55;
+                }
                 const double coverage =
                     std::min(1., units * Height(line.rect) / std::max(1, Width(line.rect)));
                 return float(line.confidence * (.6 + .4 * coverage));
             };
-            std::error_code modelEc;
-            const bool hasUnifiedModel =
-                std::filesystem::is_regular_file(AppDirectory() / L"models/rec-ja-server.onnx", modelEc);
-            const std::array<int, 3> autoOrder =
-                hasUnifiedModel ? std::array<int, 3>{OcrJapanese, OcrKorean, OcrEnglish}
-                                : std::array<int, 3>{OcrEnglish, OcrJapanese, OcrKorean};
-            std::vector<int> lineLanguages;
-            for (int language : autoOrder) {
-                if (mode != OcrLocalAuto && language != mode)
-                    continue;
+            std::vector<int> lineLanguages(boxes.size(), mode);
+            bool triedRussian = false, triedGreek = false;
+            auto lineNeedsRefine = [&](size_t i) {
+                const float q = quality(lines[i]);
+                if (q < .90f)
+                    return true;
+                if (!triedGreek && HasGreekScript(lines[i].text) && lineLanguages[i] != OcrGreek)
+                    return true;
+                if (!triedRussian && LooksLikeMisreadCyrillic(lines[i].text) &&
+                    lineLanguages[i] != OcrRussian)
+                    return true;
+                return false;
+            };
+            auto acceptCandidate = [&](size_t idx, TextLine&& cand, int language) {
+                const float newQ = quality(cand);
+                const float oldQ = quality(lines[idx]);
+                const bool upgradeCyrillic =
+                    language == OcrRussian && LooksLikeMisreadCyrillic(lines[idx].text) &&
+                    HasCyrillicScript(cand.text) && newQ >= oldQ - .03f;
+                const bool upgradeGreek =
+                    language == OcrGreek && HasGreekScript(lines[idx].text) &&
+                    HasGreekScript(cand.text) && newQ >= oldQ - .03f;
+                if (newQ > oldQ || upgradeCyrillic || upgradeGreek) {
+                    lines[idx] = std::move(cand);
+                    lineLanguages[idx] = language;
+                }
+            };
+            auto satisfied = [&] {
+                double score = 0, weight = 0, lowWeight = 0;
+                for (size_t i = 0; i < lines.size(); ++i) {
+                    if ((!triedGreek && HasGreekScript(lines[i].text) && lineLanguages[i] != OcrGreek) ||
+                        (!triedRussian && LooksLikeMisreadCyrillic(lines[i].text) &&
+                         lineLanguages[i] != OcrRussian))
+                        return false;
+                    const double importance = std::sqrt(double(std::max(1, Width(lines[i].rect))));
+                    const float confidence = quality(lines[i]);
+                    score += confidence * importance;
+                    weight += importance;
+                    if (confidence < .72f)
+                        lowWeight += importance;
+                }
+                return score / std::max(1., weight) >= .88 && lowWeight <= weight * .10;
+            };
+            auto runAll = [&](int language) {
+                if (language == OcrRussian)
+                    triedRussian = true;
+                if (language == OcrGreek)
+                    triedGreek = true;
                 DiagnosticSpan recognitionLoad("ocr_recognizer_load", {{"ocr_mode", language}});
                 auto& model = engine->Recognizer(language);
                 recognitionLoad.End("ok", {{"model", engine->recognizerVariant}});
                 DiagnosticSpan recognition("ocr_recognize", {{"ocr_mode", language}});
                 std::vector<TextLine> candidate;
+                candidate.reserve(boxes.size());
                 size_t recognized = 0;
+                const bool rtl = language == OcrArabic;
                 for (size_t i = 0; i < boxes.size(); ++i) {
-                    if (mode == OcrLocalAuto && !lines.empty() && quality(lines[i]) >= .90f) {
+                    if (mode == OcrLocalAuto && !lines.empty() && !lineNeedsRefine(i)) {
                         candidate.push_back(lines[i]);
                     } else {
-                        candidate.push_back(recognize(model, boxes[i], upsideDown[i]));
+                        candidate.push_back(recognize(model, boxes[i], upsideDown[i], rtl));
                         ++recognized;
                     }
                 }
@@ -726,30 +1047,129 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                     lineLanguages.assign(candidate.size(), language);
                     lines = std::move(candidate);
                 } else {
-                    // Compare the same detected line across recognizers. A small Japanese
-                    // label must not be outvoted by a page containing mostly English.
                     for (size_t i = 0; i < lines.size(); ++i)
-                        if (quality(candidate[i]) > quality(lines[i])) {
-                            lines[i] = std::move(candidate[i]);
-                            lineLanguages[i] = language;
+                        acceptCandidate(i, std::move(candidate[i]), language);
+                }
+            };
+            if (mode != OcrLocalAuto) {
+                runAll(mode);
+            } else {
+                const auto root = AppDirectory();
+                std::error_code modelEc;
+                const bool hasUnifiedModel =
+                    std::filesystem::is_regular_file(root / L"models/rec-ja-server.onnx", modelEc);
+                const auto recognitionStart = std::chrono::steady_clock::now();
+                constexpr auto kAutoCascadeBudget = std::chrono::seconds(6);
+                if (hasUnifiedModel) {
+                    runAll(OcrJapanese);
+                } else {
+                    for (int language : {OcrEnglish, OcrJapanese, OcrKorean}) {
+                        runAll(language);
+                        if (satisfied())
+                            break;
+                    }
+                }
+                if (!satisfied()) {
+                    const std::array<int, 8> probeOrder{OcrRussian, OcrGreek,   OcrKorean,
+                                                        OcrThai,    OcrArabic,  OcrDevanagari,
+                                                        OcrEnglish, OcrLatin};
+                    for (int language : probeOrder) {
+                        if (!hasUnifiedModel &&
+                            (language == OcrKorean || language == OcrEnglish))
+                            continue;
+                        if (std::chrono::steady_clock::now() - recognitionStart >= kAutoCascadeBudget)
+                            break;
+                        if ((language == OcrKorean || language == OcrEnglish)
+                                ? !FindModel(root, RecognizerCandidates(language)).has_value()
+                                : !HasDedicatedRecognizer(root, language))
+                            continue;
+                        std::vector<size_t> uncertain;
+                        bool anyLatin = false, anyGreek = false, anyCyrillicHint = false;
+                        for (size_t i = 0; i < lines.size(); ++i) {
+                            if (!lineNeedsRefine(i))
+                                continue;
+                            uncertain.push_back(i);
+                            anyLatin = anyLatin || HasLatinLetters(lines[i].text);
+                            anyGreek = anyGreek || HasGreekScript(lines[i].text);
+                            anyCyrillicHint = anyCyrillicHint || LooksLikeMisreadCyrillic(lines[i].text);
                         }
+                        if (uncertain.empty())
+                            break;
+                        if (hasUnifiedModel && (language == OcrEnglish || language == OcrLatin) && !anyLatin)
+                            continue;
+                        if (language == OcrRussian)
+                            triedRussian = true;
+                        if (language == OcrGreek)
+                            triedGreek = true;
+                        DiagnosticSpan recognitionLoad("ocr_recognizer_load", {{"ocr_mode", language}});
+                        auto& model = engine->Recognizer(language);
+                        recognitionLoad.End("ok", {{"model", engine->recognizerVariant}});
+                        DiagnosticSpan recognition("ocr_recognize", {{"ocr_mode", language}});
+                        const bool rtl = language == OcrArabic;
+                        size_t recognized = 0;
+                        if (uncertain.size() <= 4) {
+                            for (size_t idx : uncertain) {
+                                auto cand = recognize(model, boxes[idx], upsideDown[idx], rtl);
+                                ++recognized;
+                                acceptCandidate(idx, std::move(cand), language);
+                            }
+                        } else {
+                            // Probe up to 3 representative uncertain lines first so non-matching
+                            // script models exit quickly without running every box on the page.
+                            std::vector<size_t> ranked = uncertain;
+                            std::stable_sort(ranked.begin(), ranked.end(), [&](size_t a, size_t b) {
+                                const float qa = quality(lines[a]), qb = quality(lines[b]);
+                                if ((qa < .80f) != (qb < .80f))
+                                    return qa < .80f;
+                                const long long areaA = 1LL * Width(boxes[a]) * Height(boxes[a]);
+                                const long long areaB = 1LL * Width(boxes[b]) * Height(boxes[b]);
+                                return areaA > areaB;
+                            });
+                            std::vector<size_t> probes;
+                            for (size_t idx : ranked) {
+                                if (Width(boxes[idx]) >= 20 && Height(boxes[idx]) >= 8)
+                                    probes.push_back(idx);
+                                if (probes.size() == 3)
+                                    break;
+                            }
+                            if (probes.empty())
+                                for (size_t k = 0; k < std::min<size_t>(3, ranked.size()); ++k)
+                                    probes.push_back(ranked[k]);
+                            bool promoted = false;
+                            for (size_t idx : probes) {
+                                const float oldQ = quality(lines[idx]);
+                                const std::string oldText = lines[idx].text;
+                                auto cand = recognize(model, boxes[idx], upsideDown[idx], rtl);
+                                ++recognized;
+                                const float newQ = quality(cand);
+                                if ((newQ >= .75f && newQ > oldQ + .05f) ||
+                                    (oldQ < .60f && newQ >= .68f) ||
+                                    (language == OcrRussian && LooksLikeMisreadCyrillic(oldText) &&
+                                     HasCyrillicScript(cand.text) && newQ >= oldQ - .03f) ||
+                                    (language == OcrGreek && HasGreekScript(oldText) &&
+                                     HasGreekScript(cand.text) && newQ >= oldQ - .03f))
+                                    promoted = true;
+                                acceptCandidate(idx, std::move(cand), language);
+                            }
+                            if (promoted) {
+                                for (size_t idx : uncertain) {
+                                    if (std::find(probes.begin(), probes.end(), idx) != probes.end())
+                                        continue;
+                                    auto cand = recognize(model, boxes[idx], upsideDown[idx], rtl);
+                                    ++recognized;
+                                    acceptCandidate(idx, std::move(cand), language);
+                                }
+                            }
+                        }
+                        recognition.End("ok", {{"recognized_lines", recognized}});
+                        if (satisfied())
+                            break;
+                    }
                 }
-                double score = 0, weight = 0, lowWeight = 0;
-                for (const auto& line : lines) {
-                    const double importance = std::sqrt(double(std::max(1, Width(line.rect))));
-                    const float confidence = quality(line);
-                    score += confidence * importance;
-                    weight += importance;
-                    if (confidence < .72f)
-                        lowWeight += importance;
-                }
-                if (mode != OcrLocalAuto || (score / std::max(1., weight) >= .88 && lowWeight <= weight * .10))
-                    break;
-            }
-            if (mode == OcrLocalAuto) {
                 for (auto& line : lines)
                     line.confidence = quality(line);
-                for (int language : {OcrEnglish, OcrJapanese, OcrKorean}) {
+                for (int language : {OcrEnglish, OcrJapanese, OcrKorean, OcrChinese, OcrLatin, OcrRussian,
+                                     OcrThai, OcrArabic, OcrGreek, OcrDevanagari}) {
                     const auto count = std::count(lineLanguages.begin(), lineLanguages.end(), language);
                     if (count)
                         DiagnosticEvent("ocr_language_selected",

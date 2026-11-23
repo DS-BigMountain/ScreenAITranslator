@@ -9,5 +9,5 @@ void DrawPositioned(ID2D1RenderTarget* target, const std::vector<PositionedText>
                     COLORREF textColor, const Settings& settings, UINT dpi, bool diagnostics = false);
 } // namespace sat
 namespace sat {
-COLORREF ReadableTextColor(COLORREF preferred, COLORREF background);
+COLORREF ReadableTextColor(COLORREF preferred, COLORREF background, bool preservePolarity = false);
 }

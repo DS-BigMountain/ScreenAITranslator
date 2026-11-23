@@ -2,6 +2,7 @@
 #include "Capture.h"
 #include "common/Platform.h"
 #include "common/Diagnostics.h"
+#include "common/TextMetrics.h"
 #include "BundledOcr.h"
 #include <algorithm>
 #include <array>
@@ -170,26 +171,40 @@ bool HasSeparator(const Image& image, RECT a, RECT b) {
     }
     return false;
 }
-bool HasVerticalSeparator(const Image& image, RECT leftRect, RECT rightRect) {
-    const LONG top = std::max<LONG>(0, std::max(leftRect.top, rightRect.top) - 2);
-    const LONG bottom = std::min<LONG>(image.height, std::min(leftRect.bottom, rightRect.bottom) + 2);
-    if (bottom - top < 8)
+bool HasVerticalSeparator(const Image& image, RECT leftRect, RECT rightRect, LONG scanStartX = -1,
+                          LONG scanEndX = -1) {
+    const LONG top = std::max<LONG>(0, std::max(leftRect.top, rightRect.top));
+    const LONG bottom = std::min<LONG>(image.height, std::min(leftRect.bottom, rightRect.bottom));
+    const int span = int(bottom - top);
+    if (span < 8)
         return false;
-    const LONG startX = std::max<LONG>(1, std::min(leftRect.right, rightRect.left) - 4);
-    const LONG endX = std::min<LONG>(image.width - 1, std::max(leftRect.right, rightRect.left) + 4);
-    if (endX <= startX)
+    const bool fromInkSpan = scanStartX >= 0 && scanEndX >= 0;
+    const LONG rawStart = fromInkSpan ? scanStartX : leftRect.right;
+    const LONG rawEnd = fromInkSpan ? scanEndX : rightRect.left;
+    // Stay clear of glyph edges and 1 px anti-aliased halos when scanning between tight ink spans
+    // so neighbor delta checks (x - 1, x + 1) only inspect true inter-word background or UI dividers.
+    const LONG inset = fromInkSpan ? 2 : 1;
+    if (rawEnd - rawStart < inset * 2 + 1)
         return false;
+    const LONG startX = std::max<LONG>(1, rawStart + inset);
+    const LONG endX = std::min<LONG>(image.width - 2, rawEnd - inset - 1);
+    if (endX < startX)
+        return false;
+    auto edgeAt = [&](LONG x, LONG y) {
+        const auto p = (size_t(y) * image.width + x) * 4;
+        int deltaL = 0, deltaR = 0;
+        for (int c = 0; c < 3; ++c) {
+            deltaL += std::abs(int(image.bgra[p + c]) - int(image.bgra[p - 4 + c]));
+            deltaR += std::abs(int(image.bgra[p + c]) - int(image.bgra[p + 4 + c]));
+        }
+        return std::max(deltaL, deltaR) > 16;
+    };
     for (LONG x = startX; x <= endX; ++x) {
         int edges = 0;
         int minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
         for (LONG y = top; y < bottom; ++y) {
             const auto p = (size_t(y) * image.width + x) * 4;
-            int deltaL = 0, deltaR = 0;
-            for (int c = 0; c < 3; ++c) {
-                deltaL += std::abs(int(image.bgra[p + c]) - int(image.bgra[p - 4 + c]));
-                deltaR += std::abs(int(image.bgra[p + c]) - int(image.bgra[p + 4 + c]));
-            }
-            if (std::max(deltaL, deltaR) > 16)
+            if (edgeAt(x, y))
                 ++edges;
             minR = std::min(minR, int(image.bgra[p + 2]));
             maxR = std::max(maxR, int(image.bgra[p + 2]));
@@ -198,9 +213,15 @@ bool HasVerticalSeparator(const Image& image, RECT leftRect, RECT rightRect) {
             minB = std::min(minB, int(image.bgra[p + 0]));
             maxB = std::max(maxB, int(image.bgra[p + 0]));
         }
-        const int span = bottom - top;
-        const bool verticalEdge = edges > span * .55;
-        const bool uniformStroke = (maxR - minR) + (maxG - minG) + (maxB - minB) <= 36 && edges > span * .35;
+        int extTop = 0, extBottom = 0;
+        for (LONG y = std::max<LONG>(0, top - 4); y < top; ++y)
+            extTop += edgeAt(x, y) ? 1 : 0;
+        for (LONG y = bottom; y < std::min<LONG>(image.height, bottom + 4); ++y)
+            extBottom += edgeAt(x, y) ? 1 : 0;
+        const bool continuesVertically = extTop >= 2 || extBottom >= 2;
+        const bool uniformColor = (maxR - minR) + (maxG - minG) + (maxB - minB) <= 36;
+        const bool uniformStroke = uniformColor && edges > span * .55;
+        const bool verticalEdge = edges > span * .72 && (continuesVertically || span >= 36);
         if (verticalEdge || uniformStroke)
             return true;
     }
@@ -314,7 +335,8 @@ bool EndsSentence(std::string_view text) {
     const char c = text.back();
     if (c == '.' || c == '!' || c == '?' || c == ':')
         return true;
-    constexpr std::string_view kUtf8Closers[] = {"。", "！", "？", "：", "”", "」", "』"};
+    constexpr std::string_view kUtf8Closers[] = {"。", "！", "？", "：", "”", "」", "』",
+                                                  "؟",  "؛",  "۔",  "।",  "॥"};
     for (auto closer : kUtf8Closers)
         if (text.size() >= closer.size() && text.substr(text.size() - closer.size()) == closer)
             return true;
@@ -356,66 +378,131 @@ std::vector<TextRegion> GroupTextLines(std::vector<TextLine> lines, const Image&
     const bool allUnread =
         std::all_of(lines.begin(), lines.end(), [](const TextLine& l) { return IsUnreadText(l.text); });
     // A list marker and its text can be detected as two slightly overlapping boxes, and a short
-    // caption word can arrive as several fragments ("Angelic Bazaar" as A / n g e / lic / Bazaar).
-    // Join boxes that share one baseline and sit within reach of each other; columns and distinct
-    // UI controls stay apart via ink-gap, appearance, and vertical separator checks.
-    for (size_t i = 0; i < lines.size(); ++i)
-        for (size_t j = i + 1; j < lines.size();) {
-            auto a = lines[i].rect, b = lines[j].rect;
-            const bool unreadA = IsUnreadText(lines[i].text);
-            const bool unreadB = IsUnreadText(lines[j].text);
-            if (!allUnread && (unreadA || unreadB)) {
-                ++j;
-                continue;
-            }
-            // A vertical column is its own reading unit: joining columns side by side would splice
-            // separate lines of dialogue together, and same-column rows are joined by the passage
-            // pass below.
-            if (Height(a) > Width(a) * 3 / 2 || Height(b) > Width(b) * 3 / 2) {
-                ++j;
-                continue;
-            }
-            const LONG lineHeight = std::min(Height(a), Height(b));
-            if (std::max(Height(a), Height(b)) > LONG(std::lround(lineHeight * 1.25f))) {
-                ++j;
-                continue;
-            }
-            const LONG centreA = (a.top + a.bottom) / 2, centreB = (b.top + b.bottom) / 2;
-            if (std::abs(centreA - centreB) > std::max<LONG>(3, lineHeight / 3)) {
-                ++j;
-                continue;
-            }
-            const auto appA = MeasureLineAppearance(image, a);
-            const auto appB = MeasureLineAppearance(image, b);
-            if (!AppearanceMatches(appA, appB)) {
-                ++j;
-                continue;
-            }
-            const RECT leftRect = a.left <= b.left ? a : b;
-            const RECT rightRect = a.left <= b.left ? b : a;
-            if (HasVerticalSeparator(image, leftRect, rightRect)) {
-                ++j;
-                continue;
-            }
-            const auto [inkLeftA, inkRightA] = HorizontalInkSpan(image, a, appA);
-            const auto [inkLeftB, inkRightB] = HorizontalInkSpan(image, b, appB);
-            const LONG inkGap = std::max(inkLeftA, inkLeftB) - std::min(inkRightA, inkRightB);
-            const LONG maxInkGap = std::max<LONG>(8, LONG(std::lround(lineHeight * 1.15f)));
-            RECT overlap{};
-            const bool touching = IntersectRect(&overlap, &a, &b) && Height(overlap) >= .75f * lineHeight &&
-                                  Width(overlap) < .5f * std::min(Width(a), Width(b)) && inkGap <= maxInkGap;
-            const LONG gap = std::max(a.left, b.left) - std::min(a.right, b.right);
-            const bool adjacent = gap <= std::max<LONG>(4, LONG(std::lround(lineHeight * .65f))) &&
-                                  gap >= -std::max<LONG>(4, lineHeight / 4) && inkGap <= maxInkGap;
-            if (touching || adjacent) {
-                lines[i].text = a.left < b.left ? lines[i].text + " " + lines[j].text
-                                                : lines[j].text + " " + lines[i].text;
-                lines[i].confidence = std::min(lines[i].confidence, lines[j].confidence);
-                UnionRect(&lines[i].rect, &a, &b);
-                lines.erase(lines.begin() + j);
-            } else
-                ++j;
+    // caption or prose line can arrive as several word fragments whose tight ink bounds vary between
+    // x-height ("man", "ever") and ascender+descender height ("bad news,", "mapped").
+    // Run a fixed-point merge preferring the closest horizontal neighbor on each step, and assemble
+    // constituent fragments strictly in horizontal reading order so top-jitter never scrambles words.
+    struct LineGroup {
+        std::vector<TextLine> parts;
+        RECT rect{};
+        float confidence{1.f};
+        bool unread{};
+        LineAppearance app{};
+        std::pair<LONG, LONG> inkSpan{};
+    };
+    std::vector<LineGroup> groups;
+    groups.reserve(lines.size());
+    for (auto& line : lines) {
+        LineGroup g;
+        g.rect = line.rect;
+        g.confidence = line.confidence;
+        g.unread = IsUnreadText(line.text);
+        g.app = MeasureLineAppearance(image, line.rect);
+        g.inkSpan = HorizontalInkSpan(image, line.rect, g.app);
+        g.parts.push_back(std::move(line));
+        groups.push_back(std::move(g));
+    }
+    auto canMergeHorizontal = [&](const LineGroup& ga, const LineGroup& gb, LONG& outGap) -> bool {
+        if (!allUnread && (ga.unread || gb.unread))
+            return false;
+        const RECT a = ga.rect, b = gb.rect;
+        // A vertical column is its own reading unit: joining columns side by side would splice
+        // separate lines of dialogue together, and same-column rows are joined by the passage
+        // pass below.
+        if (Height(a) > Width(a) * 3 / 2 || Height(b) > Width(b) * 3 / 2)
+            return false;
+        const LONG minH = std::min(Height(a), Height(b));
+        const LONG maxH = std::max(Height(a), Height(b));
+        if (minH <= 0 || maxH > LONG(std::lround(minH * 1.85f)))
+            return false;
+        const LONG vOverlap = std::min(a.bottom, b.bottom) - std::max(a.top, b.top);
+        const LONG centreA = (a.top + a.bottom) / 2, centreB = (b.top + b.bottom) / 2;
+        const bool tightHeight = maxH <= LONG(std::lround(minH * 1.30f));
+        if (tightHeight) {
+            if (std::abs(centreA - centreB) > std::max<LONG>(3, minH / 3) || vOverlap < minH * .55f)
+                return false;
+        } else {
+            const bool sharedBaseline = std::abs(a.bottom - b.bottom) <= std::max<LONG>(4, LONG(std::lround(maxH * .30f)));
+            const bool sharedCapTop = std::abs(a.top - b.top) <= std::max<LONG>(4, LONG(std::lround(maxH * .30f)));
+            const bool sharedCentre = std::abs(centreA - centreB) <= std::max<LONG>(4, LONG(std::lround(maxH * .25f)));
+            if (vOverlap < minH * .72f || (!sharedBaseline && !sharedCapTop && !sharedCentre))
+                return false;
         }
+        if (!AppearanceMatches(ga.app, gb.app))
+            return false;
+        const bool aFirst = a.left <= b.left;
+        const RECT leftRect = aFirst ? a : b;
+        const RECT rightRect = aFirst ? b : a;
+        const auto leftInk = aFirst ? ga.inkSpan : gb.inkSpan;
+        const auto rightInk = aFirst ? gb.inkSpan : ga.inkSpan;
+        const LONG gap = rightRect.left - leftRect.right;
+        const LONG inkGap = rightInk.first - leftInk.second;
+        const LONG refH = tightHeight ? minH : LONG(std::lround((minH + maxH) * .5f));
+        const LONG maxInkGap = std::max<LONG>(8, LONG(std::lround(refH * (tightHeight ? 1.15f : .95f))));
+        const LONG maxBoxGap = std::max<LONG>(4, LONG(std::lround(refH * (tightHeight ? .68f : .72f))));
+        RECT overlap{};
+        const bool touching = IntersectRect(&overlap, &a, &b) && Height(overlap) >= .65f * minH &&
+                              Width(overlap) < .5f * std::min(Width(a), Width(b)) && inkGap <= maxInkGap;
+        const bool adjacent = gap <= maxBoxGap && gap >= -std::max<LONG>(4, refH / 4) && inkGap <= maxInkGap;
+        if (!touching && !adjacent)
+            return false;
+        if (HasVerticalSeparator(image, leftRect, rightRect, leftInk.second, rightInk.first))
+            return false;
+        outGap = std::max<LONG>(0, gap);
+        return true;
+    };
+    for (;;) {
+        size_t bestI = groups.size(), bestJ = groups.size();
+        LONG bestGap = LONG_MAX;
+        for (size_t i = 0; i < groups.size(); ++i) {
+            for (size_t j = i + 1; j < groups.size(); ++j) {
+                LONG gap = 0;
+                if (canMergeHorizontal(groups[i], groups[j], gap) && gap < bestGap) {
+                    bestGap = gap;
+                    bestI = i;
+                    bestJ = j;
+                }
+            }
+        }
+        if (bestI >= groups.size())
+            break;
+        auto& dst = groups[bestI];
+        auto& src = groups[bestJ];
+        dst.parts.insert(dst.parts.end(), std::make_move_iterator(src.parts.begin()),
+                         std::make_move_iterator(src.parts.end()));
+        RECT merged{};
+        UnionRect(&merged, &dst.rect, &src.rect);
+        dst.rect = merged;
+        dst.confidence = std::min(dst.confidence, src.confidence);
+        dst.unread = dst.unread && src.unread;
+        dst.inkSpan = {std::min(dst.inkSpan.first, src.inkSpan.first),
+                       std::max(dst.inkSpan.second, src.inkSpan.second)};
+        if (!dst.app.hasInk && src.app.hasInk)
+            dst.app = src.app;
+        groups.erase(groups.begin() + bestJ);
+    }
+    lines.clear();
+    lines.reserve(groups.size());
+    for (auto& g : groups) {
+        bool rtlLine = false;
+        for (const auto& part : g.parts)
+            if (HasRtlScript(part.text)) {
+                rtlLine = true;
+                break;
+            }
+        std::stable_sort(g.parts.begin(), g.parts.end(), [rtlLine](const TextLine& a, const TextLine& b) {
+            return rtlLine ? a.rect.left > b.rect.left : a.rect.left < b.rect.left;
+        });
+        TextLine combined;
+        combined.rect = g.rect;
+        combined.confidence = g.confidence;
+        for (size_t k = 0; k < g.parts.size(); ++k) {
+            if (k > 0)
+                combined.text += ' ';
+            combined.text += g.parts[k].text;
+        }
+        lines.push_back(std::move(combined));
+    }
     // Reading order follows the page shape. A page of vertical columns reads right to left, each
     // column top to bottom; a horizontal page reads top to bottom, left to right.
     const bool columnPage =
@@ -463,9 +550,13 @@ std::vector<TextRegion> GroupTextLines(std::vector<TextLine> lines, const Image&
             const float h = region.lineHeight;
             const int overlap = std::min(last.right, line.rect.right) - std::max(last.left, line.rect.left);
             const bool sentenceEnded = EndsSentence(region.text);
-            const float maxGap = columnPage ? h * .9f : h * .55f;
+            const bool tightLeftContinuation =
+                !columnPage && !sentenceEnded &&
+                std::abs(line.rect.left - last.left) <= std::max<LONG>(6, LONG(std::lround(h * .35f))) &&
+                Width(last) >= Width(line.rect) * .72f;
+            const float maxGap = columnPage ? h * .9f : (tightLeftContinuation ? h * .68f : h * .55f);
             const float minRatio = columnPage ? .65f : (sentenceEnded ? .80f : .55f);
-            const float maxRatio = columnPage ? 1.45f : 1.24f;
+            const float maxRatio = columnPage ? 1.45f : (tightLeftContinuation ? 1.45f : 1.24f);
             if (gap < -h * .25f || gap > maxGap || gap >= bestGap || Height(line.rect) < h * minRatio ||
                 Height(line.rect) > h * maxRatio)
                 continue;
@@ -482,17 +573,22 @@ std::vector<TextRegion> GroupTextLines(std::vector<TextLine> lines, const Image&
             if (!columnPage) {
                 if (!AppearanceMatches(regionAppearances[regionIndex], lineApp))
                     continue;
+                const bool rtlRegion = HasRtlScript(region.text) || HasRtlScript(line.text);
                 // An indented next line or a short preceding heading marks a paragraph boundary, unless
                 // the lines are center-aligned inside the same speech bubble or centered caption.
                 if (!centerAligned &&
-                    (line.rect.left - last.left > h * 1.1f ||
-                     (region.lines.size() >= 2 && last.left - line.rect.left > h * 1.1f)))
+                    (rtlRegion ? (last.right - line.rect.right > h * 1.1f ||
+                                  (region.lines.size() >= 2 && line.rect.right - last.right > h * 1.1f))
+                               : (line.rect.left - last.left > h * 1.1f ||
+                                  (region.lines.size() >= 2 && last.left - line.rect.left > h * 1.1f))))
                     continue;
                 if (Width(line.rect) > h * 4 && Width(last) < Width(line.rect) * .72f &&
                     (!centerAligned || sentenceEnded || gap > h * .45f))
                     continue;
                 // A substantially shorter trailing line in a multi-line region marks paragraph end.
-                if (region.lines.size() >= 2 && last.right < region.rect.right - LONG(h * 1.2f) && !centerAligned)
+                if (region.lines.size() >= 2 && !centerAligned &&
+                    (rtlRegion ? (last.left > region.rect.left + LONG(h * 1.2f))
+                               : (last.right < region.rect.right - LONG(h * 1.2f))))
                     continue;
                 // A sentence-ending line that stops noticeably short of the paragraph width ends the block.
                 if (sentenceEnded &&
@@ -627,6 +723,153 @@ std::vector<TextRegion> GroupTextLines(std::vector<TextLine> lines, const Image&
         regions[i].id = int(i + 1);
     return regions;
 }
+std::vector<std::string> DetectScriptLanguages(const std::vector<TextRegion>& regions, int ocrHint,
+                                               std::string_view sourceHint) {
+    struct RegionCounts {
+        int kana{};
+        int hangul{};
+        int han{};
+        int cyrillic{};
+        int ukrainian{};
+        int arabic{};
+        int hebrew{};
+        int thai{};
+        int greek{};
+        int devanagari{};
+        int vietnamese{};
+        int latinLetters{};
+        int latinWords{};
+    };
+    std::vector<RegionCounts> perRegion;
+    perRegion.reserve(regions.size());
+    bool anyKana = false;
+    bool anyNonLatin = false;
+    for (const auto& r : regions) {
+        if (r.text.empty())
+            continue;
+        RegionCounts c;
+        int curWordLen = 0;
+        auto flushWord = [&] {
+            if (curWordLen >= 2)
+                ++c.latinWords;
+            curWordLen = 0;
+        };
+        for (size_t i = 0; i < r.text.size();) {
+            const uint32_t cp = NextCodePoint(r.text, i);
+            const bool isAsciiAlpha = (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z');
+            const bool isLatinExt = (cp >= 0x00C0 && cp <= 0x024F) || (cp >= 0x1E00 && cp <= 0x1EFF);
+            if ((cp >= 0x3040 && cp <= 0x309F) || (cp >= 0x30A0 && cp <= 0x30FF) ||
+                (cp >= 0xFF65 && cp <= 0xFF9F)) {
+                flushWord();
+                ++c.kana;
+                anyKana = true;
+                anyNonLatin = true;
+            } else if ((cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF) ||
+                       (cp >= 0x3130 && cp <= 0x318F)) {
+                flushWord();
+                ++c.hangul;
+                anyNonLatin = true;
+            } else if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF)) {
+                flushWord();
+                ++c.han;
+                anyNonLatin = true;
+            } else if ((cp >= 0x0400 && cp <= 0x04FF) || (cp >= 0x0500 && cp <= 0x052F)) {
+                flushWord();
+                ++c.cyrillic;
+                if (cp == 0x0404 || cp == 0x0454 || cp == 0x0406 || cp == 0x0456 || cp == 0x0407 ||
+                    cp == 0x0457 || cp == 0x0490 || cp == 0x0491)
+                    ++c.ukrainian;
+                anyNonLatin = true;
+            } else if ((cp >= 0x0600 && cp <= 0x06FF) || (cp >= 0x0750 && cp <= 0x077F) ||
+                       (cp >= 0x08A0 && cp <= 0x08FF)) {
+                flushWord();
+                ++c.arabic;
+                anyNonLatin = true;
+            } else if (cp >= 0x0590 && cp <= 0x05FF) {
+                flushWord();
+                ++c.hebrew;
+                anyNonLatin = true;
+            } else if (cp >= 0x0E00 && cp <= 0x0E7F) {
+                flushWord();
+                ++c.thai;
+                anyNonLatin = true;
+            } else if (cp >= 0x0370 && cp <= 0x03FF) {
+                flushWord();
+                ++c.greek;
+                anyNonLatin = true;
+            } else if (cp >= 0x0900 && cp <= 0x097F) {
+                flushWord();
+                ++c.devanagari;
+                anyNonLatin = true;
+            } else if (isAsciiAlpha || isLatinExt) {
+                ++c.latinLetters;
+                ++curWordLen;
+                if ((cp >= 0x1EA0 && cp <= 0x1EF9) || cp == 0x0102 || cp == 0x0103 || cp == 0x0110 ||
+                    cp == 0x0111 || cp == 0x0128 || cp == 0x0129 || cp == 0x0168 || cp == 0x0169 ||
+                    cp == 0x01A0 || cp == 0x01A1 || cp == 0x01AF || cp == 0x01B0)
+                    ++c.vietnamese;
+            } else {
+                flushWord();
+            }
+        }
+        flushWord();
+        perRegion.push_back(c);
+    }
+    std::vector<std::string> detected;
+    auto pushUnique = [&](std::string_view code) {
+        if (code.empty())
+            return;
+        if (std::find(detected.begin(), detected.end(), code) == detected.end())
+            detected.emplace_back(code);
+    };
+    const bool latinHint = !sourceHint.empty() && sourceHint != "auto" && sourceHint != "zh-Hans" &&
+                           sourceHint != "zh-Hant" && sourceHint != "ja" && sourceHint != "ko" &&
+                           sourceHint != "ru" && sourceHint != "uk" && sourceHint != "bg" &&
+                           sourceHint != "sr" && sourceHint != "be" && sourceHint != "ar" &&
+                           sourceHint != "fa" && sourceHint != "ur" && sourceHint != "he" &&
+                           sourceHint != "th" && sourceHint != "el" && sourceHint != "hi";
+    for (const auto& c : perRegion) {
+        if (c.kana > 0)
+            pushUnique("ja");
+        if (c.hangul > 0)
+            pushUnique("ko");
+        if (c.han > 0 && c.kana == 0) {
+            if (ocrHint == OcrJapanese || sourceHint == "ja")
+                pushUnique("ja");
+            else if (!anyKana || c.han >= 8)
+                pushUnique(sourceHint == "zh-Hant" ? "zh-Hant" : "zh-Hans");
+        }
+        if (c.arabic > 0)
+            pushUnique(sourceHint == "fa" || sourceHint == "ur" ? sourceHint : "ar");
+        if (c.hebrew > 0)
+            pushUnique("he");
+        if (c.thai > 0)
+            pushUnique("th");
+        if (c.greek > 0)
+            pushUnique("el");
+        if (c.devanagari > 0)
+            pushUnique("hi");
+        if (c.cyrillic > 0) {
+            if (c.ukrainian > 0 || sourceHint == "uk")
+                pushUnique("uk");
+            else if (sourceHint == "bg" || sourceHint == "sr" || sourceHint == "be")
+                pushUnique(sourceHint);
+            else
+                pushUnique("ru");
+        }
+        if (c.vietnamese > 0) {
+            pushUnique("vi");
+        } else if (c.latinLetters > 0) {
+            const bool strongLatin = !anyNonLatin || (c.kana == 0 && c.hangul == 0 && c.han == 0 &&
+                                                      c.cyrillic == 0 && c.arabic == 0 && c.thai == 0 &&
+                                                      c.greek == 0 && c.devanagari == 0 &&
+                                                      (c.latinWords >= 2 || c.latinLetters >= 6));
+            if (strongLatin)
+                pushUnique(latinHint ? sourceHint : "en");
+        }
+    }
+    return detected;
+}
 static TextDetection DetectLocal(const Image& image, std::stop_token stop, int mode, bool geometryOnly,
                                  bool preserveGeometry = false, bool retainLowConfidenceText = false,
                                  bool useManga = false, const std::vector<RECT>* precomputedBoxes = nullptr) {
@@ -673,8 +916,9 @@ static TextDetection DetectLocal(const Image& image, std::stop_token stop, int m
         }
         const bool onlyGeometry =
             std::all_of(regions.begin(), regions.end(), [](const auto& r) { return r.text.empty(); });
+        auto detectedLangs = onlyGeometry ? std::vector<std::string>{} : DetectScriptLanguages(regions, mode);
         return {std::move(regions), geometryOnly || onlyGeometry ? "local-geometry-ai" : "bundled-ocr",
-                size_t(unrecognizedLines)};
+                size_t(unrecognizedLines), std::move(detectedLangs)};
     } catch (const Cancelled&) {
         throw;
     } catch (const AppError& e) {
@@ -698,8 +942,8 @@ TextDetection DetectTextForTranslation(const Image& image, std::stop_token stop,
     return DetectLocal(image, stop, mode, mode == OcrAuto || mode == OcrDirectVision, true);
 }
 TextDetection DetectOcrText(const Image& image, std::stop_token stop, int language) {
-    if (language != OcrLocalAuto && language != OcrEnglish && language != OcrJapanese && language != OcrKorean)
-        throw AppError("ocr", "OCR 文字翻译需要选择本地自动识别、英语、日语或韩语");
+    if (!IsLocalOcrLanguage(language))
+        throw AppError("ocr", "OCR 文字翻译需要选择有效的本地识别语言");
     // The page shape decides the engine, and the detected boxes already describe it. A full general pass
     // recognizes every line three times over, so starting there costs seconds of work that a manga page
     // discards. Detection first keeps the spent time inside the engine that actually reads the page, and

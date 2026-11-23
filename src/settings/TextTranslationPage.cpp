@@ -117,7 +117,8 @@ void TextTranslationPage::Refresh() {
     if (!ui_)
         return;
     bool active = busy_ || loading_;
-    for (auto name : {L"SendText", L"TextInput", L"TextTarget", L"ClearConversation"})
+    for (auto name : {L"SendText", L"TextInput", L"TargetLangPicker", L"SourceLangPicker",
+                      L"SwapLanguages", L"ClearConversation"})
         ui_->Get<Control>(name).IsEnabled(!active);
     for (auto name : {L"AddImage"})
         ui_->Get<Control>(name).IsEnabled(!active && images_.size() < 4 &&
@@ -143,7 +144,14 @@ void TextTranslationPage::Refresh() {
         .PlaceholderText(IsTextService(settings_.provider) ? L"输入要翻译的文字"
                                                            : L"输入要翻译的内容，或粘贴、拖入图片");
     ui_->Get<TextBlock>(L"TextConnectionLabel").Text(connection);
-    ui_->Get<HyperlinkButton>(L"ScreenConnection").Content(winrt::box_value(L"共用连接：" + connection));
+}
+void TextTranslationPage::SetTargetLanguage(const std::string& target) {
+    target_ = target;
+    settings_.textTargetLanguage = target;
+    settings_.screenTargetLanguage = target;
+}
+void TextTranslationPage::SetSourceLanguage(const std::string& source) {
+    settings_.sourceLanguage = source.empty() ? "auto" : source;
 }
 void TextTranslationPage::RenderConversation() {
     if (!ui_)
@@ -294,6 +302,7 @@ void TextTranslationPage::Send(bool again) {
         else {
             request.text = Utf8(std::wstring(ui_->Get<TextBox>(L"TextInput").Text()));
             request.target = target_;
+            request.source = settings_.sourceLanguage.empty() ? "auto" : settings_.sourceLanguage;
             request.images = images_;
         }
         if (request.text.find_first_not_of(" \r\n\t") == request.text.npos && request.images.empty()) {
@@ -551,23 +560,6 @@ void TextTranslationPage::Attach(xaml::FrameworkElement root, HWND owner, const 
         initialized_ = true;
     }
     UpdateConnection(settings, key);
-    auto target = ui_->Get<ComboBox>(L"TextTarget");
-    int selected = 0;
-    const auto& languages = TextTargetLanguages();
-    for (size_t i = 0; i < languages.size(); ++i) {
-        target.Items().Append(winrt::box_value(languages[i].label));
-        if (target_ == languages[i].id)
-            selected = static_cast<int>(i);
-    }
-    target.SelectedIndex(selected);
-    target.SelectionChanged([this](auto const& sender, auto const&) {
-        auto index = sender.template as<ComboBox>().SelectedIndex();
-        if (index >= 0) {
-            target_ = TextTargetLanguages().at(index).id;
-            if (targetChanged_)
-                targetChanged_(target_);
-        }
-    });
     auto input = ui_->Get<TextBox>(L"TextInput");
     input.Text(Wide(draft_));
     input.TextCompositionStarted([this](auto const&, auto const&) { composing_ = true; });

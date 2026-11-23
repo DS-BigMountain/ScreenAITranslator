@@ -13,6 +13,9 @@ struct SettingsCallbacks {
     std::function<void(RECT, int, int)> closed;
     std::function<void(bool)> hotkeyEditing;
     std::function<void(const std::string&)> targetLanguage;
+    std::function<void(const std::string&, const std::string&)> workbenchLanguages;
+    std::function<void(bool)> traceChanged;
+    std::function<std::wstring(HWND)> exportLogs;
 };
 class SettingsWindow {
     friend class TextTranslationUiTest;
@@ -51,6 +54,7 @@ public:
     }
     winrt::Microsoft::UI::Xaml::FrameworkElement Content() const;
     void Status(const std::wstring& text);
+    void SyncScreenLanguages(int ocrMode, const std::string& screenTargetLanguage);
     void ApiBusy(bool busy);
     void ApiFinished(const std::vector<std::string>& models, const std::wstring& message, bool fetched);
     bool BackgroundIdle() {

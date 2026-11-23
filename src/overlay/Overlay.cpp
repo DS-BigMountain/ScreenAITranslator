@@ -2,6 +2,7 @@
 #include "SpatialLayout.h"
 #include "TextRim.h"
 #include "capture/Capture.h"
+#include "common/TextMetrics.h"
 #include <d2d1.h>
 #include <algorithm>
 #include <cmath>
@@ -163,7 +164,9 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result, Image ro
         }
         for (const auto& [body, heading] : paragraphs) {
             const float size = heading ? headingSize : bodySize;
-            const float lineSpacing = size * (heading ? 1.3f : 1.5f);
+            const bool complexVertical = HasComplexVerticalScript(body);
+            const float lineSpacing =
+                std::max(size * (heading ? 1.3f : 1.5f), complexVertical ? size * 1.45f : 0.f);
             ComPtr<IDWriteTextFormat> paragraphFormat;
             CheckHR(factory->CreateTextFormat(settings.font.c_str(), nullptr,
                                               heading ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
@@ -171,7 +174,11 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result, Image ro
                                               L"zh-CN", &paragraphFormat),
                     "layout");
             CheckHR(paragraphFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP), "layout");
-            CheckHR(paragraphFormat->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineSpacing, size * .8f),
+            if (HasRtlScript(body))
+                CheckHR(paragraphFormat->SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT),
+                        "layout");
+            CheckHR(paragraphFormat->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineSpacing,
+                                                    complexVertical ? size * .95f : size * .8f),
                     "layout");
             CheckHR(paragraphFormat->SetTextAlignment(heading ? DWRITE_TEXT_ALIGNMENT_CENTER
                                                               : DWRITE_TEXT_ALIGNMENT_LEADING),
@@ -197,7 +204,10 @@ std::vector<OverlayBlock> BuildOverlay(const TranslationResult& result, Image ro
                                       DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, block.fontSize,
                                       L"zh-CN", &format),
             "layout");
-    format->SetWordWrapping(DWRITE_WORD_WRAPPING_CHARACTER);
+    format->SetWordWrapping(HasComplexVerticalScript(block.text) ? DWRITE_WORD_WRAPPING_WRAP
+                                                                   : DWRITE_WORD_WRAPPING_CHARACTER);
+    if (HasRtlScript(block.text))
+        format->SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT);
     CheckHR(factory->CreateTextLayout(block.text.c_str(), static_cast<UINT32>(block.text.size()),
                                       format.Get(), static_cast<float>(std::max(1, Width(block.viewport))),
                                       static_cast<float>(std::max(1, Height(block.viewport))), &block.layout),
@@ -564,7 +574,7 @@ void Overlay::Show(const std::vector<OverlayBlock>& blocks, const Settings& sett
             data->block = b;
             data->settings = settings;
             data->dpi = dpi;
-            data->mode = settings.spatialOverlay ? 0 : 2;
+            data->mode = (b.image || settings.spatialOverlay) ? 0 : 2;
             auto ptr = data.get();
             windows_.push_back(std::move(data));
             DWORD exStyle = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;

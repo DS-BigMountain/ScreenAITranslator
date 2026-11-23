@@ -57,6 +57,8 @@ public:
     void Detach();
     void Dispatch();
     void UpdateConnection(const Settings&, const std::string& key);
+    void SetTargetLanguage(const std::string& target);
+    void SetSourceLanguage(const std::string& source);
     void ClearContext();
     void AdaptLayout(bool compact);
     void Notify(const std::wstring& message) {

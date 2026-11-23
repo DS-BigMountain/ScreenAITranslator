@@ -21,6 +21,12 @@ Get-Verified "$base/det/ch_PP-OCRv5_det_mobile.onnx" "$runtime/models/det.onnx" 
 Get-Verified "$base/rec/ch_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-ja.onnx" '5825FC7EBF84AE7A412BE049820B4D86D77620F204A041697B0494669B1742C5'
 Get-Verified "$base/rec/en_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-en.onnx" 'C3461ADD59BB4323ECBA96A492AB75E06DDA42467C9E3D0C18DB5D1D21924BE8'
 Get-Verified "$base/rec/korean_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-ko.onnx" 'CD6E2EA50F6943CA7271EB8C56A877A5A90720B7047FE9C41A2E541A25773C9B'
+Get-Verified "$base/rec/latin_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-latin.onnx" 'B20BD37C168A570F583AFBC8CD7925603890EFBCDC000A59E22C269D160B5F5A'
+Get-Verified "$base/rec/cyrillic_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-ru.onnx" '90F761B4BFCCE0C8C561C0CB5C887B0971D3EC01C32164BDF7374A35B0982711'
+Get-Verified "$base/rec/th_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-th.onnx" 'DE541DD83161C241FF426F7ECFD602A0BA77D686CF3AB9A6C255EA82FD08006E'
+Get-Verified "$base/rec/arabic_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-ar.onnx" 'C1192E632D0BAA9146AE5B756A0E635E3DC63C1733737EBFD1629E87144E9295'
+Get-Verified "$base/rec/el_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-el.onnx" 'B4368BCCD557123C702B7549FEE6CD1E94B581337D1C9B65310F109131542B7F'
+Get-Verified "$base/rec/devanagari_PP-OCRv5_rec_mobile.onnx" "$runtime/models/rec-hi.onnx" 'D6F0A906580E3FA6B324A318718F1F31F268B6EA8EF985F91C2012A37F52C91E'
 # Strongest-available upgrade set. Each file is optional at runtime: the application
 # prefers it when present and falls back to the mobile weights above when staged without it.
 # Optional stronger detector. The 88 MB server weights split large headline lines into

@@ -16,6 +16,7 @@
 #include "selection/Selection.h"
 #include "overlay/Overlay.h"
 #include <commctrl.h>
+#include <commdlg.h>
 #include <shellapi.h>
 #include <dwmapi.h>
 #include <deque>
@@ -741,29 +742,9 @@ class App {
             }
         });
     }
-    void Translate(unsigned long long id, const Monitor& monitor, std::shared_ptr<Image> screenshot,
-                   RECT region, const Settings& options, const std::vector<ContextItem>& history,
-                   const std::string& key, std::stop_token stop) {
-        DiagnosticContext context(id);
-        // The record starts before any other preparation work so the first measured stage lands in it.
-        TraceSession trace("screen_translation",
-                           {{"provider", options.provider},
-                            {"model", options.model},
-                            {"route", EffectiveTranslationMode(options) == TranslationOcrText ? "text"
-                                                                                               : "vision"},
-                            {"quality", options.quality},
-                            {"ocr_mode", options.ocrMode},
-                            {"timeout_s", options.timeoutSeconds},
-                            {"translate_all", options.translateAll},
-                            {"context_enabled", options.contextEnabled},
-                            {"context_items", history.size()},
-                            {"proxy_mode", options.proxyMode},
-                            {"prompt", options.prompt}});
-        Post([this, id, screenshot] { StartProgress(id, *screenshot); });
-        RECT local = region;
-        OffsetRect(&local, -monitor.rect.left, -monitor.rect.top);
-        auto cropped = Crop(*screenshot, local);
-        screenshot.reset();
+    void TranslateCropped(unsigned long long id, const Monitor& monitor, Image cropped, RECT region,
+                          const Settings& options, const std::vector<ContextItem>& history,
+                          const std::string& key, std::stop_token stop) {
         auto prepared = PrepareTranslation(
             std::move(cropped), region, monitor, options, history, key, stop, providerFactory_,
             [this, id](TranslationPhase phase) {
@@ -785,6 +766,99 @@ class App {
             });
         Post([this, id, prepared = std::move(prepared), options, monitor] {
             DisplayTranslation(id, prepared, options, monitor);
+        });
+    }
+    void Translate(unsigned long long id, const Monitor& monitor, std::shared_ptr<Image> screenshot,
+                   RECT region, const Settings& options, const std::vector<ContextItem>& history,
+                   const std::string& key, std::stop_token stop) {
+        DiagnosticContext context(id);
+        // The record starts before any other preparation work so the first measured stage lands in it.
+        TraceSession trace("screen_translation",
+                           {{"provider", options.provider},
+                            {"model", options.model},
+                            {"route", EffectiveTranslationMode(options) == TranslationOcrText ? "text"
+                                                                                               : "vision"},
+                            {"quality", options.quality},
+                            {"ocr_mode", options.ocrMode},
+                            {"target_language", options.screenTargetLanguage},
+                            {"timeout_s", options.timeoutSeconds},
+                            {"translate_all", options.translateAll},
+                            {"context_enabled", options.contextEnabled},
+                            {"context_items", history.size()},
+                            {"proxy_mode", options.proxyMode},
+                            {"prompt", options.prompt}});
+        Post([this, id, screenshot] { StartProgress(id, *screenshot); });
+        RECT local = region;
+        OffsetRect(&local, -monitor.rect.left, -monitor.rect.top);
+        auto cropped = Crop(*screenshot, local);
+        screenshot.reset();
+        TranslateCropped(id, monitor, std::move(cropped), region, options, history, key, stop);
+    }
+    void RetranslateOverlay(int newOcrMode, const std::string& newTargetLanguage) {
+        if (key_.empty()) {
+            overlay_.SetWarning(L"请先在设置中填写密钥");
+            return;
+        }
+        auto sourceImage = overlay_.SourceImage();
+        if (!sourceImage || sourceImage->width <= 0 || sourceImage->height <= 0 || !Valid(anchor_)) {
+            overlay_.SetWarning(L"当前视图缺少原图，请重新框选");
+            return;
+        }
+        Settings updated = settings_;
+        updated.ocrMode = newOcrMode;
+        updated.screenTargetLanguage = newTargetLanguage;
+        updated.textTargetLanguage = newTargetLanguage;
+        try {
+            ValidateSettings(updated);
+            store_.SaveSettings(updated);
+        } catch (const AppError& e) {
+            overlay_.SetWarning(Wide(e.what()));
+            return;
+        }
+        settings_ = std::move(updated);
+        settingsWindow_.SyncScreenLanguages(settings_.ocrMode, settings_.screenTargetLanguage);
+        const auto region = anchor_;
+        const auto monitor = currentMonitor_;
+        Cancel();
+        anchor_ = region;
+        currentMonitor_ = monitor;
+        const auto id = generation_;
+        const auto options = settings_;
+        const auto history = context_.Get(options.contextEnabled, options.contextSize);
+        auto secret = std::make_shared<Secret>(key_);
+        const bool passthrough = continuous_ != ContinuousState::Inactive;
+        progress_.Progress(
+            region, monitor, *sourceImage,
+            [this, id] {
+                Post([this, id] {
+                    if (id == generation_) {
+                        if (continuous_ != ContinuousState::Inactive)
+                            ExitContinuous();
+                        else
+                            Cancel();
+                    }
+                });
+            },
+            passthrough);
+        SetStage(Stage::Preprocessing);
+        worker_.Submit([this, id, monitor, sourceImage, region, options, history, secret](std::stop_token stop) {
+            DiagnosticContext context(id);
+            try {
+                ComScope com;
+                Image copy = *sourceImage;
+                TranslateCropped(id, monitor, std::move(copy), region, options, history, secret->value, stop);
+            } catch (const Cancelled&) {
+            } catch (const AppError& e) {
+                Post([this, id, e] {
+                    if (id == generation_)
+                        Error(e);
+                });
+            } catch (...) {
+                Post([this, id] {
+                    if (id == generation_)
+                        Error(AppError("translation", "屏幕翻译失败"));
+                });
+            }
         });
     }
     void DisplayTranslation(unsigned long long id, const PreparedTranslation& prepared,
@@ -844,12 +918,12 @@ class App {
         // The toolbar carries one one-off vision pass: it reads the same selection straight from the image
         // and lands as another switchable view, leaving the saved translation flow untouched.
         overlay_.SetAiRequest([this] { RequestAiView(); });
-        const bool noVisiblePlacement = std::all_of(blocks.begin(), blocks.end(), [](const auto& block) {
-            return std::all_of(block.positioned.begin(), block.positioned.end(),
-                               [](const auto& item) { return item.suppressed || !item.layout; });
+        overlay_.SetLanguageHandler([this, id](int nextOcrMode, std::string nextTarget) {
+            Post([this, id, nextOcrMode, nextTarget = std::move(nextTarget)] {
+                if (id == generation_ && stage_ == Stage::Displaying)
+                    RetranslateOverlay(nextOcrMode, nextTarget);
+            });
         });
-        if (options.spatialOverlay && noVisiblePlacement)
-            overlay_.ShowFullReading();
         if (passthrough) {
             overlay_.CloseContinuousBadge();
             continuous_ = ContinuousState::Displaying;
@@ -924,6 +998,11 @@ class App {
                 try {
                     auto detected = DetectOcrText(cropped, stop, options.ocrMode);
                     std::erase_if(detected.regions, [](const auto& region) { return region.text.empty(); });
+                    const std::string screenHint =
+                        (options.ocrMode == OcrLocalAuto || options.ocrMode == OcrLatin)
+                            ? std::string{}
+                            : std::string(TargetIdFromOcrMode(options.ocrMode));
+                    PopulateDetectedLanguages(result, detected.regions, options.ocrMode, screenHint);
                     if (!detected.regions.empty()) {
                         auto report =
                             AttachSourceGeometry(result, cropped.width, cropped.height, detected.regions);
@@ -932,6 +1011,11 @@ class App {
                 } catch (const Cancelled&) {
                     throw;
                 } catch (...) {
+                    const std::string screenHint =
+                        (options.ocrMode == OcrLocalAuto || options.ocrMode == OcrLatin)
+                            ? std::string{}
+                            : std::string(TargetIdFromOcrMode(options.ocrMode));
+                    PopulateDetectedLanguages(result, {}, options.ocrMode, screenHint);
                     // Recognition assists placement here: the model rectangles stand when it yields nothing.
                 }
                 CheckStop(stop);
@@ -944,15 +1028,7 @@ class App {
                         // each replaced passage, which needs the captured pixels.
                         auto block =
                             BuildOverlay(result, std::move(cropped), region, monitor, settings_, true).front();
-                        // A vision answer without usable boxes still carries text, so the reading panel
-                        // takes over instead of leaving a dimmed selection with nothing on it.
-                        const bool noPlacement =
-                            std::all_of(block.positioned.begin(), block.positioned.end(), [](const auto& item) {
-                                return item.suppressed || !item.layout;
-                            });
                         overlay_.ShowAiResult(std::move(block));
-                        if (noPlacement)
-                            overlay_.ShowFullReading();
                     } catch (const AppError& e) {
                         overlay_.SetWarning(Wide(e.what()));
                     }
@@ -996,7 +1072,7 @@ class App {
         settings_ = std::move(updated);
         // A saved toggle takes effect immediately: the next translation writes or skips its record.
         if (settings_.traceEnabled != TraceEnabled())
-            InitializeTrace(store_.Root() / L"logs" / L"trace", settings_.traceEnabled);
+            InitializeTrace(store_.Root() / L"logs" / L"trace", settings_.traceEnabled, 30);
         if (!key_.empty())
             SecureZeroMemory(key_.data(), key_.size());
         key_ = key;
@@ -1108,9 +1184,29 @@ class App {
         cb.targetLanguage = [this](const std::string& language) {
             auto updated = settings_;
             updated.textTargetLanguage = language;
+            updated.screenTargetLanguage = language;
             store_.SaveSettings(updated);
             settings_.textTargetLanguage = language;
+            settings_.screenTargetLanguage = language;
         };
+        cb.workbenchLanguages = [this](const std::string& source, const std::string& target) {
+            auto updated = settings_;
+            updated.sourceLanguage = source.empty() ? "auto" : source;
+            updated.screenTargetLanguage = target;
+            updated.textTargetLanguage = target;
+            ValidateSettings(updated);
+            store_.SaveSettings(updated);
+            settings_ = std::move(updated);
+        };
+        cb.traceChanged = [this](bool enabled) {
+            auto updated = settings_;
+            updated.traceEnabled = enabled;
+            store_.SaveSettings(updated);
+            settings_.traceEnabled = enabled;
+            if (settings_.traceEnabled != TraceEnabled())
+                InitializeTrace(store_.Root() / L"logs" / L"trace", settings_.traceEnabled, 30);
+        };
+        cb.exportLogs = [this](HWND owner) { return ExportRecentLogs(owner); };
         cb.action = [this](SettingsAction action) {
             switch (action) {
             case SettingsAction::ClearContext:
@@ -1146,6 +1242,33 @@ class App {
         PostMessageW(window_, WM_NULL, 0, 0);
         Action(action);
     }
+    std::wstring ExportRecentLogs(HWND parent = nullptr) {
+        const auto logsRoot = store_.Root() / L"logs";
+        if (!HasExportableTraces(logsRoot))
+            return L"当前暂无可导出的翻译日志，请先开启“记录日志”并进行翻译。";
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+        wchar_t fileBuf[32768]{};
+        swprintf_s(fileBuf, L"翻译日志-%04u%02u%02u-%02u%02u%02u.zip", st.wYear, st.wMonth, st.wDay,
+                   st.wHour, st.wMinute, st.wSecond);
+        OPENFILENAMEW ofn{sizeof(ofn)};
+        ofn.hwndOwner = parent && IsWindow(parent) ? parent : window_;
+        ofn.lpstrFilter = L"ZIP 压缩包 (*.zip)\0*.zip\0全部文件 (*.*)\0*.*\0";
+        ofn.lpstrFile = fileBuf;
+        ofn.nMaxFile = DWORD(std::size(fileBuf));
+        ofn.lpstrDefExt = L"zip";
+        ofn.lpstrTitle = L"选择翻译日志保存位置（导出最近 30 次）";
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (!GetSaveFileNameW(&ofn))
+            return {};
+        std::filesystem::path outPath(fileBuf);
+        if (outPath.extension().empty())
+            outPath += L".zip";
+        const auto res = ExportRecentTracesArchive(logsRoot, outPath, 30);
+        if (res.sessions > 0)
+            return L"已导出最近 " + std::to_wstring(res.sessions) + L" 次翻译日志至：" + outPath.wstring();
+        return L"已导出诊断日志至：" + outPath.wstring();
+    }
     void Action(int action) {
         switch (action) {
         case OpenSettings:
@@ -1155,13 +1278,20 @@ class App {
             DestroyWindow(window_);
             break;
         case OpenLogs: {
-            // One entry for both records: a trace directory carries the request payload and the timing
-            // file, so the folder holding it describes everything a report needs.
-            auto path = store_.Root() / L"logs";
-            std::filesystem::create_directories(path);
-            if (reinterpret_cast<INT_PTR>(
-                    ShellExecuteW(window_, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
-                Notice(L"无法打开日志目录：" + path.wstring());
+            try {
+                SetForegroundWindow(window_);
+                const auto msg = ExportRecentLogs(settingsWindow_.Window());
+                if (!msg.empty()) {
+                    if (settingsWindow_.Window() && IsWindowVisible(settingsWindow_.Window()))
+                        settingsWindow_.Status(msg);
+                    else
+                        Notice(msg);
+                }
+            } catch (const AppError& e) {
+                Notice(Wide(e.what()));
+            } catch (...) {
+                Notice(L"导出日志失败，请检查保存路径权限。");
+            }
             break;
         }
         }
@@ -1285,7 +1415,7 @@ public:
                 L"配置读取失败；请检查 %LOCALAPPDATA%\\ScreenAITranslator\\config.json，原文件已保留。";
         }
         // Payload tracing shares the log root; every screen translation adds one directory there.
-        InitializeTrace(store_.Root() / L"logs" / L"trace", settings_.traceEnabled);
+        InitializeTrace(store_.Root() / L"logs" / L"trace", settings_.traceEnabled, 30);
         try {
             state_ = store_.LoadState();
         } catch (const AppError& e) {

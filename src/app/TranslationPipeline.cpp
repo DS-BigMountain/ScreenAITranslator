@@ -49,9 +49,9 @@ void TraceDetection(const TextDetection& detected) noexcept {
 }
 
 // Legacy configurations may carry a display-oriented value; the local detector only accepts the
-// three recognized language presets.
+// supported local language presets.
 int LocalOcrLanguage(int mode) {
-    return mode == OcrEnglish || mode == OcrJapanese || mode == OcrKorean ? mode : OcrLocalAuto;
+    return IsLocalOcrLanguage(mode) ? mode : OcrLocalAuto;
 }
 
 TextDetection DetectSource(const Image& image, int mode, std::stop_token stop) {
@@ -201,6 +201,11 @@ PreparedTranslation PrepareTranslation(Image image, RECT region, const Monitor& 
             prepared.result =
                 provider->TranslateLocated(data, history, connection, selectedKey.value, stop, sourceRegions);
             FlagUntranslatedPassages(prepared.result);
+            const std::string screenHint =
+                (routed.ocrMode == OcrLocalAuto || routed.ocrMode == OcrLatin)
+                    ? std::string{}
+                    : std::string(TargetIdFromOcrMode(routed.ocrMode));
+            PopulateDetectedLanguages(prepared.result, sourceRegions, routed.ocrMode, screenHint);
             api.End("ok", {{"request_count", prepared.result.requestCount},
                            {"segments", prepared.result.segments.size()}});
         } catch (const AppError& error) {

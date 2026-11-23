@@ -1,10 +1,12 @@
 #include "SettingsWindow.h"
 #include "common/AppIdentity.h"
+#include "common/OcrLanguage.h"
 #include "common/Secret.h"
 #include "common/Platform.h"
 #include "WinUIRuntime.h"
 #include "Store.h"
 #include "providers/Catalog.h"
+#include "providers/ContentTranslation.h"
 #include "providers/RequestParameters.h"
 #undef GetCurrentTime
 #include <winrt/Windows.Foundation.h>
@@ -38,18 +40,26 @@ namespace sat {
 namespace xaml = winrt::Microsoft::UI::Xaml;
 using namespace xaml::Controls;
 namespace {
-std::wstring Color(COLORREF c) {
-    wchar_t b[8];
-    swprintf_s(b, L"%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
-    return b;
-}
-COLORREF ParseColor(std::wstring t) {
-    if (!t.empty() && t[0] == L'#')
-        t.erase(0, 1);
-    if (t.size() != 6 || t.find_first_not_of(L"0123456789abcdefABCDEF") != t.npos)
-        throw AppError("settings", "颜色须为六位十六进制数值。");
-    auto v = std::stoul(t, nullptr, 16);
-    return RGB((v >> 16) & 255, (v >> 8) & 255, v & 255);
+struct ColorSwatchPreset {
+    const wchar_t* name;
+    COLORREF color;
+};
+constexpr ColorSwatchPreset kTextColorPresets[]{
+    {L"纯白", RGB(255, 255, 255)},
+    {L"纯黑", RGB(26, 26, 26)},
+    {L"暖黄", RGB(255, 213, 79)},
+    {L"晴空蓝", RGB(96, 205, 255)},
+    {L"珊瑚红", RGB(255, 107, 107)},
+    {L"翠绿", RGB(105, 219, 124)},
+};
+int OutlinePresetFromSettings(const Settings& s) {
+    if (s.outlineWidth <= 0.05f)
+        return 0;
+    if (s.outlineStyle == 2)
+        return 3;
+    if (s.outlineWidth >= 0.75f)
+        return 2;
+    return 1;
 }
 std::wstring HotkeyLabel(Hotkey key) {
     if (!key.key)
@@ -119,6 +129,8 @@ struct SettingsWindow::Impl {
     std::map<std::string, ConnectionProfile> profiles;
     std::string activeProvider;
     std::vector<std::pair<std::wstring, std::wstring>> fontNames;
+    COLORREF selectedTextColor{RGB(255, 255, 255)};
+    std::vector<std::pair<COLORREF, Button>> colorButtons;
     template <class T> T Get(const wchar_t* name) const {
         return root.FindName(name).as<T>();
     }
@@ -139,11 +151,33 @@ struct SettingsWindow::Impl {
         return false;
     }
     bool FocusedHotkey() const {
-        return Get<StackPanel>(L"SettingsPage").Visibility() == xaml::Visibility::Visible &&
+        return Get<SplitView>(L"MainSplit").IsPaneOpen() &&
                Get<StackPanel>(L"SettingsGeneral").Visibility() == xaml::Visibility::Visible &&
                root.XamlRoot() &&
                IsHotkeyEditor(xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot())
                                   .try_as<xaml::DependencyObject>());
+    }
+    xaml::Media::Brush ThemeBrush(const wchar_t* key) const {
+        if (auto found = root.Resources().TryLookup(winrt::box_value(key))) {
+            if (auto b = found.try_as<xaml::Media::Brush>())
+                return b;
+        }
+        return xaml::Media::SolidColorBrush(winrt::Microsoft::UI::Colors::Transparent());
+    }
+    void UpdateLanguageButtons(const Settings& s) const {
+        std::wstring srcLabel = L"自动识别";
+        if (!s.sourceLanguage.empty() && s.sourceLanguage != "auto") {
+            try {
+                srcLabel = FindTextTarget(s.sourceLanguage).label;
+            } catch (const AppError&) {
+            }
+        }
+        Get<TextBlock>(L"SourceLangLabel").Text(srcLabel);
+        try {
+            Get<TextBlock>(L"TargetLangLabel").Text(FindTextTarget(s.screenTargetLanguage).label);
+        } catch (const AppError&) {
+            Get<TextBlock>(L"TargetLangLabel").Text(L"简体中文");
+        }
     }
     std::wstring ReadFont() const {
         const auto name = std::wstring(Get<ComboBox>(L"Font").Text());
@@ -355,22 +389,22 @@ void SettingsWindow::Layout() {
     RECT r{};
     GetClientRect(hwnd_, &r);
     auto dpi = GetDpiForWindow(hwnd_);
-    const bool compact = MulDiv(Height(r), 96, dpi) < 740 || MulDiv(Width(r), 96, dpi) < 1000;
-    ui_->Get<Grid>(L"ContentLayout")
-        .Padding(compact ? xaml::Thickness{24, 22, 24, 20} : xaml::Thickness{36, 34, 36, 28});
-    ui_->Get<Grid>(L"PageHeader").Margin({0, 0, 0, compact ? 16.0 : 33.0});
-    ui_->Get<TextBlock>(L"PageTitle").FontSize(compact ? 28 : 34);
-    ui_->Get<Grid>(L"TextPage").RowSpacing(compact ? 16 : 22);
-    auto language = ui_->Get<Border>(L"LanguageCard");
-    language.MinHeight(compact ? 64 : 80);
-    language.Padding(compact ? xaml::Thickness{16, 10, 16, 10} : xaml::Thickness{20, 18, 20, 18});
+    const double logicalW = MulDiv(Width(r), 96, dpi);
+    const double logicalH = MulDiv(Height(r), 96, dpi);
+    const bool compact = logicalH < 720 || logicalW < 960;
+    ui_->Get<Grid>(L"TextPage")
+        .Padding(compact ? xaml::Thickness{16, 10, 16, 14} : xaml::Thickness{24, 14, 24, 18});
+    ui_->Get<Grid>(L"TextPage").RowSpacing(compact ? 10 : 12);
+    ui_->Get<Border>(L"LanguageCard")
+        .Padding(compact ? xaml::Thickness{12, 8, 12, 8} : xaml::Thickness{16, 10, 16, 10});
+    ui_->Get<SplitView>(L"MainSplit").OpenPaneLength(std::clamp(logicalW * 0.44, 380.0, 500.0));
     textPage_.AdaptLayout(compact);
     if (ui_->customCaption) {
         auto title = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
                          winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd_))
                          .TitleBar();
         std::array<winrt::Windows::Graphics::RectInt32, 1> drag{
-            {{0, 0, std::max(1, Width(r) - title.RightInset()), MulDiv(56, dpi, 96)}}};
+            {{0, 0, std::max(1, Width(r) - title.RightInset()), MulDiv(46, dpi, 96)}}};
         title.SetDragRectangles(drag);
     }
     ui_->island.SiteBridge().MoveAndResize({0, 0, Width(r), Height(r)});
@@ -436,9 +470,7 @@ void SettingsWindow::Build(const std::string& key) {
     number(L"Timeout", settings_.timeoutSeconds);
     text(L"RequestParameters", Wide(settings_.requestParameters));
     ui_->Get<ComboBox>(L"OcrMode").SelectedIndex(OcrSelectionFromMode(settings_.ocrMode));
-    toggle(L"ContextEnabled", settings_.contextEnabled);
-    number(L"ContextSize", settings_.contextSize);
-    text(L"Prompt", Wide(settings_.prompt));
+    ui_->UpdateLanguageButtons(settings_);
     auto fonts = ui_->Get<ComboBox>(L"Font");
     ComPtr<IDWriteFactory> fontFactory;
     ComPtr<IDWriteFontCollection> fontCollection;
@@ -470,28 +502,66 @@ void SettingsWindow::Build(const std::string& key) {
     });
     toggle(L"MatchTextColor", settings_.matchTextColor);
     toggle(L"AutoFont", settings_.autoFont);
-    number(L"FontSize", settings_.fontSize);
-    text(L"TextColor", Color(settings_.textColor));
-    auto outlineMode = ui_->Get<ComboBox>(L"OutlineColorMode");
-    outlineMode.Items().Append(winrt::box_value(L"自定义颜色"));
-    outlineMode.Items().Append(winrt::box_value(L"字体反色"));
-    outlineMode.SelectedIndex(settings_.outlineColorMode == 1 ? 1 : 0);
-    auto outlineStyle = ui_->Get<ComboBox>(L"OutlineStyle");
-    outlineStyle.Items().Append(winrt::box_value(L"硬边"));
-    outlineStyle.Items().Append(winrt::box_value(L"毛边"));
-    outlineStyle.Items().Append(winrt::box_value(L"荧光"));
-    outlineStyle.SelectedIndex(std::clamp(settings_.outlineStyle, 0, 2));
-    // The colour box follows the colour mode: the inverse mode reads the rendered face colour, so
-    // the picked value only applies while the custom mode holds.
-    auto syncOutlineColor = [this] {
-        ui_->Get<TextBox>(L"OutlineColor").IsEnabled(
-            ui_->Get<ComboBox>(L"OutlineColorMode").SelectedIndex() == 0);
+    ui_->Get<Slider>(L"FontSizeSlider").Value(std::clamp(double(settings_.fontSize), 12.0, 48.0));
+    ui_->selectedTextColor = settings_.textColor;
+    ui_->Get<ComboBox>(L"OutlinePreset").SelectedIndex(OutlinePresetFromSettings(settings_));
+    const double initialOpacityPct =
+        std::round(std::clamp(double(settings_.backgroundOpacity), 0.1, 1.0) * 20.0) * 5.0;
+    ui_->Get<Slider>(L"OpacitySlider").Value(initialOpacityPct);
+    auto swatches = ui_->Get<Grid>(L"ColorSwatches");
+    auto refreshSwatches = [this] {
+        auto normalBg = xaml::Media::SolidColorBrush(winrt::Microsoft::UI::Colors::Transparent());
+        auto selectedBg = ui_->ThemeBrush(L"UiUser");
+        auto selectedBorder = ui_->ThemeBrush(L"UiAccent");
+        auto normalBorder = ui_->ThemeBrush(L"UiBorder");
+        for (const auto& [col, btn] : ui_->colorButtons) {
+            const bool active = col == ui_->selectedTextColor;
+            btn.Background(active ? selectedBg : normalBg);
+            btn.BorderBrush(active ? selectedBorder : normalBorder);
+        }
     };
-    syncOutlineColor();
-    outlineMode.SelectionChanged([syncOutlineColor](auto const&, auto const&) { syncOutlineColor(); });
-    text(L"OutlineColor", Color(settings_.outlineColor));
-    number(L"OutlineWidth", settings_.outlineWidth);
-    number(L"Opacity", settings_.backgroundOpacity);
+    for (size_t k = 0; k < std::size(kTextColorPresets); ++k) {
+        const auto& preset = kTextColorPresets[k];
+        Button btn;
+        btn.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+        btn.HorizontalContentAlignment(xaml::HorizontalAlignment::Left);
+        btn.Padding({10, 6, 10, 6});
+        btn.CornerRadius({6, 6, 6, 6});
+        btn.BorderThickness({1, 1, 1, 1});
+        StackPanel inner;
+        inner.Orientation(Orientation::Horizontal);
+        inner.Spacing(6);
+        Border dot;
+        dot.Width(12);
+        dot.Height(12);
+        dot.CornerRadius({6, 6, 6, 6});
+        dot.BorderThickness({1, 1, 1, 1});
+        dot.BorderBrush(ui_->ThemeBrush(L"UiBorder"));
+        dot.Background(xaml::Media::SolidColorBrush(winrt::Windows::UI::Color{
+            255, GetRValue(preset.color), GetGValue(preset.color), GetBValue(preset.color)}));
+        TextBlock lbl;
+        lbl.Text(preset.name);
+        lbl.FontSize(13);
+        inner.Children().Append(dot);
+        inner.Children().Append(lbl);
+        btn.Content(inner);
+        COLORREF col = preset.color;
+        btn.Click([this, col, refreshSwatches](auto const&, auto const&) {
+            ui_->selectedTextColor = col;
+            refreshSwatches();
+            const bool autoCol = ui_->On(L"MatchTextColor");
+            if (!autoCol) {
+                ui_->Get<TextBlock>(L"FontPreview")
+                    .Foreground(xaml::Media::SolidColorBrush(
+                        winrt::Windows::UI::Color{255, GetRValue(col), GetGValue(col), GetBValue(col)}));
+            }
+        });
+        Grid::SetRow(btn, int(k / 3));
+        Grid::SetColumn(btn, int(k % 3));
+        swatches.Children().Append(btn);
+        ui_->colorButtons.emplace_back(col, btn);
+    }
+    refreshSwatches();
     for (int i = 0; i < 4; ++i) {
         ui_->hotkeys[i] = settings_.hotkeys[i];
         auto name = L"Hotkey" + std::to_wstring(i);
@@ -520,7 +590,6 @@ void SettingsWindow::Build(const std::string& key) {
             sender.template as<TextBox>().Text(HotkeyLabel(next));
         });
     }
-    auto nav = ui_->Get<NavigationView>(L"Navigation");
     auto focusChanged = [this](auto const&, auto const&) {
         if (ui_ && !ui_->hotkeyFocusPending) {
             // FocusManager notifications precede the committed focus state.
@@ -539,27 +608,261 @@ void SettingsWindow::Build(const std::string& key) {
             }
         });
     ui_->root.AddHandler(xaml::UIElement::PointerPressedEvent(), winrt::box_value(leaveEditor), true);
-    nav.SelectionChanged([this](auto const&, NavigationViewSelectionChangedEventArgs const& args) {
-        if (auto item = args.SelectedItem().try_as<NavigationViewItem>())
-            SelectPage(std::stoi(std::wstring(winrt::unbox_value<winrt::hstring>(item.Tag()))));
-    });
     ui_->Get<SelectorBar>(L"SettingsTabs").SelectionChanged([this](auto const& sender, auto const&) {
         auto item = sender.template as<SelectorBar>().SelectedItem();
         if (item)
             SelectSettingsTab(std::stoi(std::wstring(winrt::unbox_value<winrt::hstring>(item.Tag()))));
     });
-    nav.SelectedItem(page_ < 2 ? nav.MenuItems().GetAt(page_) : nav.FooterMenuItems().GetAt(0));
-    SelectPage(page_);
     SelectSettingsTab(settingsTab_);
-    for (auto [name, tab] : std::initializer_list<std::pair<const wchar_t*, int>>{{L"TextConnection", 1},
-                                                                                  {L"ScreenConnection", 1},
-                                                                                  {L"OpenShortcuts", 0}}) {
-        ui_->Get<HyperlinkButton>(name).Click([this, tab](auto const&, auto const&) {
-            auto navigation = ui_->Get<NavigationView>(L"Navigation");
-            navigation.SelectedItem(navigation.FooterMenuItems().GetAt(0));
-            SelectSettingsTab(tab);
+    ui_->Get<HyperlinkButton>(L"TextConnection").Click([this](auto const&, auto const&) {
+        SelectSettingsTab(1);
+        ui_->Get<SplitView>(L"MainSplit").IsPaneOpen(true);
+    });
+    ui_->Get<Button>(L"OpenSettingsDrawer").Click([this](auto const&, auto const&) {
+        SelectSettingsTab(settingsTab_);
+        ui_->Get<SplitView>(L"MainSplit").IsPaneOpen(true);
+    });
+    ui_->Get<Button>(L"CloseDrawer").Click([this](auto const&, auto const&) {
+        ui_->Get<SplitView>(L"MainSplit").IsPaneOpen(false);
+        SetHotkeyEditing(false);
+    });
+    ui_->Get<ToggleSwitch>(L"TraceEnabled").Toggled([this](auto const&, auto const&) {
+        if (ui_->updating)
+            return;
+        const bool enabled = ui_->On(L"TraceEnabled");
+        settings_.traceEnabled = enabled;
+        try {
+            if (callbacks_.traceChanged)
+                callbacks_.traceChanged(enabled);
+        } catch (...) {
+            Status(L"日志开关未保存，当前选择在本次会话中有效。");
+        }
+    });
+    ui_->Get<Button>(L"ExportLogs").Click([this](auto const&, auto const&) {
+        try {
+            if (callbacks_.exportLogs) {
+                const auto msg = callbacks_.exportLogs(hwnd_);
+                if (!msg.empty())
+                    Status(msg);
+            }
+        } catch (const AppError& e) {
+            Status(Wide(e.what()));
+        } catch (...) {
+            Status(L"导出日志失败，请检查保存路径权限。");
+        }
+    });
+    auto attachLanguagePicker = [this](const wchar_t* buttonName, bool includeAuto) {
+        auto anchor = ui_->Get<Button>(buttonName);
+        Flyout flyout;
+        flyout.Placement(xaml::Controls::Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
+        if (auto styleObj = ui_->root.Resources().TryLookup(winrt::box_value(L"LangFlyoutPresenterStyle"))) {
+            if (auto presenterStyle = styleObj.try_as<xaml::Style>())
+                flyout.FlyoutPresenterStyle(presenterStyle);
+        }
+        xaml::Style itemStyle{nullptr};
+        if (auto itemStyleObj = ui_->root.Resources().TryLookup(winrt::box_value(L"LangItemButtonStyle")))
+            itemStyle = itemStyleObj.try_as<xaml::Style>();
+
+        Grid rootGrid;
+        rootGrid.Width(520);
+        rootGrid.Height(420);
+        rootGrid.ColumnSpacing(6);
+        ColumnDefinition leftCol, rightCol;
+        leftCol.Width(xaml::GridLength{1, xaml::GridUnitType::Star});
+        rightCol.Width(xaml::GridLength{0, xaml::GridUnitType::Auto});
+        rootGrid.ColumnDefinitions().Append(leftCol);
+        rootGrid.ColumnDefinitions().Append(rightCol);
+
+        ScrollViewer scroll;
+        scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+        scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+        scroll.HorizontalScrollMode(ScrollMode::Disabled);
+        Grid::SetColumn(scroll, 0);
+
+        StackPanel listStack;
+        listStack.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+        listStack.Spacing(6);
+        listStack.Padding({2, 2, 14, 6});
+
+        TextBlock title;
+        title.Text(includeAuto ? L"全部语言（识别语种）" : L"全部语言（目标语言）");
+        title.FontSize(12);
+        title.Foreground(ui_->ThemeBrush(L"UiSecondary"));
+        title.Margin({4, 0, 0, 2});
+        listStack.Children().Append(title);
+
+        auto makeItemContent = [](const wchar_t* labelText) {
+            TextBlock tb;
+            tb.Text(labelText);
+            tb.FontSize(14);
+            tb.TextTrimming(xaml::TextTrimming::CharacterEllipsis);
+            return tb;
+        };
+
+        Button autoBtn{nullptr};
+        if (includeAuto) {
+            autoBtn = Button();
+            if (itemStyle)
+                autoBtn.Style(itemStyle);
+            autoBtn.Content(makeItemContent(L"自动识别"));
+            autoBtn.HorizontalAlignment(xaml::HorizontalAlignment::Left);
+            autoBtn.MinWidth(148);
+            autoBtn.Click([this, flyout](auto const&, auto const&) {
+                flyout.Hide();
+                settings_.sourceLanguage = "auto";
+                ui_->UpdateLanguageButtons(settings_);
+                textPage_.SetSourceLanguage("auto");
+                try {
+                    if (callbacks_.workbenchLanguages)
+                        callbacks_.workbenchLanguages(settings_.sourceLanguage,
+                                                      settings_.screenTargetLanguage);
+                } catch (...) {
+                    Status(L"语言设置未保存，当前选择在本次会话中有效。");
+                }
+            });
+            listStack.Children().Append(autoBtn);
+        }
+
+        std::vector<std::pair<char, xaml::UIElement>> headers;
+        auto entries = std::make_shared<std::vector<std::pair<std::string, Button>>>();
+        for (char ch = 'A'; ch <= 'Z'; ++ch) {
+            std::vector<const TargetLanguage*> groupItems;
+            for (const auto& lang : TextTargetLanguages())
+                if (lang.group == ch)
+                    groupItems.push_back(&lang);
+            if (groupItems.empty())
+                continue;
+            TextBlock hdr;
+            hdr.Text(std::wstring(1, wchar_t(ch)));
+            hdr.FontSize(12);
+            hdr.Foreground(ui_->ThemeBrush(L"UiSecondary"));
+            hdr.Margin({4, 6, 0, 0});
+            listStack.Children().Append(hdr);
+            headers.emplace_back(ch, hdr);
+            Grid groupGrid;
+            groupGrid.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+            groupGrid.ColumnSpacing(6);
+            groupGrid.RowSpacing(4);
+            for (int c = 0; c < 3; ++c) {
+                ColumnDefinition col;
+                col.Width(xaml::GridLength{1, xaml::GridUnitType::Star});
+                groupGrid.ColumnDefinitions().Append(col);
+            }
+            const int rows = int((groupItems.size() + 2) / 3);
+            for (int r = 0; r < rows; ++r) {
+                RowDefinition rowDef;
+                rowDef.Height(xaml::GridLength{0, xaml::GridUnitType::Auto});
+                groupGrid.RowDefinitions().Append(rowDef);
+            }
+            for (size_t k = 0; k < groupItems.size(); ++k) {
+                const auto* lang = groupItems[k];
+                Button itemBtn;
+                if (itemStyle)
+                    itemBtn.Style(itemStyle);
+                itemBtn.Content(makeItemContent(lang->label));
+                std::string langId(lang->id);
+                itemBtn.Click([this, flyout, includeAuto, langId](auto const&, auto const&) {
+                    flyout.Hide();
+                    if (includeAuto) {
+                        settings_.sourceLanguage = langId;
+                        textPage_.SetSourceLanguage(langId);
+                    } else {
+                        settings_.screenTargetLanguage = langId;
+                        settings_.textTargetLanguage = langId;
+                        textPage_.SetTargetLanguage(langId);
+                    }
+                    ui_->UpdateLanguageButtons(settings_);
+                    try {
+                        if (callbacks_.workbenchLanguages)
+                            callbacks_.workbenchLanguages(settings_.sourceLanguage,
+                                                          settings_.screenTargetLanguage);
+                    } catch (...) {
+                        Status(L"语言设置未保存，当前选择在本次会话中有效。");
+                    }
+                });
+                Grid::SetRow(itemBtn, int(k / 3));
+                Grid::SetColumn(itemBtn, int(k % 3));
+                groupGrid.Children().Append(itemBtn);
+                entries->emplace_back(langId, itemBtn);
+            }
+            listStack.Children().Append(groupGrid);
+        }
+        scroll.Content(listStack);
+        rootGrid.Children().Append(scroll);
+
+        StackPanel indexRail;
+        indexRail.VerticalAlignment(xaml::VerticalAlignment::Center);
+        indexRail.Spacing(1);
+        Grid::SetColumn(indexRail, 1);
+        for (const auto& [ch, hdr] : headers) {
+            Button jumpBtn;
+            jumpBtn.Content(winrt::box_value(std::wstring(1, wchar_t(ch))));
+            jumpBtn.Width(22);
+            jumpBtn.Height(16);
+            jumpBtn.MinHeight(16);
+            jumpBtn.MinWidth(22);
+            jumpBtn.Padding({0, 0, 0, 0});
+            jumpBtn.FontSize(11);
+            jumpBtn.Background(
+                xaml::Media::SolidColorBrush(winrt::Microsoft::UI::Colors::Transparent()));
+            jumpBtn.BorderThickness({0, 0, 0, 0});
+            jumpBtn.Foreground(ui_->ThemeBrush(L"UiSecondary"));
+            jumpBtn.Click([scroll, listStack, hdr](auto const&, auto const&) {
+                auto pt = hdr.TransformToVisual(listStack).TransformPoint({0.f, 0.f});
+                scroll.ChangeView(
+                    nullptr,
+                    winrt::box_value(static_cast<double>(pt.Y))
+                        .as<winrt::Windows::Foundation::IReference<double>>(),
+                    nullptr, false);
+            });
+            indexRail.Children().Append(jumpBtn);
+        }
+        rootGrid.Children().Append(indexRail);
+
+        flyout.Opening([this, includeAuto, autoBtn, entries](auto const&, auto const&) {
+            const std::string& active =
+                includeAuto ? (settings_.sourceLanguage.empty() ? std::string("auto")
+                                                                : settings_.sourceLanguage)
+                            : settings_.screenTargetLanguage;
+            auto normalBg = xaml::Media::SolidColorBrush(winrt::Microsoft::UI::Colors::Transparent());
+            auto selectedBg = ui_->ThemeBrush(L"UiUser");
+            auto normalFg = ui_->ThemeBrush(L"UiText");
+            auto selectedFg = ui_->ThemeBrush(L"UiAccent");
+            auto applyHighlight = [&](Button b, bool selected) {
+                b.Background(selected ? selectedBg : normalBg);
+                b.Foreground(selected ? selectedFg : normalFg);
+                if (auto tb = b.Content().try_as<TextBlock>())
+                    tb.Foreground(selected ? selectedFg : normalFg);
+            };
+            if (autoBtn)
+                applyHighlight(autoBtn, active == "auto");
+            for (const auto& [id, btn] : *entries)
+                applyHighlight(btn, id == active);
         });
-    }
+        flyout.Content(rootGrid);
+        anchor.Flyout(flyout);
+    };
+    attachLanguagePicker(L"SourceLangPicker", true);
+    attachLanguagePicker(L"TargetLangPicker", false);
+    ui_->Get<Button>(L"SwapLanguages").Click([this](auto const&, auto const&) {
+        const std::string oldSource = settings_.sourceLanguage.empty() ? "auto" : settings_.sourceLanguage;
+        const std::string oldTarget = settings_.screenTargetLanguage;
+        const std::string nextTarget =
+            oldSource != "auto" ? oldSource : (oldTarget == "zh-Hans" ? "en" : "zh-Hans");
+        const std::string nextSource = oldTarget;
+        settings_.sourceLanguage = nextSource;
+        settings_.screenTargetLanguage = nextTarget;
+        settings_.textTargetLanguage = nextTarget;
+        ui_->UpdateLanguageButtons(settings_);
+        textPage_.SetSourceLanguage(nextSource);
+        textPage_.SetTargetLanguage(nextTarget);
+        try {
+            if (callbacks_.workbenchLanguages)
+                callbacks_.workbenchLanguages(settings_.sourceLanguage, settings_.screenTargetLanguage);
+        } catch (...) {
+            Status(L"语言设置未保存，当前选择在本次会话中有效。");
+        }
+    });
     auto button = [&](const wchar_t* name, std::function<void()> action) {
         auto control = ui_->Get<Button>(name);
         xaml::Automation::AutomationProperties::SetAutomationId(control, name);
@@ -588,15 +891,10 @@ void SettingsWindow::Build(const std::string& key) {
     for (auto [name, action] : std::initializer_list<std::pair<const wchar_t*, SettingsAction>>{
              {L"Translate", SettingsAction::Translate},
              {L"ContinuousTranslate", SettingsAction::ContinuousTranslate},
-             {L"TranslateFixed", SettingsAction::FixedTranslate},
-             {L"ClearContext", SettingsAction::ClearContext}}) {
+             {L"TranslateFixed", SettingsAction::FixedTranslate}}) {
         button(name, [this, action] {
             if (callbacks_.action)
                 callbacks_.action(action);
-            if (action == SettingsAction::ClearContext)
-                textPage_.ClearContext();
-            if (action == SettingsAction::ClearContext)
-                Status(L"上下文已清空。");
         });
     }
     ui_->Get<TextBox>(L"BaseUrl")
@@ -646,22 +944,45 @@ void SettingsWindow::Build(const std::string& key) {
                     .Text(L"已切换连接草稿。切回可恢复原配置；点击保存设置后写入磁盘。");
             });
     auto dependent = [this] {
-        ui_->Get<NumberBox>(L"ContextSize").IsEnabled(ui_->On(L"ContextEnabled"));
-        ui_->Get<NumberBox>(L"FontSize").IsEnabled(!ui_->On(L"AutoFont"));
-        ui_->Get<TextBox>(L"TextColor").IsEnabled(!ui_->On(L"MatchTextColor"));
+        const bool autoFont = ui_->On(L"AutoFont");
+        const bool matchColor = ui_->On(L"MatchTextColor");
+        const int fontSize = std::clamp(int(std::lround(ui_->Get<Slider>(L"FontSizeSlider").Value())), 12, 48);
+        const int opacityPct = std::clamp(int(std::lround(ui_->Get<Slider>(L"OpacitySlider").Value())), 10, 100);
+        const int outlineIdx = std::clamp(ui_->Get<ComboBox>(L"OutlinePreset").SelectedIndex(), 0, 3);
+        ui_->Get<Grid>(L"FontSizeRow")
+            .Visibility(autoFont ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
+        ui_->Get<StackPanel>(L"ColorPaletteRow")
+            .Visibility(matchColor ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
+        ui_->Get<TextBlock>(L"FontSizeValueText").Text(std::to_wstring(fontSize) + L" 号");
+        ui_->Get<TextBlock>(L"OpacityValueText").Text(std::to_wstring(opacityPct) + L"%");
         ui_->Get<TextBox>(L"ProxyAddress")
             .IsEnabled(!apiBusy_ && ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex() == 2);
         auto preview = ui_->Get<TextBlock>(L"FontPreview");
         preview.FontFamily(xaml::Media::FontFamily(ui_->ReadFont()));
-        auto size = ui_->Get<NumberBox>(L"FontSize").Value();
-        preview.FontSize(ui_->On(L"AutoFont") || !std::isfinite(size) ? 22 : std::clamp(size, 8.0, 144.0));
+        preview.FontSize(autoFont ? 20.0 : double(fontSize));
+        if (matchColor) {
+            preview.Foreground(ui_->ThemeBrush(L"UiText"));
+        } else {
+            preview.Foreground(xaml::Media::SolidColorBrush(winrt::Windows::UI::Color{
+                255, GetRValue(ui_->selectedTextColor), GetGValue(ui_->selectedTextColor),
+                GetBValue(ui_->selectedTextColor)}));
+        }
+        ui_->Get<Border>(L"PreviewCover").Opacity(double(opacityPct) / 100.0);
+        static constexpr const wchar_t* kOutlineLabels[]{L"无描边", L"清晰细边", L"醒目粗边", L"柔和光晕"};
+        std::wstring summary = (autoFont ? L"自动字号" : std::to_wstring(fontSize) + L" 号") +
+                               std::wstring(L" · ") + (matchColor ? L"自动配色" : L"指定颜色") +
+                               L" · " + kOutlineLabels[outlineIdx] + L" · 遮盖 " +
+                               std::to_wstring(opacityPct) + L"%";
+        ui_->Get<TextBlock>(L"PreviewSummary").Text(summary);
     };
-    for (auto name : {L"ContextEnabled", L"AutoFont", L"MatchTextColor"})
+    for (auto name : {L"AutoFont", L"MatchTextColor"})
         ui_->Get<ToggleSwitch>(name).Toggled([dependent](auto const&, auto const&) { dependent(); });
     dependent();
     fonts.RegisterPropertyChangedCallback(ComboBox::TextProperty(),
                                           [dependent](auto const&, auto const&) { dependent(); });
-    ui_->Get<NumberBox>(L"FontSize").ValueChanged([dependent](auto const&, auto const&) { dependent(); });
+    ui_->Get<Slider>(L"FontSizeSlider").ValueChanged([dependent](auto const&, auto const&) { dependent(); });
+    ui_->Get<Slider>(L"OpacitySlider").ValueChanged([dependent](auto const&, auto const&) { dependent(); });
+    ui_->Get<ComboBox>(L"OutlinePreset").SelectionChanged([dependent](auto const&, auto const&) { dependent(); });
     ui_->Get<ComboBox>(L"ProxyMode").SelectionChanged([dependent](auto const&, auto const&) { dependent(); });
     UpdateTranslationMode();
     ui_->updating = false;
@@ -677,28 +998,6 @@ void SettingsWindow::Build(const std::string& key) {
 }
 void SettingsWindow::SelectPage(int page) {
     page_ = std::clamp(page, 0, 2);
-    ui_->Get<Grid>(L"TextPage")
-        .Visibility(page_ == 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<ScrollViewer>(L"PageScroll")
-        .Visibility(page_ > 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<StackPanel>(L"ScreenPage")
-        .Visibility(page_ == 1 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<StackPanel>(L"SettingsPage")
-        .Visibility(page_ == 2 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<Grid>(L"SettingsFooter")
-        .Visibility(page_ > 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<SelectorBar>(L"SettingsTabs")
-        .Visibility(page_ == 2 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<HyperlinkButton>(L"TextConnection")
-        .Visibility(page_ == 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    ui_->Get<Button>(L"ClearConversation")
-        .Visibility(page_ == 0 ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
-    const wchar_t* titles[]{L"文本翻译", L"截图翻译", L"设置"};
-    ui_->Get<TextBlock>(L"PageTitle").Text(titles[page_]);
-    SetHotkeyEditing(GetActiveWindow() == hwnd_ && ui_->FocusedHotkey());
-    ui_->Get<ScrollViewer>(L"PageScroll")
-        .ChangeView(nullptr, winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(),
-                    nullptr);
 }
 void SettingsWindow::SelectSettingsTab(int tab) {
     const bool changed = settingsTab_ != tab;
@@ -726,9 +1025,6 @@ void SettingsWindow::SetHotkeyEditing(bool editing) {
 void SettingsWindow::UpdateTranslationMode() {
     if (!ui_)
         return;
-    // One screen translation entry runs recognition and translation together: the capture is always
-    // recognized locally, and only the provider decides whether the image itself travels to the service.
-    ui_->Get<ComboBox>(L"OcrMode").IsEnabled(!apiBusy_);
     auto index = ui_->Get<ComboBox>(L"Provider").SelectedIndex();
     if (index >= 0) {
         auto id = ProviderPresets().at(index).id;
@@ -743,8 +1039,7 @@ void SettingsWindow::UpdateTranslationMode() {
         .IsEnabled(!apiBusy_ && ui_->Get<ComboBox>(L"ProxyMode").SelectedIndex() == 2);
 }
 void SettingsWindow::Status(const std::wstring& text) {
-    if (page_ == 0)
-        textPage_.Notify(text);
+    textPage_.Notify(text);
     if (ui_ && ui_->root)
         ui_->Get<TextBlock>(L"Status").Text(text);
 }
@@ -850,22 +1145,37 @@ void SettingsWindow::Save() {
         next.textCtrlEnter = ui_->On(L"TextCtrlEnter");
         std::copy(std::begin(ui_->hotkeys), std::end(ui_->hotkeys), std::begin(next.hotkeys));
         next.ocrMode = OcrModeFromSelection(ui_->Get<ComboBox>(L"OcrMode").SelectedIndex());
-        next.contextEnabled = ui_->On(L"ContextEnabled");
-        next.contextSize = ui_->Integer(L"ContextSize");
-        next.prompt = Utf8(ui_->Text(L"Prompt"));
         // Replacement in place is the only display mode now, so the stored value keeps it enabled.
         next.spatialOverlay = true;
         next.traceEnabled = ui_->On(L"TraceEnabled");
         next.font = ui_->ReadFont();
         next.matchTextColor = ui_->On(L"MatchTextColor");
         next.autoFont = ui_->On(L"AutoFont");
-        next.fontSize = static_cast<float>(ui_->Number(L"FontSize"));
-        next.textColor = ParseColor(ui_->Text(L"TextColor"));
-        next.outlineColor = ParseColor(ui_->Text(L"OutlineColor"));
-        next.outlineWidth = static_cast<float>(ui_->Number(L"OutlineWidth"));
-        next.outlineColorMode = ui_->Get<ComboBox>(L"OutlineColorMode").SelectedIndex() == 1 ? 1 : 0;
-        next.outlineStyle = std::clamp(ui_->Get<ComboBox>(L"OutlineStyle").SelectedIndex(), 0, 2);
-        next.backgroundOpacity = static_cast<float>(ui_->Number(L"Opacity"));
+        next.fontSize =
+            static_cast<float>(std::clamp(std::round(ui_->Get<Slider>(L"FontSizeSlider").Value()), 12.0, 48.0));
+        next.textColor = ui_->selectedTextColor;
+        const int outlinePreset = std::clamp(ui_->Get<ComboBox>(L"OutlinePreset").SelectedIndex(), 0, 3);
+        next.outlineColorMode = 1;
+        switch (outlinePreset) {
+        case 0:
+            next.outlineWidth = 0.0f;
+            next.outlineStyle = 0;
+            break;
+        case 2:
+            next.outlineWidth = 1.0f;
+            next.outlineStyle = 0;
+            break;
+        case 3:
+            next.outlineWidth = 1.2f;
+            next.outlineStyle = 2;
+            break;
+        default:
+            next.outlineWidth = 0.35f;
+            next.outlineStyle = 0;
+            break;
+        }
+        next.backgroundOpacity = static_cast<float>(
+            std::clamp(std::round(ui_->Get<Slider>(L"OpacitySlider").Value()) / 100.0, 0.1, 1.0));
         ValidateSettings(next);
         Secret secret{Utf8(std::wstring(ui_->Get<PasswordBox>(L"Key").Password()))};
         auto error = callbacks_.apply ? callbacks_.apply(next, secret.value) : L"保存服务不可用。";
@@ -879,7 +1189,7 @@ void SettingsWindow::Save() {
     } catch (const AppError& e) {
         Status(Wide(e.what()));
     } catch (...) {
-        Status(L"请检查数值范围和六位十六进制颜色。");
+        Status(L"请检查设置项是否合法。");
     }
 }
 LRESULT CALLBACK SettingsWindow::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -956,5 +1266,17 @@ LRESULT CALLBACK SettingsWindow::Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         self->Status(L"窗口操作未完成。");
     }
     return DefWindowProcW(h, m, w, l);
+}
+void SettingsWindow::SyncScreenLanguages(int ocrMode, const std::string& screenTargetLanguage) {
+    settings_.ocrMode = ocrMode;
+    settings_.screenTargetLanguage = screenTargetLanguage;
+    settings_.textTargetLanguage = screenTargetLanguage;
+    textPage_.SetTargetLanguage(screenTargetLanguage);
+    if (ui_ && ui_->root) {
+        ui_->updating = true;
+        ui_->Get<ComboBox>(L"OcrMode").SelectedIndex(OcrSelectionFromMode(ocrMode));
+        ui_->updating = false;
+        ui_->UpdateLanguageButtons(settings_);
+    }
 }
 } // namespace sat

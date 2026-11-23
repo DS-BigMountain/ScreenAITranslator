@@ -1,7 +1,7 @@
 #define AppName "你给我翻译翻译什么叫翻译"
 #define AppExeName AppName + ".exe"
 #ifndef AppVersion
-  #define AppVersion "3.1.0"
+  #define AppVersion "3.2.0"
 #endif
 #ifndef AppStage
   #define AppStage "..\build\package-stage\Release"

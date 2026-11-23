@@ -13,8 +13,7 @@
           <SolidColorBrush x:Key="UiUser" Color="#E4F0FC"/><SolidColorBrush x:Key="UiAccent" Color="#3264BC"/>
           <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#3264BC"/>
           <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#2C5BAE"/>
-          <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#28539E"/><SolidColorBrush x:Key="AccentButtonBackground" Color="#3264BC"/><SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#2C5BAE"/><SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#28539E"/><SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="#3264BC"/><SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#3264BC"/><SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#2C5BAE"/>
-          <SolidColorBrush x:Key="NavigationViewContentBackground" Color="Transparent"/>
+          <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#28539E"/><SolidColorBrush x:Key="AccentButtonBackground" Color="#3264BC"/><SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#2C5BAE"/><SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#28539E"/><SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#3264BC"/><SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#2C5BAE"/>
         </ResourceDictionary>
         <ResourceDictionary x:Key="Default">
           <SolidColorBrush x:Key="UiShell" Color="#202020"/><SolidColorBrush x:Key="UiPage" Color="#272727"/>
@@ -24,8 +23,7 @@
           <SolidColorBrush x:Key="UiUser" Color="#16435E"/><SolidColorBrush x:Key="UiAccent" Color="#60CDFF"/>
           <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#60CDFF"/>
           <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#58BCEB"/>
-          <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#50ACD8"/><SolidColorBrush x:Key="AccentButtonBackground" Color="#60CDFF"/><SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#58BCEB"/><SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#50ACD8"/><SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="#60CDFF"/><SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#60CDFF"/><SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#58BCEB"/>
-          <SolidColorBrush x:Key="NavigationViewContentBackground" Color="Transparent"/>
+          <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#50ACD8"/><SolidColorBrush x:Key="AccentButtonBackground" Color="#60CDFF"/><SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#58BCEB"/><SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#50ACD8"/><SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#60CDFF"/><SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#58BCEB"/>
         </ResourceDictionary>
         <ResourceDictionary x:Key="HighContrast">
           <SolidColorBrush x:Key="UiShell" Color="{ThemeResource SystemColorWindowColor}"/><SolidColorBrush x:Key="UiPage" Color="{ThemeResource SystemColorWindowColor}"/>
@@ -37,12 +35,12 @@
       </ResourceDictionary.ThemeDictionaries>
       <Style TargetType="TextBlock"><Setter Property="FontFamily" Value="Microsoft YaHei UI"/><Setter Property="FontSize" Value="15"/><Setter Property="Foreground" Value="{ThemeResource UiText}"/></Style>
       <Style x:Key="Note" TargetType="TextBlock"><Setter Property="FontSize" Value="13"/><Setter Property="Foreground" Value="{ThemeResource UiSecondary}"/><Setter Property="TextWrapping" Value="Wrap"/></Style>
-      <Style x:Key="SectionTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="20"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="TextWrapping" Value="Wrap"/></Style>
-      <Style x:Key="Card" TargetType="Border"><Setter Property="Background" Value="{ThemeResource UiCard}"/><Setter Property="BorderBrush" Value="{ThemeResource UiBorder}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="8"/><Setter Property="Padding" Value="24"/></Style>
-      <Style x:Key="SettingRow" TargetType="Grid"><Setter Property="Padding" Value="22,17"/><Setter Property="ColumnSpacing" Value="24"/><Setter Property="MinHeight" Value="72"/></Style>
+      <Style x:Key="SectionTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="17"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="TextWrapping" Value="Wrap"/></Style>
+      <Style x:Key="Card" TargetType="Border"><Setter Property="Background" Value="{ThemeResource UiCard}"/><Setter Property="BorderBrush" Value="{ThemeResource UiBorder}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="8"/><Setter Property="Padding" Value="18"/></Style>
+      <Style x:Key="SettingRow" TargetType="Grid"><Setter Property="Padding" Value="16,13"/><Setter Property="ColumnSpacing" Value="16"/><Setter Property="MinHeight" Value="58"/></Style>
       <Style x:Key="Divider" TargetType="Border"><Setter Property="Background" Value="{ThemeResource UiBorder}"/><Setter Property="Height" Value="1"/></Style>
       <Style x:Key="FlatButton" TargetType="Button">
-        <Setter Property="MinHeight" Value="36"/><Setter Property="Padding" Value="8,6"/><Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{ThemeResource UiSecondary}"/><Setter Property="BorderThickness" Value="0"/><Setter Property="CornerRadius" Value="4"/><Setter Property="UseSystemFocusVisuals" Value="True"/>
+        <Setter Property="MinHeight" Value="36"/><Setter Property="Padding" Value="8,6"/><Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{ThemeResource UiSecondary}"/><Setter Property="BorderThickness" Value="0"/><Setter Property="CornerRadius" Value="6"/><Setter Property="UseSystemFocusVisuals" Value="True"/>
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
           <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}">
             <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CommonStates">
@@ -54,187 +52,357 @@
           </Border>
         </ControlTemplate></Setter.Value></Setter>
       </Style>
-      <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource FlatButton}"><Setter Property="Width" Value="36"/><Setter Property="Height" Value="36"/><Setter Property="Padding" Value="7"/></Style>
-      <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}"><Setter Property="Background" Value="{ThemeResource UiAccent}"/><Setter Property="MinHeight" Value="44"/><Setter Property="Padding" Value="18,9"/><Setter Property="FontSize" Value="16"/></Style>
-      <Style x:Key="NavigationItem" TargetType="NavigationViewItem"><Setter Property="FontSize" Value="16"/><Setter Property="MinHeight" Value="44"/><Setter Property="Margin" Value="8,2"/></Style>
-      <Style x:Key="RecognitionChoice" TargetType="ToggleButton">
-        <Setter Property="Padding" Value="18,16"/><Setter Property="Background" Value="{ThemeResource UiCard}"/><Setter Property="BorderBrush" Value="{ThemeResource UiBorder}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="6"/><Setter Property="UseSystemFocusVisuals" Value="True"/>
-        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton"><Border x:Name="ChoiceSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
-          <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal"/><VisualState x:Name="PointerOver"><VisualState.Setters><Setter Target="ChoiceSurface.Background" Value="{ThemeResource UiHover}"/></VisualState.Setters></VisualState><VisualState x:Name="Pressed"/><VisualState x:Name="Disabled"><VisualState.Setters><Setter Target="ChoiceSurface.Opacity" Value="0.45"/></VisualState.Setters></VisualState></VisualStateGroup><VisualStateGroup x:Name="CheckStates"><VisualState x:Name="Unchecked"/><VisualState x:Name="Checked"><VisualState.Setters><Setter Target="ChoiceSurface.BorderBrush" Value="{ThemeResource UiAccent}"/><Setter Target="ChoiceSurface.Background" Value="{ThemeResource UiUser}"/></VisualState.Setters></VisualState><VisualState x:Name="Indeterminate"/></VisualStateGroup></VisualStateManager.VisualStateGroups>
-          <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"/>
-        </Border></ControlTemplate></Setter.Value></Setter>
+      <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource FlatButton}"><Setter Property="Width" Value="34"/><Setter Property="Height" Value="34"/><Setter Property="Padding" Value="6"/></Style>
+      <Style x:Key="LangFlyoutPresenterStyle" TargetType="FlyoutPresenter">
+        <Setter Property="MinWidth" Value="548"/>
+        <Setter Property="MaxWidth" Value="680"/>
+        <Setter Property="MaxHeight" Value="500"/>
+        <Setter Property="Padding" Value="14,12,8,12"/>
+        <Setter Property="Background" Value="{ThemeResource UiCard}"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource UiBorder}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="10"/>
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled"/>
       </Style>
+      <Style x:Key="LangItemButtonStyle" TargetType="Button" BasedOn="{StaticResource FlatButton}">
+        <Setter Property="MinHeight" Value="32"/>
+        <Setter Property="Padding" Value="10,5"/>
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="Foreground" Value="{ThemeResource UiText}"/>
+        <Setter Property="CornerRadius" Value="6"/>
+      </Style>
+      <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}"><Setter Property="Background" Value="{ThemeResource UiAccent}"/><Setter Property="MinHeight" Value="38"/><Setter Property="Padding" Value="16,7"/><Setter Property="FontSize" Value="15"/></Style>
       <DataTemplate x:Key="UserMessageTemplate">
         <StackPanel HorizontalAlignment="Right" Spacing="8">
           <TextBlock Text="你" Style="{StaticResource Note}" HorizontalAlignment="Right"/>
-          <Border x:Name="MessageBubble" Background="{ThemeResource UiUser}" BorderBrush="Transparent" BorderThickness="1" CornerRadius="8" Padding="20,20"><StackPanel x:Name="MessageContent" Spacing="10"/></Border>
+          <Border x:Name="MessageBubble" Background="{ThemeResource UiUser}" BorderBrush="Transparent" BorderThickness="1" CornerRadius="8" Padding="18,16"><StackPanel x:Name="MessageContent" Spacing="10"/></Border>
         </StackPanel>
       </DataTemplate>
       <DataTemplate x:Key="TranslationMessageTemplate">
         <StackPanel HorizontalAlignment="Left" Spacing="8">
           <TextBlock Text="译文" Style="{StaticResource Note}"/>
-          <Border x:Name="MessageBubble" Background="{ThemeResource UiCard}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="8" Padding="20,20"><StackPanel x:Name="MessageContent" Spacing="10"/></Border>
+          <Border x:Name="MessageBubble" Background="{ThemeResource UiCard}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="8" Padding="18,16"><StackPanel x:Name="MessageContent" Spacing="10"/></Border>
           <Button x:Name="CopyTranslation" Style="{StaticResource IconButton}" HorizontalAlignment="Left" AutomationProperties.Name="复制译文" ToolTipService.ToolTip="复制译文">
-            <Viewbox Width="18" Height="18"><Canvas Width="24" Height="24"><Path Data="M9 9 H20 A2 2 0 0 1 22 11 V22 A2 2 0 0 1 20 24 H9 A2 2 0 0 1 7 22 V11 A2 2 0 0 1 9 9 M16 5 V3 A2 2 0 0 0 14 1 H3 A2 2 0 0 0 1 3 V14 A2 2 0 0 0 3 16 H4" Stroke="{ThemeResource UiSecondary}" StrokeThickness="1.6" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Canvas></Viewbox>
+            <Viewbox Width="17" Height="17"><Canvas Width="24" Height="24"><Path Data="M9 9 H20 A2 2 0 0 1 22 11 V22 A2 2 0 0 1 20 24 H9 A2 2 0 0 1 7 22 V11 A2 2 0 0 1 9 9 M16 5 V3 A2 2 0 0 0 14 1 H3 A2 2 0 0 0 1 3 V14 A2 2 0 0 0 3 16 H4" Stroke="{ThemeResource UiSecondary}" StrokeThickness="1.6" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Canvas></Viewbox>
           </Button>
         </StackPanel>
       </DataTemplate>
     </ResourceDictionary>
   </Grid.Resources>
-  <Grid x:Name="CaptionBar" Height="56" Visibility="Collapsed" IsHitTestVisible="False" Padding="18,0,150,0" Background="{ThemeResource UiShell}">
-    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center"><Image x:Name="CaptionIcon" Width="18" Height="18"/><TextBlock Text="你给我翻译翻译什么叫翻译" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/></StackPanel>
+  <Grid x:Name="CaptionBar" Height="46" Visibility="Collapsed" IsHitTestVisible="False" Padding="18,0,150,0" Background="{ThemeResource UiShell}">
+    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+      <Image x:Name="CaptionIcon" Width="18" Height="18"/>
+      <TextBlock Text="你给我翻译翻译什么叫翻译" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+    </StackPanel>
   </Grid>
-  <NavigationView x:Name="Navigation" Grid.Row="1" FontFamily="Microsoft YaHei UI" FontSize="15"
-                  IsBackButtonVisible="Collapsed" IsSettingsVisible="False" PaneDisplayMode="Left" OpenPaneLength="250"
-                  CompactPaneLength="48" IsPaneToggleButtonVisible="False" IsPaneOpen="True" IsTitleBarAutoPaddingEnabled="False" AlwaysShowHeader="False" Background="{ThemeResource UiShell}">
-    <NavigationView.Resources><x:Double x:Key="NavigationViewItemOnLeftMinHeight">48</x:Double><x:Double x:Key="NavigationViewPaneHeaderRowMinHeight">24</x:Double><x:Double x:Key="NavigationViewItemOnLeftIconBoxHeight">18</x:Double><x:Double x:Key="NavigationViewSelectionIndicatorHeight">22</x:Double><Thickness x:Key="NavigationViewItemContentPresenterMargin">8,0,0,0</Thickness><Thickness x:Key="NavigationViewItemOnLeftIconBoxMargin">4,0,0,0</Thickness></NavigationView.Resources><NavigationView.PaneHeader><Border Height="24"/></NavigationView.PaneHeader><NavigationView.MenuItems>
-      <NavigationViewItem Content="文本翻译" Tag="0" Style="{StaticResource NavigationItem}"><NavigationViewItem.Icon><PathIcon Data="F0 M4,2 H14 A3,3 0 0 1 17,5 V11 A3,3 0 0 1 14,14 H6 L1,18 V5 A3,3 0 0 1 4,2 Z M4,3.5 A1.5,1.5 0 0 0 2.5,5 V14.8 L5.5,12.5 H14 A1.5,1.5 0 0 0 15.5,11 V5 A1.5,1.5 0 0 0 14,3.5 Z M9,15 H10.5 V18 A1.5,1.5 0 0 0 12,19.5 H18.5 L21.5,21.8 V12 A1.5,1.5 0 0 0 20,10.5 H18 V9 H20 A3,3 0 0 1 23,12 V25 L18,21 H12 A3,3 0 0 1 9,18 Z"/></NavigationViewItem.Icon></NavigationViewItem>
-      <NavigationViewItem Content="截图翻译" Tag="1" Style="{StaticResource NavigationItem}"><NavigationViewItem.Icon><PathIcon Data="M7,2 H4 A2,2 0 0 0 2,4 V7 H3.5 V4 A0.5,0.5 0 0 1 4,3.5 H7 Z M17,2 H20 A2,2 0 0 1 22,4 V7 H20.5 V4 A0.5,0.5 0 0 0 20,3.5 H17 Z M2,17 V20 A2,2 0 0 0 4,22 H7 V20.5 H4 A0.5,0.5 0 0 1 3.5,20 V17 Z M22,17 V20 A2,2 0 0 1 20,22 H17 V20.5 H20 A0.5,0.5 0 0 0 20.5,20 V17 Z M7,7 H17 V8.5 H7 Z M7,11 H17 V12.5 H7 Z M7,15 H13 V16.5 H7 Z"/></NavigationViewItem.Icon></NavigationViewItem>
-    </NavigationView.MenuItems>
-    <NavigationView.FooterMenuItems><NavigationViewItem Content="设置" Icon="Setting" Tag="2" Style="{StaticResource NavigationItem}" Margin="8,2,8,14"/></NavigationView.FooterMenuItems>
-    <Border Background="{ThemeResource UiPage}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="8" Margin="0,0,8,8">
-      <Grid x:Name="ContentLayout" Padding="36,34,36,28">
-        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <Grid x:Name="PageHeader" ColumnSpacing="16" Margin="0,0,0,33">
+  <SplitView x:Name="MainSplit" Grid.Row="1" DisplayMode="Overlay" PanePlacement="Right" OpenPaneLength="470" IsPaneOpen="False"
+             PaneBackground="{ThemeResource UiShell}" FontFamily="Microsoft YaHei UI" FontSize="15">
+    <SplitView.Content>
+      <Grid x:Name="TextPage" Background="{ThemeResource UiPage}" Padding="24,14,24,18" RowSpacing="12" AllowDrop="True">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid x:Name="WorkbenchTopBar" ColumnSpacing="12">
           <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-          <StackPanel Spacing="8">
-            <TextBlock x:Name="PageTitle" Text="文本翻译" FontFamily="Microsoft YaHei UI" FontSize="34" FontWeight="Bold"/>
-            <HyperlinkButton x:Name="TextConnection" Padding="0" MinHeight="24" HorizontalAlignment="Left" Foreground="{ThemeResource UiSecondary}">
-              <StackPanel Orientation="Horizontal" Spacing="10"><TextBlock x:Name="TextConnectionLabel" Text="模型连接" FontSize="14" Foreground="{ThemeResource UiSecondary}" TextTrimming="CharacterEllipsis"/><FontIcon Glyph="&#xE76C;" FontSize="11" Foreground="{ThemeResource UiSecondary}"/></StackPanel>
-            </HyperlinkButton>
-            <SelectorBar x:Name="SettingsTabs" Visibility="Collapsed" Margin="0,14,0,0"><SelectorBarItem Text="常规" Tag="0"/><SelectorBarItem Text="模型连接" Tag="1"/></SelectorBar>
+          <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <Button x:Name="Translate" Content="框选翻译" Style="{StaticResource PrimaryButton}"/>
+            <Button x:Name="ContinuousTranslate" Content="连续翻译" MinHeight="38" Padding="12,6"/>
+            <Button x:Name="TranslateFixed" Content="上次区域" MinHeight="38" Padding="12,6"/>
+            <Button x:Name="ClearConversation" Content="清空会话" Style="{StaticResource FlatButton}" Padding="10,6"/>
           </StackPanel>
-          <Button x:Name="ClearConversation" Grid.Column="1" Content="清空会话" MinHeight="36" Padding="14,6" VerticalAlignment="Top" Margin="0,4,0,0"/>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <HyperlinkButton x:Name="TextConnection" Padding="8,4" MinHeight="34" Foreground="{ThemeResource UiSecondary}" VerticalAlignment="Center">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBlock x:Name="TextConnectionLabel" Text="模型连接" FontSize="13" Foreground="{ThemeResource UiSecondary}" TextTrimming="CharacterEllipsis" MaxWidth="240"/>
+                <FontIcon Glyph="&#xE76C;" FontSize="10" Foreground="{ThemeResource UiSecondary}" VerticalAlignment="Center"/>
+              </StackPanel>
+            </HyperlinkButton>
+            <Button x:Name="OpenSettingsDrawer" Style="{StaticResource FlatButton}" Foreground="{ThemeResource UiText}" Padding="10,6" AutomationProperties.Name="设置">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <FontIcon Glyph="&#xE713;" FontSize="14"/>
+                <TextBlock Text="设置" FontSize="14"/>
+              </StackPanel>
+            </Button>
+          </StackPanel>
         </Grid>
-        <Grid x:Name="TextPage" Grid.Row="1" RowSpacing="22" AllowDrop="True">
-          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-          <Border x:Name="LanguageCard" Style="{StaticResource Card}" Padding="20,18" MinHeight="80">
-            <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
-              <TextBlock Text="自动检测原文" FontSize="15" Foreground="{ThemeResource UiSecondary}" VerticalAlignment="Center"/>
-              <FontIcon Glyph="&#xE72A;" FontSize="18" VerticalAlignment="Center"/>
-              <ComboBox x:Name="TextTarget" Width="200" MinHeight="42" FontSize="16" AutomationProperties.Name="目标语言"/>
-            </StackPanel>
-          </Border>
-          <Grid Grid.Row="1">
-            <StackPanel x:Name="TextEmpty" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="10" MaxWidth="400">
-              <TextBlock Text="输入文字或添加图片" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-              <TextBlock Text="选择目标语言后翻译，回复仅包含译文。" Style="{StaticResource Note}" HorizontalAlignment="Center"/>
-            </StackPanel>
-            <ScrollViewer x:Name="ConversationScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="Conversation" Spacing="32" Padding="0,28,2,20"/></ScrollViewer>
-          </Grid>
-          <Border x:Name="ComposerCard" Grid.Row="2" Style="{StaticResource Card}" Padding="0">
-            <Grid>
-              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-              <ScrollViewer x:Name="AttachmentScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" MaxHeight="125" Margin="18,14,18,0" Visibility="Collapsed"><StackPanel x:Name="ImageAttachments" Orientation="Horizontal" Spacing="12"/></ScrollViewer>
-              <Grid Grid.Row="1">
-                <TextBox x:Name="TextInput" PlaceholderText="输入要翻译的文字，或粘贴图片…" AcceptsReturn="True" TextWrapping="Wrap" IsSpellCheckEnabled="False" MaxLength="12000" FontSize="16" BorderThickness="0" Background="Transparent" Padding="20,18,20,8" MinHeight="128" MaxHeight="240" ScrollViewer.VerticalScrollBarVisibility="Auto">
-                  <TextBox.Resources>
-                    <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/><SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/><SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent"/><SolidColorBrush x:Key="TextControlBackgroundDisabled" Color="Transparent"/>
-                    <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent"/><SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/><SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent"/><Thickness x:Key="TextControlBorderThemeThickness">0</Thickness><Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
-                  </TextBox.Resources>
-                </TextBox>
-                <Thumb x:Name="ComposerResize" Width="14" Height="14" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,7,5" AutomationProperties.Name="调整输入区高度">
-                  <Thumb.Template><ControlTemplate TargetType="Thumb"><Grid Background="Transparent"><Path Data="M4 13 L13 4 M8 13 L13 8" Stroke="{ThemeResource UiSecondary}" StrokeThickness="1" Opacity="0.7"/></Grid></ControlTemplate></Thumb.Template>
-                </Thumb>
-              </Grid>
-              <Grid x:Name="ComposerToolbar" Grid.Row="2" Padding="14,12,14,18" ColumnSpacing="12">
-                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                  <Button x:Name="AddImage" Style="{StaticResource FlatButton}" Foreground="{ThemeResource UiText}" FontSize="15">
-                    <StackPanel Orientation="Horizontal" Spacing="8"><Viewbox Width="19" Height="19"><Canvas Width="24" Height="24"><Path Data="M21 13 V20 A2 2 0 0 1 19 22 H4 A2 2 0 0 1 2 20 V5 A2 2 0 0 1 4 3 H13 M17 3 H23 M20 0 V6 M2 17 L8 11 L14 17 L17 14 L21 18 M8 7 A1 1 0 1 0 8 9 A1 1 0 1 0 8 7" Stroke="{ThemeResource UiText}" StrokeThickness="1.6" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Canvas></Viewbox><TextBlock Text="添加图片" FontSize="15"/></StackPanel>
-                  </Button>
-                  <TextBlock x:Name="SendHint" Text="Enter 翻译 · Shift+Enter 换行" FontSize="12" Foreground="{ThemeResource UiSecondary}" VerticalAlignment="Center"/>
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                  <Button x:Name="RetryText" Content="重试" Visibility="Collapsed" MinHeight="42"/>
-                  <Button x:Name="StopText" Content="停止" Visibility="Collapsed" MinHeight="42"/>
-                  <Button x:Name="SendText" Style="{StaticResource PrimaryButton}" MinWidth="100">
-                    <StackPanel Orientation="Horizontal" Spacing="10"><Viewbox Width="17" Height="17"><Canvas Width="24" Height="24"><Path Data="M12 21 V3 M5 10 L12 3 L19 10" Stroke="{ThemeResource TextOnAccentFillColorPrimaryBrush}" StrokeThickness="1.8" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Canvas></Viewbox><TextBlock Text="翻译" FontSize="16" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/></StackPanel>
-                  </Button>
-                </StackPanel>
-              </Grid>
-              <TextBlock x:Name="TextStatus" Grid.Row="3" Style="{StaticResource Note}" Margin="20,0,20,14" Visibility="Collapsed"/>
-            </Grid>
-          </Border>
-        </Grid>
-        <ScrollViewer x:Name="PageScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
-          <Grid Padding="0,0,4,4">
-            <StackPanel x:Name="ScreenPage" Spacing="20" Visibility="Collapsed">
-              <Border Style="{StaticResource Card}" Padding="22,20">
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                  <StackPanel Orientation="Horizontal" Spacing="12"><Button x:Name="Translate" Content="框选翻译" Style="{StaticResource PrimaryButton}"/><Button x:Name="ContinuousTranslate" Content="连续翻译" MinHeight="42" Padding="16,8"/><Button x:Name="TranslateFixed" Content="翻译上次区域" MinHeight="42" Padding="16,8"/></StackPanel>
-                  <HyperlinkButton x:Name="OpenShortcuts" Grid.Column="1" Content="设置快捷键" Foreground="{ThemeResource UiAccent}"/>
+        <Border x:Name="LanguageCard" Grid.Row="1" Style="{StaticResource Card}" Padding="16,10">
+          <Grid ColumnSpacing="12">
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+              <TextBlock Text="识别语种" Style="{StaticResource Note}" VerticalAlignment="Center"/>
+              <Button x:Name="SourceLangPicker" MinWidth="138" MinHeight="36" Padding="12,5" HorizontalContentAlignment="Stretch"
+                      Background="{ThemeResource UiPage}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="6" AutomationProperties.Name="识别语种">
+                <Grid ColumnSpacing="8">
+                  <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBlock x:Name="SourceLangLabel" Text="自动识别" FontSize="14" VerticalAlignment="Center"/>
+                  <FontIcon Grid.Column="1" Glyph="&#xE70D;" FontSize="10" Foreground="{ThemeResource UiSecondary}" VerticalAlignment="Center"/>
                 </Grid>
-              </Border>
-              <Border Style="{StaticResource Card}" Padding="22,20"><StackPanel Spacing="14">
-                <TextBlock Text="原文语言" Style="{StaticResource SectionTitle}"/>
-                <ComboBox x:Name="OcrMode" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动识别（本地）"/><ComboBoxItem Content="英语"/><ComboBoxItem Content="日语"/><ComboBoxItem Content="韩语"/></ComboBox>
-                <HyperlinkButton x:Name="ScreenConnection" Padding="0" HorizontalAlignment="Left" Foreground="{ThemeResource UiSecondary}"/>
-              </StackPanel></Border>
-              <Border Style="{StaticResource Card}" Padding="0"><StackPanel>
-                <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="4"><TextBlock Text="导出日志" FontWeight="SemiBold"/><TextBlock Text="每次翻译保存截图、提示词、请求与响应，并整理各步骤用时，保留最近 20 次。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="TraceEnabled" Grid.Column="1" VerticalAlignment="Center"/></Grid>
-              </StackPanel></Border>
-              <Grid ColumnSpacing="20">
-                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                <Border Style="{StaticResource Card}" Padding="22,20" VerticalAlignment="Top"><StackPanel Spacing="14">
-                  <TextBlock Text="译文字体与颜色" Style="{StaticResource SectionTitle}"/>
-                  <ComboBox x:Name="Font" Header="字体" IsEditable="True" HorizontalAlignment="Stretch"/>
-                  <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ToggleSwitch x:Name="AutoFont" Header="自动匹配原文字号"/><NumberBox x:Name="FontSize" Grid.Column="1" Header="固定字号" Minimum="8" Maximum="144" SpinButtonPlacementMode="Compact"/></Grid>
-                  <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ToggleSwitch x:Name="MatchTextColor" Header="匹配原文文字颜色"/><TextBox x:Name="TextColor" Grid.Column="1" Header="文字颜色" MaxLength="7"/></Grid>
-                  <Border Background="{ThemeResource UiPage}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="4" Padding="16"><StackPanel Spacing="8"><TextBlock Text="显示预览" Style="{StaticResource Note}"/><TextBlock x:Name="FontPreview" Text="翻译结果将在对应位置显示。 Aa 123" FontSize="20" TextWrapping="Wrap"/></StackPanel></Border>
-                </StackPanel></Border>
-                <Border Grid.Column="1" Style="{StaticResource Card}" Padding="22,20" VerticalAlignment="Top"><StackPanel Spacing="14">
-                  <TextBlock Text="描边与背景" Style="{StaticResource SectionTitle}"/>
-                  <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ComboBox x:Name="OutlineColorMode" Header="描边颜色" MinHeight="40"/><ComboBox x:Name="OutlineStyle" Grid.Column="1" Header="描边样式" MinHeight="40"/></Grid>
-                  <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBox x:Name="OutlineColor" Header="描边颜色值" MaxLength="7"/><NumberBox x:Name="OutlineWidth" Grid.Column="1" Header="描边宽度" Minimum="0" Maximum="10" SmallChange="0.5" SpinButtonPlacementMode="Compact"/></Grid>
-                  <NumberBox x:Name="Opacity" Header="背景不透明度" Minimum="0.1" Maximum="1" SmallChange="0.05" SpinButtonPlacementMode="Compact"/>
-                </StackPanel></Border>
-              </Grid>
+              </Button>
+              <Button x:Name="SwapLanguages" Style="{StaticResource FlatButton}" MinWidth="36" Height="36" Padding="6,4"
+                      ToolTipService.ToolTip="互换识别语种与目标语言" AutomationProperties.Name="互换语言">
+                <Viewbox Width="16" Height="16">
+                  <Canvas Width="24" Height="24">
+                    <Path Data="M4 9 H20 L15 4 M20 15 H4 L9 20" Stroke="{ThemeResource UiSecondary}" StrokeThickness="1.8"
+                          StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                  </Canvas>
+                </Viewbox>
+              </Button>
+              <TextBlock Text="目标语言" Style="{StaticResource Note}" VerticalAlignment="Center" Margin="4,0,0,0"/>
+              <Button x:Name="TargetLangPicker" MinWidth="138" MinHeight="36" Padding="12,5" HorizontalContentAlignment="Stretch"
+                      Background="{ThemeResource UiPage}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="6" AutomationProperties.Name="目标语言">
+                <Grid ColumnSpacing="8">
+                  <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBlock x:Name="TargetLangLabel" Text="简体中文" FontSize="14" VerticalAlignment="Center"/>
+                  <FontIcon Grid.Column="1" Glyph="&#xE70D;" FontSize="10" Foreground="{ThemeResource UiSecondary}" VerticalAlignment="Center"/>
+                </Grid>
+              </Button>
             </StackPanel>
-            <StackPanel x:Name="SettingsPage" Spacing="24" Visibility="Collapsed">
-              <StackPanel x:Name="SettingsGeneral" Spacing="20">
-                <Border Style="{StaticResource Card}" Padding="0"><StackPanel>
-                  <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="4"><TextBlock Text="登录 Windows 后在后台启动" FontWeight="SemiBold"/><TextBlock Text="启动后保留托盘与快捷键入口。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="Startup" Grid.Column="1" VerticalAlignment="Center"/></Grid>
-                  <Border Style="{StaticResource Divider}"/>
-                  <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="4"><TextBlock Text="显示系统托盘图标" FontWeight="SemiBold"/><TextBlock Text="关闭托盘前，需要设置“打开设置”快捷键。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="Tray" Grid.Column="1" VerticalAlignment="Center"/></Grid>
-                  <Border Style="{StaticResource Divider}"/>
-                  <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="4"><TextBlock Text="使用 Ctrl+Enter 翻译" FontWeight="SemiBold"/><TextBlock Text="关闭时使用 Enter 翻译，Shift+Enter 换行。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="TextCtrlEnter" Grid.Column="1" VerticalAlignment="Center"/></Grid>
-                </StackPanel></Border>
-                <StackPanel Spacing="12"><TextBlock Text="快捷键" Style="{StaticResource SectionTitle}"/><Border Style="{StaticResource Card}" Padding="0"><StackPanel>
-                  <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="框选翻译" VerticalAlignment="Center"/><TextBox x:Name="Hotkey0" Grid.Column="1" Width="176" PlaceholderText="未设置"/></Grid><Border Style="{StaticResource Divider}"/>
-                  <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="连续翻译" VerticalAlignment="Center"/><TextBox x:Name="Hotkey3" Grid.Column="1" Width="176" PlaceholderText="未设置"/></Grid><Border Style="{StaticResource Divider}"/>
-                  <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="翻译上次区域" VerticalAlignment="Center"/><TextBox x:Name="Hotkey1" Grid.Column="1" Width="176" PlaceholderText="未设置"/></Grid><Border Style="{StaticResource Divider}"/>
-                  <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="打开设置" VerticalAlignment="Center"/><TextBox x:Name="Hotkey2" Grid.Column="1" Width="176" PlaceholderText="未设置"/></Grid>
-                </StackPanel></Border><TextBlock Text="选中输入框后按下组合键，退格键清除。编辑期间暂停全部全局快捷键。" Style="{StaticResource Note}"/></StackPanel>
-                <Expander x:Name="ContextExpander" Header="翻译偏好" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><StackPanel Spacing="18">
-                  <ToggleSwitch x:Name="ContextEnabled" Header="使用最近翻译上下文"/><NumberBox x:Name="ContextSize" Header="上下文数量" Minimum="5" Maximum="10" SpinButtonPlacementMode="Compact"/>
-                  <TextBlock Text="文本会话与截图上下文分别在内存中管理。" Style="{StaticResource Note}"/><Button x:Name="ClearContext" Content="清空上下文"/>
-                  <TextBox x:Name="Prompt" Header="截图翻译要求" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="120" MaxLength="8192"/>
-                </StackPanel></Expander>
-              </StackPanel>
-              <StackPanel x:Name="SettingsConnection" Spacing="20" Visibility="Collapsed">
-                <Border Style="{StaticResource Card}"><StackPanel Spacing="18">
-                  <TextBlock Text="模型连接" Style="{StaticResource SectionTitle}"/><TextBlock Text="文本翻译与截图翻译共用此连接。" Style="{StaticResource Note}"/>
-                  <Grid ColumnSpacing="18"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ComboBox x:Name="Provider" Header="服务提供方" HorizontalAlignment="Stretch"/><ComboBox x:Name="Model" Grid.Column="1" Header="模型" IsEditable="True" HorizontalAlignment="Stretch"/></Grid>
-                  <TextBox x:Name="BaseUrl" Header="API 地址"/><PasswordBox x:Name="Key" Header="API 密钥" PasswordRevealMode="Peek"/><TextBox x:Name="ServiceRegion" Header="Azure 服务区域（可选）" Visibility="Collapsed" MaxLength="128"/>
-                  <StackPanel Orientation="Horizontal" Spacing="12"><Button x:Name="FetchModels" Content="获取模型列表"/><Button x:Name="TestApi" Content="测试 API"/><ProgressRing x:Name="ApiProgress" Width="24" Height="24" IsActive="False" Visibility="Collapsed"/></StackPanel>
-                  <TextBlock x:Name="ApiResult" Text="图片输入需要当前模型支持视觉识别。" Style="{StaticResource Note}"/>
-                </StackPanel></Border>
-                <Expander Header="高级连接设置" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><StackPanel Spacing="18">
-                  <NumberBox x:Name="Timeout" Header="请求时限（秒）" Minimum="1" Maximum="300" SpinButtonPlacementMode="Compact"/>
-                  <ComboBox x:Name="ProxyMode" Header="网络连接方式" HorizontalAlignment="Stretch"><ComboBoxItem Content="系统代理"/><ComboBoxItem Content="直接连接"/><ComboBoxItem Content="自定义 HTTP 代理"/></ComboBox><TextBox x:Name="ProxyAddress" Header="代理地址（主机:端口）"/>
-                  <TextBox x:Name="RequestParameters" Header="请求参数（JSON）" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="150" MaxLength="32768" FontFamily="Consolas"/><Button x:Name="FormatRequestParameters" Content="格式化并校验 JSON"/>
-                  <TextBlock Text="默认关闭思考；参数定义以服务文档为准。密钥由 Windows 用户凭据保护。" Style="{StaticResource Note}"/>
-                </StackPanel></Expander>
-              </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+              <ToggleSwitch x:Name="TraceEnabled" OnContent="记录日志" OffContent="不记录日志" MinWidth="0" VerticalAlignment="Center"/>
+              <Button x:Name="ExportLogs" Content="导出日志" Style="{StaticResource FlatButton}" Padding="10,5"
+                      Background="{ThemeResource UiPage}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" CornerRadius="6"
+                      ToolTipService.ToolTip="选择保存位置并导出最近 30 次翻译日志"/>
             </StackPanel>
           </Grid>
-        </ScrollViewer>
-        <Grid x:Name="SettingsFooter" Grid.Row="2" Margin="0,24,0,0" Padding="0,18,0,0" BorderBrush="{ThemeResource UiBorder}" BorderThickness="0,1,0,0" ColumnSpacing="12" Visibility="Collapsed">
-          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-          <TextBlock x:Name="Status" Text="修改设置后保存生效。" Style="{StaticResource Note}" VerticalAlignment="Center"/><Button x:Name="Apply" Grid.Column="1" Content="保存设置" Style="{StaticResource PrimaryButton}"/><Button x:Name="Close" Grid.Column="2" Content="关闭" MinHeight="42" MinWidth="76"/>
+        </Border>
+        <Grid Grid.Row="2">
+          <StackPanel x:Name="TextEmpty" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" MaxWidth="420">
+            <TextBlock Text="输入文字、添加图片，或使用上方框选翻译" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+            <TextBlock Text="已切换至单页工作台；识别语种与目标语言均可在上方自由选择与互换。" Style="{StaticResource Note}" HorizontalAlignment="Center" TextAlignment="Center"/>
+          </StackPanel>
+          <ScrollViewer x:Name="ConversationScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="Conversation" Spacing="24" Padding="0,12,2,12"/>
+          </ScrollViewer>
         </Grid>
+        <Border x:Name="ComposerCard" Grid.Row="3" Style="{StaticResource Card}" Padding="0">
+          <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <ScrollViewer x:Name="AttachmentScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" MaxHeight="125" Margin="18,14,18,0" Visibility="Collapsed">
+              <StackPanel x:Name="ImageAttachments" Orientation="Horizontal" Spacing="12"/>
+            </ScrollViewer>
+            <Grid Grid.Row="1">
+              <TextBox x:Name="TextInput" PlaceholderText="输入待翻译文字，或粘贴 / 拖放图片…" AcceptsReturn="True" TextWrapping="Wrap" IsSpellCheckEnabled="False" MaxLength="12000" FontSize="15" BorderThickness="0" Background="Transparent" Padding="18,14,18,6" MinHeight="104" MaxHeight="220" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <TextBox.Resources>
+                  <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/><SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/><SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent"/><SolidColorBrush x:Key="TextControlBackgroundDisabled" Color="Transparent"/>
+                  <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent"/><SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/><SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent"/><Thickness x:Key="TextControlBorderThemeThickness">0</Thickness><Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
+                </TextBox.Resources>
+              </TextBox>
+              <Thumb x:Name="ComposerResize" Width="14" Height="14" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,7,5" AutomationProperties.Name="调整输入区高度">
+                <Thumb.Template><ControlTemplate TargetType="Thumb"><Grid Background="Transparent"><Path Data="M4 13 L13 4 M8 13 L13 8" Stroke="{ThemeResource UiSecondary}" StrokeThickness="1" Opacity="0.7"/></Grid></ControlTemplate></Thumb.Template>
+              </Thumb>
+            </Grid>
+            <Grid x:Name="ComposerToolbar" Grid.Row="2" Padding="14,8,14,12" ColumnSpacing="12">
+              <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                <Button x:Name="AddImage" Style="{StaticResource FlatButton}" Foreground="{ThemeResource UiText}" FontSize="14">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Viewbox Width="18" Height="18"><Canvas Width="24" Height="24"><Path Data="M21 13 V20 A2 2 0 0 1 19 22 H4 A2 2 0 0 1 2 20 V5 A2 2 0 0 1 4 3 H13 M17 3 H23 M20 0 V6 M2 17 L8 11 L14 17 L17 14 L21 18 M8 7 A1 1 0 1 0 8 9 A1 1 0 1 0 8 7" Stroke="{ThemeResource UiText}" StrokeThickness="1.6" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Canvas></Viewbox>
+                    <TextBlock Text="添加图片" FontSize="14"/>
+                  </StackPanel>
+                </Button>
+                <TextBlock x:Name="SendHint" Text="Enter 翻译 · Shift+Enter 换行" FontSize="12" Foreground="{ThemeResource UiSecondary}" VerticalAlignment="Center"/>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="RetryText" Content="重试" Visibility="Collapsed" MinHeight="38"/>
+                <Button x:Name="StopText" Content="停止" Visibility="Collapsed" MinHeight="38"/>
+                <Button x:Name="SendText" Style="{StaticResource PrimaryButton}" MinWidth="92">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Viewbox Width="16" Height="16"><Canvas Width="24" Height="24"><Path Data="M12 21 V3 M5 10 L12 3 L19 10" Stroke="{ThemeResource TextOnAccentFillColorPrimaryBrush}" StrokeThickness="1.8" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Canvas></Viewbox>
+                    <TextBlock Text="翻译" FontSize="15" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
+                  </StackPanel>
+                </Button>
+              </StackPanel>
+            </Grid>
+            <TextBlock x:Name="TextStatus" Grid.Row="3" Style="{StaticResource Note}" Margin="18,0,18,12" Visibility="Collapsed"/>
+          </Grid>
+        </Border>
       </Grid>
-    </Border>
-  </NavigationView>
+    </SplitView.Content>
+    <SplitView.Pane>
+      <Border Background="{ThemeResource UiShell}" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1,0,0,0">
+        <Grid Padding="20,16,20,16" RowSpacing="12">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <StackPanel Spacing="10">
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <TextBlock Text="应用设置" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              <Button x:Name="CloseDrawer" Grid.Column="1" Style="{StaticResource IconButton}" ToolTipService.ToolTip="收起设置" AutomationProperties.Name="收起设置">
+                <FontIcon Glyph="&#xE711;" FontSize="13"/>
+              </Button>
+            </Grid>
+            <SelectorBar x:Name="SettingsTabs">
+              <SelectorBarItem Text="常规与外观" Tag="0"/>
+              <SelectorBarItem Text="模型连接" Tag="1"/>
+            </SelectorBar>
+          </StackPanel>
+          <ScrollViewer x:Name="PageScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Grid Padding="0,2,8,8">
+              <StackPanel x:Name="SettingsGeneral" Spacing="16">
+                <Border Style="{StaticResource Card}" Padding="0">
+                  <StackPanel>
+                    <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="3"><TextBlock Text="登录 Windows 后在后台启动" FontWeight="SemiBold"/><TextBlock Text="启动后保留托盘与快捷键入口。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="Startup" Grid.Column="1" MinWidth="0" VerticalAlignment="Center"/></Grid>
+                    <Border Style="{StaticResource Divider}"/>
+                    <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="3"><TextBlock Text="显示系统托盘图标" FontWeight="SemiBold"/><TextBlock Text="关闭托盘前，需要设置“打开设置”快捷键。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="Tray" Grid.Column="1" MinWidth="0" VerticalAlignment="Center"/></Grid>
+                    <Border Style="{StaticResource Divider}"/>
+                    <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="3"><TextBlock Text="使用 Ctrl+Enter 翻译" FontWeight="SemiBold"/><TextBlock Text="关闭时使用 Enter 翻译，Shift+Enter 换行。" Style="{StaticResource Note}"/></StackPanel><ToggleSwitch x:Name="TextCtrlEnter" Grid.Column="1" MinWidth="0" VerticalAlignment="Center"/></Grid>
+                    <Border Style="{StaticResource Divider}"/>
+                    <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="3"><TextBlock Text="截图识别语种（OCR 引擎）" FontWeight="SemiBold"/><TextBlock Text="外部截图翻译使用本地 OCR 引擎，仅可选实际支持的语种。" Style="{StaticResource Note}"/></StackPanel><ComboBox x:Name="OcrMode" Grid.Column="1" Width="178" VerticalAlignment="Center"><ComboBoxItem Content="自动识别"/><ComboBoxItem Content="英语"/><ComboBoxItem Content="日语"/><ComboBoxItem Content="韩语"/><ComboBoxItem Content="中文"/><ComboBoxItem Content="欧洲拉丁语系（法/德/西/意/葡/越等）"/><ComboBoxItem Content="俄语 / 西里尔语系"/><ComboBoxItem Content="泰语"/><ComboBoxItem Content="阿拉伯语"/><ComboBoxItem Content="希腊语"/><ComboBoxItem Content="印地语 / 天城文"/></ComboBox></Grid>
+                  </StackPanel>
+                </Border>
+                <TextBlock Text="开启“记录日志”后最多自动保留最近 30 次记录，点击主界面的“导出日志”可选择位置打包导出。" Style="{StaticResource Note}"/>
+                <StackPanel Spacing="10">
+                  <TextBlock Text="快捷键" Style="{StaticResource SectionTitle}"/>
+                  <Border Style="{StaticResource Card}" Padding="0">
+                    <StackPanel>
+                      <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="框选翻译" VerticalAlignment="Center"/><TextBox x:Name="Hotkey0" Grid.Column="1" Width="156" PlaceholderText="未设置"/></Grid><Border Style="{StaticResource Divider}"/>
+                      <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="连续翻译" VerticalAlignment="Center"/><TextBox x:Name="Hotkey3" Grid.Column="1" Width="156" PlaceholderText="未设置"/></Grid><Border Style="{StaticResource Divider}"/>
+                      <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="翻译上次区域" VerticalAlignment="Center"/><TextBox x:Name="Hotkey1" Grid.Column="1" Width="156" PlaceholderText="未设置"/></Grid><Border Style="{StaticResource Divider}"/>
+                      <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="打开设置" VerticalAlignment="Center"/><TextBox x:Name="Hotkey2" Grid.Column="1" Width="156" PlaceholderText="未设置"/></Grid>
+                    </StackPanel>
+                  </Border>
+                  <TextBlock Text="选中输入框后按下组合键，退格键清除。编辑期间暂停全部全局快捷键。" Style="{StaticResource Note}"/>
+                </StackPanel>
+                <StackPanel Spacing="10">
+                  <TextBlock Text="译文外观与显示" Style="{StaticResource SectionTitle}"/>
+                  <Border Style="{StaticResource Card}" Padding="0">
+                    <StackPanel>
+                      <Border Padding="16,14" Background="{ThemeResource UiPage}">
+                        <StackPanel Spacing="8">
+                          <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBlock Text="实时效果预览" Style="{StaticResource Note}"/>
+                            <TextBlock x:Name="PreviewSummary" Grid.Column="1" Style="{StaticResource Note}"/>
+                          </Grid>
+                          <Border CornerRadius="6" Padding="14,12" BorderBrush="{ThemeResource UiBorder}" BorderThickness="1" Background="#DCE3EC">
+                            <Grid>
+                              <TextBlock Text="原文背景 Original Text Sample 123" FontSize="15" Foreground="#6F7B8B" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                              <Border x:Name="PreviewCover" CornerRadius="4" Padding="12,8" Background="{ThemeResource UiCard}">
+                                <TextBlock x:Name="FontPreview" Text="译文将覆盖在此处  Aa 123" FontSize="20" TextWrapping="Wrap" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                              </Border>
+                            </Grid>
+                          </Border>
+                        </StackPanel>
+                      </Border>
+                      <Border Style="{StaticResource Divider}"/>
+                      <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel Spacing="3">
+                          <TextBlock Text="显示字体" FontWeight="SemiBold"/>
+                          <TextBlock Text="设置覆盖译文与阅读面板的字体。" Style="{StaticResource Note}"/>
+                        </StackPanel>
+                        <ComboBox x:Name="Font" Grid.Column="1" IsEditable="True" Width="178" VerticalAlignment="Center"/>
+                      </Grid>
+                      <Border Style="{StaticResource Divider}"/>
+                      <StackPanel>
+                        <Grid Style="{StaticResource SettingRow}">
+                          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                          <StackPanel Spacing="3">
+                            <TextBlock Text="自动匹配原文字号" FontWeight="SemiBold"/>
+                            <TextBlock Text="开启后按画面中原始文字大小自动调整。" Style="{StaticResource Note}"/>
+                          </StackPanel>
+                          <ToggleSwitch x:Name="AutoFont" Grid.Column="1" MinWidth="0" VerticalAlignment="Center"/>
+                        </Grid>
+                        <Grid x:Name="FontSizeRow" Padding="16,0,16,14" ColumnSpacing="12" Visibility="Collapsed">
+                          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                          <TextBlock Text="固定字号" Style="{StaticResource Note}" VerticalAlignment="Center"/>
+                          <Slider x:Name="FontSizeSlider" Grid.Column="1" Minimum="12" Maximum="48" StepFrequency="1" VerticalAlignment="Center"/>
+                          <TextBlock x:Name="FontSizeValueText" Grid.Column="2" Text="22 号" Style="{StaticResource Note}" MinWidth="42" TextAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                      </StackPanel>
+                      <Border Style="{StaticResource Divider}"/>
+                      <StackPanel>
+                        <Grid Style="{StaticResource SettingRow}">
+                          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                          <StackPanel Spacing="3">
+                            <TextBlock Text="自动匹配原文颜色" FontWeight="SemiBold"/>
+                            <TextBlock Text="开启后自动识别原文配色并保证清晰对比度。" Style="{StaticResource Note}"/>
+                          </StackPanel>
+                          <ToggleSwitch x:Name="MatchTextColor" Grid.Column="1" MinWidth="0" VerticalAlignment="Center"/>
+                        </Grid>
+                        <StackPanel x:Name="ColorPaletteRow" Padding="16,0,16,14" Spacing="8" Visibility="Collapsed">
+                          <TextBlock Text="选择固定文字颜色" Style="{StaticResource Note}"/>
+                          <Grid x:Name="ColorSwatches" ColumnSpacing="8" RowSpacing="6">
+                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                          </Grid>
+                        </StackPanel>
+                      </StackPanel>
+                      <Border Style="{StaticResource Divider}"/>
+                      <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel Spacing="3">
+                          <TextBlock Text="文字描边" FontWeight="SemiBold"/>
+                          <TextBlock Text="自动对比度轮廓，防止译文与复杂背景混淆。" Style="{StaticResource Note}"/>
+                        </StackPanel>
+                        <ComboBox x:Name="OutlinePreset" Grid.Column="1" Width="156" VerticalAlignment="Center">
+                          <ComboBoxItem Content="无描边"/>
+                          <ComboBoxItem Content="清晰细边（推荐）"/>
+                          <ComboBoxItem Content="醒目粗边"/>
+                          <ComboBoxItem Content="柔和光晕"/>
+                        </ComboBox>
+                      </Grid>
+                      <Border Style="{StaticResource Divider}"/>
+                      <StackPanel Padding="16,13" Spacing="6">
+                        <Grid>
+                          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                          <TextBlock Text="背景遮盖程度" FontWeight="SemiBold"/>
+                          <TextBlock x:Name="OpacityValueText" Grid.Column="1" Text="85%" FontWeight="SemiBold" Foreground="{ThemeResource UiAccent}"/>
+                        </Grid>
+                        <Slider x:Name="OpacitySlider" Minimum="10" Maximum="100" StepFrequency="5"/>
+                        <TextBlock Text="数值越高对原图文字的遮盖越严实；100% 为完全不透明。" Style="{StaticResource Note}"/>
+                      </StackPanel>
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+              </StackPanel>
+              <StackPanel x:Name="SettingsConnection" Spacing="16" Visibility="Collapsed">
+                <Border Style="{StaticResource Card}">
+                  <StackPanel Spacing="14">
+                    <TextBlock Text="模型连接" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="文本翻译与截图翻译共用此连接。" Style="{StaticResource Note}"/>
+                    <ComboBox x:Name="Provider" Header="服务提供方" HorizontalAlignment="Stretch"/>
+                    <ComboBox x:Name="Model" Header="模型" IsEditable="True" HorizontalAlignment="Stretch"/>
+                    <TextBox x:Name="BaseUrl" Header="API 地址"/>
+                    <PasswordBox x:Name="Key" Header="API 密钥" PasswordRevealMode="Peek"/>
+                    <TextBox x:Name="ServiceRegion" Header="Azure 服务区域（可选）" Visibility="Collapsed" MaxLength="128"/>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                      <Button x:Name="FetchModels" Content="获取模型列表"/>
+                      <Button x:Name="TestApi" Content="测试 API"/>
+                      <ProgressRing x:Name="ApiProgress" Width="22" Height="22" IsActive="False" Visibility="Collapsed"/>
+                    </StackPanel>
+                    <TextBlock x:Name="ApiResult" Text="图片输入需要当前模型支持视觉识别。" Style="{StaticResource Note}"/>
+                  </StackPanel>
+                </Border>
+                <Expander Header="高级连接设置" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                  <StackPanel Spacing="14">
+                    <NumberBox x:Name="Timeout" Header="请求时限（秒）" Minimum="1" Maximum="300" SpinButtonPlacementMode="Compact"/>
+                    <ComboBox x:Name="ProxyMode" Header="网络连接方式" HorizontalAlignment="Stretch">
+                      <ComboBoxItem Content="系统代理"/>
+                      <ComboBoxItem Content="直接连接"/>
+                      <ComboBoxItem Content="自定义 HTTP 代理"/>
+                    </ComboBox>
+                    <TextBox x:Name="ProxyAddress" Header="代理地址（主机:端口）"/>
+                    <TextBox x:Name="RequestParameters" Header="请求参数（JSON）" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="120" MaxLength="32768" FontFamily="Consolas"/>
+                    <Button x:Name="FormatRequestParameters" Content="格式化并校验 JSON"/>
+                    <TextBlock Text="默认关闭思考；参数定义以服务文档为准。密钥由 Windows 用户凭据保护。" Style="{StaticResource Note}"/>
+                  </StackPanel>
+                </Expander>
+              </StackPanel>
+            </Grid>
+          </ScrollViewer>
+          <Grid x:Name="SettingsFooter" Grid.Row="2" Padding="0,12,0,0" BorderBrush="{ThemeResource UiBorder}" BorderThickness="0,1,0,0" ColumnSpacing="10">
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock x:Name="Status" Text="修改设置后保存生效。" Style="{StaticResource Note}" VerticalAlignment="Center"/>
+            <Button x:Name="Apply" Grid.Column="1" Content="保存设置" Style="{StaticResource PrimaryButton}"/>
+            <Button x:Name="Close" Grid.Column="2" Content="关闭" MinHeight="38" MinWidth="70"/>
+          </Grid>
+        </Grid>
+      </Border>
+    </SplitView.Pane>
+  </SplitView>
 </Grid>

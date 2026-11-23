@@ -19,7 +19,10 @@ struct TextDetection {
     std::vector<TextRegion> regions;
     std::string status;
     size_t unrecognizedLines{};
+    std::vector<std::string> detectedLanguages;
 };
+std::vector<std::string> DetectScriptLanguages(const std::vector<TextRegion>& regions, int ocrHint = OcrLocalAuto,
+                                               std::string_view sourceHint = "auto");
 std::vector<TextRegion> GroupTextLines(std::vector<TextLine> lines, const Image& image);
 TextDetection DetectTextGeometry(const Image& image, std::stop_token stop = {});
 TextDetection DetectText(const Image& image, std::stop_token stop = {}, int mode = 0);

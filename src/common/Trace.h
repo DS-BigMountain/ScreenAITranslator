@@ -12,11 +12,19 @@ namespace sat {
 // Payload trace records the exact bytes exchanged with an AI service together with every measured
 // stage in one directory per translation. Tracing is opt-in at startup; every sink stays inert
 // while it is off, so the measurement path itself carries no file work.
-void InitializeTrace(const std::filesystem::path& directory, bool enabled, size_t keep = 20) noexcept;
+void InitializeTrace(const std::filesystem::path& directory, bool enabled, size_t keep = 30) noexcept;
 bool TraceEnabled() noexcept;
 std::filesystem::path TraceRoot() noexcept;
 // Removes the oldest recorded sessions and keeps the newest `keep` directories.
 void PruneTraces() noexcept;
+struct TraceExportResult {
+    size_t sessions{};
+    size_t files{};
+};
+bool HasExportableTraces(const std::filesystem::path& logsRoot) noexcept;
+TraceExportResult ExportRecentTracesArchive(const std::filesystem::path& logsRoot,
+                                            const std::filesystem::path& zipPath,
+                                            size_t maxSessions = 30);
 
 // One screen translation. Writing happens on a private thread, which keeps the recorded durations
 // close to the measured ones. A nested session stays inert and shares the ambient parent.

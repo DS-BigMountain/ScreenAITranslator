@@ -8,9 +8,12 @@ struct TargetLanguage {
     const wchar_t* label;
     const char* english;
     const char* deepL;
+    char group;
 };
 const std::vector<TargetLanguage>& TextTargetLanguages();
 const TargetLanguage& FindTextTarget(std::string_view id);
+// Normalizes an arbitrary language code or name (e.g. "en", "English", "zh-CN") to a Chinese display label.
+std::string LanguageDisplayName(std::string_view codeOrName);
 struct TranslationAttachment {
     std::string name;
     std::string base64;
@@ -21,6 +24,7 @@ struct ContentTranslationRequest {
     std::string target{"zh-Hans"};
     std::vector<TranslationAttachment> images;
     std::vector<ContextItem> context;
+    std::string source{"auto"};
 };
 std::string TranslateContent(const ContentTranslationRequest&, const Settings&, const std::string& key,
                              std::stop_token stop);

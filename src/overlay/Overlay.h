@@ -109,6 +109,7 @@ class Overlay {
     std::function<void()> reselect_;
     std::function<void(RECT)> moved_;
     std::function<void()> aiRequest_;
+    std::function<void(int, std::string)> languageChanged_;
     HWND toolbar_{};
     // The focus shade dims everything outside the selection while a translation is on screen. It sits
     // under the translation windows and swallows clicks on the dimmed area.
@@ -138,10 +139,14 @@ class Overlay {
     static LRESULT CALLBACK ToolbarProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK BadgeProc(HWND, UINT, WPARAM, LPARAM);
     std::wstring ToolbarStatusText() const;
+    bool HasToolbarStatusRow() const;
+    const std::vector<std::string>* ActiveDetectedLanguages() const;
     void PositionToolbar();
     void RefreshToolbar();
     void ShowToolbar();
     void ToolbarAction(int);
+    void ShowLanguageMenu(bool sourceMenu);
+    int ToolbarHitTest(POINT clientPt) const;
     void PaintToolbar();
     void PaintBadge();
     static LRESULT CALLBACK Proc(HWND, UINT, WPARAM, LPARAM);
@@ -179,14 +184,14 @@ public:
     void SetAiRequest(std::function<void()> request) {
         aiRequest_ = std::move(request);
     }
+    void SetLanguageHandler(std::function<void(int, std::string)> handler) {
+        languageChanged_ = std::move(handler);
+    }
     void ShowAiResult(OverlayBlock block);
     // Original cropped selection image retained for one-off vision passes without re-capturing screen.
     std::shared_ptr<const Image> SourceImage() const;
     // Dims the desktop around the selection once a translation is on screen.
     void ShowFocusShade();
-    void ShowFullReading() {
-        ToolbarAction(2);
-    }
     size_t Count() const {
         return windows_.size();
     }

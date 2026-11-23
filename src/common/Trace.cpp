@@ -20,7 +20,7 @@ namespace {
 std::mutex stateMutex;
 std::filesystem::path traceRoot;
 bool traceEnabled{};
-size_t traceKeep{20};
+size_t traceKeep{30};
 std::atomic<unsigned> traceSequence{};
 thread_local TraceSession* ambientSession{};
 
@@ -354,7 +354,7 @@ std::filesystem::path TraceRoot() noexcept {
 void PruneTraces() noexcept {
     try {
         std::filesystem::path root;
-        size_t keep = 20;
+        size_t keep = 30;
         {
             std::lock_guard lock(stateMutex);
             root = traceRoot;
@@ -713,5 +713,229 @@ void TraceStage(const char* stage, unsigned long long parent, const nlohmann::js
         session->Record(record);
     } catch (...) {
     }
+}
+namespace {
+uint32_t Crc32Update(uint32_t crc, const uint8_t* data, size_t len) noexcept {
+    uint32_t c = crc ^ 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; ++i) {
+        c ^= data[i];
+        for (int b = 0; b < 8; ++b)
+            c = (c & 1u) ? ((c >> 1) ^ 0xEDB88320u) : (c >> 1);
+    }
+    return c ^ 0xFFFFFFFFu;
+}
+void WriteLe16(std::ostream& out, uint16_t v) {
+    const char buf[2]{char(v & 0xFF), char((v >> 8) & 0xFF)};
+    out.write(buf, 2);
+}
+void WriteLe32(std::ostream& out, uint32_t v) {
+    const char buf[4]{char(v & 0xFF), char((v >> 8) & 0xFF), char((v >> 16) & 0xFF), char((v >> 24) & 0xFF)};
+    out.write(buf, 4);
+}
+void CurrentDosDateTime(uint16_t& dosTime, uint16_t& dosDate) noexcept {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    const uint16_t y = st.wYear >= 1980 ? uint16_t(st.wYear - 1980) : 0;
+    dosDate = static_cast<uint16_t>((y << 9) | (st.wMonth << 5) | st.wDay);
+    dosTime = static_cast<uint16_t>((st.wHour << 11) | (st.wMinute << 5) | (st.wSecond / 2));
+}
+std::vector<std::filesystem::path> RecentTraceDirectories(const std::filesystem::path& logsRoot,
+                                                          size_t maxSessions) {
+    std::vector<std::filesystem::path> dirs;
+    std::error_code code;
+    const auto traceDir = logsRoot / L"trace";
+    if (!std::filesystem::is_directory(traceDir, code))
+        return dirs;
+    for (std::filesystem::directory_iterator it(traceDir, code), end; !code && it != end; it.increment(code)) {
+        if (!it->is_directory(code))
+            continue;
+        auto name = it->path().filename().string();
+        if (StartsWithDigit(name))
+            dirs.push_back(it->path());
+    }
+    std::sort(dirs.begin(), dirs.end(), [](const auto& a, const auto& b) {
+        return a.filename().u8string() > b.filename().u8string();
+    });
+    if (dirs.size() > maxSessions)
+        dirs.resize(maxSessions);
+    return dirs;
+}
+} // namespace
+bool HasExportableTraces(const std::filesystem::path& logsRoot) noexcept {
+    try {
+        std::error_code code;
+        if (!RecentTraceDirectories(logsRoot, 1).empty())
+            return true;
+        return std::filesystem::is_regular_file(logsRoot / L"diagnostic.jsonl", code);
+    } catch (...) {
+        return false;
+    }
+}
+TraceExportResult ExportRecentTracesArchive(const std::filesystem::path& logsRoot,
+                                            const std::filesystem::path& zipPath, size_t maxSessions) {
+    if (zipPath.empty())
+        throw AppError("logs", "请选择有效的日志保存路径。");
+    const size_t limit = std::clamp<size_t>(maxSessions, 1, 200);
+    auto sessions = RecentTraceDirectories(logsRoot, limit);
+    std::error_code code;
+    const auto diagFile = logsRoot / L"diagnostic.jsonl";
+    const bool hasDiag = std::filesystem::is_regular_file(diagFile, code);
+    if (sessions.empty() && !hasDiag)
+        throw AppError("logs", "当前暂无可导出的翻译日志，请先开启“记录日志”并进行翻译。");
+
+    struct ZipEntry {
+        std::string name;
+        std::filesystem::path diskPath;
+        std::string memoryBytes;
+        uint32_t crc{};
+        uint32_t size{};
+        uint32_t localOffset{};
+    };
+    std::vector<ZipEntry> entries;
+    auto pushFile = [&](std::string archiveName, const std::filesystem::path& path) {
+        std::error_code ec;
+        const auto sz = std::filesystem::file_size(path, ec);
+        if (ec || sz > 256ull * 1024 * 1024)
+            return;
+        ZipEntry e;
+        e.name = std::move(archiveName);
+        e.diskPath = path;
+        e.size = static_cast<uint32_t>(sz);
+        entries.push_back(std::move(e));
+    };
+
+    nlohmann::json exportedList = nlohmann::json::array();
+    for (const auto& dir : sessions) {
+        const auto sessionNameU8 = dir.filename().u8string();
+        std::string sessionName(sessionNameU8.begin(), sessionNameU8.end());
+        exportedList.push_back(sessionName);
+        for (std::filesystem::recursive_directory_iterator it(dir, code), end; !code && it != end;
+             it.increment(code)) {
+            if (!it->is_regular_file(code))
+                continue;
+            const auto rel = std::filesystem::relative(it->path(), dir, code);
+            if (code)
+                continue;
+            const auto relU8 = rel.generic_u8string();
+            std::string relStr(relU8.begin(), relU8.end());
+            pushFile("trace/" + sessionName + "/" + relStr, it->path());
+        }
+    }
+    if (hasDiag)
+        pushFile("diagnostic.jsonl", diagFile);
+
+    {
+        nlohmann::json summary{{"exported_at", LocalStamp(false)},
+                               {"max_sessions", limit},
+                               {"exported_sessions", sessions.size()},
+                               {"sessions", exportedList}};
+        ZipEntry meta;
+        meta.name = "export_summary.json";
+        meta.memoryBytes = summary.dump(2);
+        meta.size = static_cast<uint32_t>(meta.memoryBytes.size());
+        entries.push_back(std::move(meta));
+    }
+
+    if (entries.size() <= 1 && !hasDiag)
+        throw AppError("logs", "当前暂无可导出的翻译日志文件。");
+
+    std::filesystem::create_directories(zipPath.parent_path(), code);
+    auto tempZip = zipPath;
+    tempZip += L".tmp." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
+
+    uint16_t dosTime{}, dosDate{};
+    CurrentDosDateTime(dosTime, dosDate);
+
+    {
+        std::ofstream out(tempZip, std::ios::binary | std::ios::trunc);
+        if (!out)
+            throw AppError("logs", "无法创建目标日志压缩包，请检查保存目录权限。");
+
+        constexpr size_t ChunkSize = 64 * 1024;
+        std::vector<char> buffer(ChunkSize);
+        for (auto& e : entries) {
+            uint32_t crc = 0;
+            std::string dataCopy;
+            if (!e.diskPath.empty()) {
+                std::ifstream in(e.diskPath, std::ios::binary);
+                if (!in)
+                    continue;
+                while (in.read(buffer.data(), static_cast<std::streamsize>(buffer.size())) || in.gcount() > 0) {
+                    const size_t n = static_cast<size_t>(in.gcount());
+                    crc = Crc32Update(crc, reinterpret_cast<const uint8_t*>(buffer.data()), n);
+                }
+            } else {
+                crc = Crc32Update(0, reinterpret_cast<const uint8_t*>(e.memoryBytes.data()),
+                                  e.memoryBytes.size());
+            }
+            e.crc = crc;
+            e.localOffset = static_cast<uint32_t>(out.tellp());
+            constexpr uint16_t utf8Flags = 0x0800;
+            WriteLe32(out, 0x04034B50u);
+            WriteLe16(out, 20);
+            WriteLe16(out, utf8Flags);
+            WriteLe16(out, 0);
+            WriteLe16(out, dosTime);
+            WriteLe16(out, dosDate);
+            WriteLe32(out, e.crc);
+            WriteLe32(out, e.size);
+            WriteLe32(out, e.size);
+            WriteLe16(out, static_cast<uint16_t>(e.name.size()));
+            WriteLe16(out, 0);
+            out.write(e.name.data(), static_cast<std::streamsize>(e.name.size()));
+            if (!e.diskPath.empty()) {
+                std::ifstream in(e.diskPath, std::ios::binary);
+                while (in.read(buffer.data(), static_cast<std::streamsize>(buffer.size())) || in.gcount() > 0)
+                    out.write(buffer.data(), in.gcount());
+            } else if (!e.memoryBytes.empty()) {
+                out.write(e.memoryBytes.data(), static_cast<std::streamsize>(e.memoryBytes.size()));
+            }
+        }
+
+        const uint32_t cdOffset = static_cast<uint32_t>(out.tellp());
+        uint16_t cdCount = 0;
+        for (const auto& e : entries) {
+            constexpr uint16_t utf8Flags = 0x0800;
+            WriteLe32(out, 0x02014B50u);
+            WriteLe16(out, 20);
+            WriteLe16(out, 20);
+            WriteLe16(out, utf8Flags);
+            WriteLe16(out, 0);
+            WriteLe16(out, dosTime);
+            WriteLe16(out, dosDate);
+            WriteLe32(out, e.crc);
+            WriteLe32(out, e.size);
+            WriteLe32(out, e.size);
+            WriteLe16(out, static_cast<uint16_t>(e.name.size()));
+            WriteLe16(out, 0);
+            WriteLe16(out, 0);
+            WriteLe16(out, 0);
+            WriteLe16(out, 0);
+            WriteLe32(out, 0);
+            WriteLe32(out, e.localOffset);
+            out.write(e.name.data(), static_cast<std::streamsize>(e.name.size()));
+            ++cdCount;
+        }
+        const uint32_t cdEnd = static_cast<uint32_t>(out.tellp());
+        WriteLe32(out, 0x06054B50u);
+        WriteLe16(out, 0);
+        WriteLe16(out, 0);
+        WriteLe16(out, cdCount);
+        WriteLe16(out, cdCount);
+        WriteLe32(out, cdEnd - cdOffset);
+        WriteLe32(out, cdOffset);
+        WriteLe16(out, 0);
+        out.flush();
+        if (!out) {
+            std::filesystem::remove(tempZip, code);
+            throw AppError("logs", "写入日志压缩包失败，请检查磁盘空间或权限。");
+        }
+    }
+
+    if (!MoveFileExW(tempZip.c_str(), zipPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::filesystem::remove(tempZip, code);
+        throw AppError("logs", "无法保存日志压缩包到指定位置。");
+    }
+    return {sessions.size(), entries.size()};
 }
 } // namespace sat
