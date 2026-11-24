@@ -552,6 +552,93 @@ Background AnalyzeBackground(const Image& image, RECT localRect) {
     }
     const float luminance =
         static_cast<float>((0.0722 * sums[0] + 0.7152 * sums[1] + 0.2126 * sums[2]) / count);
-    return {RGB(median[2], median[1], median[0]), static_cast<float>(variance), luminance, variance < 180.0};
+    const Background exterior{RGB(median[2], median[1], median[0]), static_cast<float>(variance), luminance,
+                              variance < 180.0};
+
+    // On narrow colored strips or tight UI bars (e.g. a 15 px date ribbon between foreign panels), the
+    // 6 px exterior ring lands on neighbouring panels instead of the strip's own surface. Sample smooth
+    // low-gradient pixels inside the strip (emphasising its 1-2 px interior perimeter) and prefer that
+    // cohesive interior surface whenever the exterior ring is noisy or disagrees sharply.
+    const int boxW = Width(localRect), boxH = Height(localRect);
+    if (std::min(boxW, boxH) <= 24 && std::max(boxW, boxH) >= 20) {
+        std::array<size_t, 4096> smoothHist{};
+        size_t smoothTotal = 0;
+        const auto diffL1 = [](const unsigned char* a, const unsigned char* b) {
+            return std::abs(int(a[2]) - int(b[2])) + std::abs(int(a[1]) - int(b[1])) +
+                   std::abs(int(a[0]) - int(b[0]));
+        };
+        const auto binKey = [](const unsigned char* p) {
+            return (int(p[2] >> 4) << 8) | (int(p[1] >> 4) << 4) | (p[0] >> 4);
+        };
+        for (int y = localRect.top; y < localRect.bottom; ++y) {
+            for (int x = localRect.left; x < localRect.right; ++x) {
+                const auto* p = image.bgra.data() + (static_cast<size_t>(y) * image.width + x) * 4;
+                const auto* pl = image.bgra.data() + (static_cast<size_t>(y) * image.width + std::max(0, x - 1)) * 4;
+                const auto* pr = image.bgra.data() +
+                                 (static_cast<size_t>(y) * image.width + std::min(image.width - 1, x + 1)) * 4;
+                const auto* pu = image.bgra.data() + (static_cast<size_t>(std::max(0, y - 1)) * image.width + x) * 4;
+                const auto* pd = image.bgra.data() +
+                                 (static_cast<size_t>(std::min(image.height - 1, y + 1)) * image.width + x) * 4;
+                const int grad = std::max({diffL1(p, pl), diffL1(p, pr), diffL1(p, pu), diffL1(p, pd)});
+                if (grad <= 28) {
+                    const bool rim = (y < localRect.top + 2 || y >= localRect.bottom - 2 ||
+                                      x < localRect.left + 2 || x >= localRect.right - 2);
+                    const size_t w = rim ? 2 : 1;
+                    smoothHist[binKey(p)] += w;
+                    smoothTotal += w;
+                }
+            }
+        }
+        if (smoothTotal >= 24) {
+            const auto modeIt = std::max_element(smoothHist.begin(), smoothHist.end());
+            const int modeBin = int(modeIt - smoothHist.begin());
+            const int mr = ((modeBin >> 8) & 15) * 16 + 8;
+            const int mg = ((modeBin >> 4) & 15) * 16 + 8;
+            const int mb = (modeBin & 15) * 16 + 8;
+            std::array<std::array<size_t, 256>, 3> inHist{};
+            std::array<double, 3> inSums{}, inSq{};
+            size_t inCount = 0;
+            for (int y = localRect.top; y < localRect.bottom; ++y) {
+                for (int x = localRect.left; x < localRect.right; ++x) {
+                    const auto* p = image.bgra.data() + (static_cast<size_t>(y) * image.width + x) * 4;
+                    if (std::abs(int(p[2]) - mr) + std::abs(int(p[1]) - mg) + std::abs(int(p[0]) - mb) <= 56) {
+                        for (int ch = 0; ch < 3; ++ch) {
+                            const unsigned s = p[ch];
+                            ++inHist[ch][s];
+                            inSums[ch] += s;
+                            inSq[ch] += s * s;
+                        }
+                        ++inCount;
+                    }
+                }
+            }
+            const size_t areaPx = static_cast<size_t>(boxW) * static_cast<size_t>(boxH);
+            if (inCount >= 16 && inCount * 100 >= areaPx * 18) {
+                std::array<unsigned char, 3> inMed{};
+                double inVar = 0;
+                for (int ch = 0; ch < 3; ++ch) {
+                    size_t acc = 0;
+                    for (int s = 0; s < 256; ++s) {
+                        acc += inHist[ch][s];
+                        if (acc >= (inCount + 1) / 2) {
+                            inMed[ch] = static_cast<unsigned char>(s);
+                            break;
+                        }
+                    }
+                    const double m = inSums[ch] / inCount;
+                    inVar += std::max(0.0, inSq[ch] / inCount - m * m) / 3;
+                }
+                const int extDiff = std::abs(int(inMed[2]) - int(median[2])) +
+                                    std::abs(int(inMed[1]) - int(median[1])) +
+                                    std::abs(int(inMed[0]) - int(median[0]));
+                if (inVar < 240.0 && (variance >= 200.0 || extDiff >= 64)) {
+                    const float inLum = static_cast<float>(
+                        (0.0722 * inSums[0] + 0.7152 * inSums[1] + 0.2126 * inSums[2]) / inCount);
+                    return {RGB(inMed[2], inMed[1], inMed[0]), static_cast<float>(inVar), inLum, inVar < 180.0};
+                }
+            }
+        }
+    }
+    return exterior;
 }
 } // namespace sat

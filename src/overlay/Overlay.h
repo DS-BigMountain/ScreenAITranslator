@@ -49,11 +49,15 @@ struct PositionedText {
     bool centerAligned{};
     bool bold{};
     float maxOverhang{24.f};
+    float maxLeftOverhang{0.f};
     ComPtr<IDWriteTextLayout> layout;
     // One entry per source strip of a vertical passage; the first entry also fills layout.
     std::vector<ColumnText> columnTexts;
     bool suppressed{};
     std::optional<COLORREF> sourceColor;
+    bool hasStroke{};
+    std::optional<COLORREF> strokeColor;
+    bool uniformBackdrop{true};
     std::vector<RECT> detectedLines;
     std::vector<EraseRow> eraseLines{};
 };
