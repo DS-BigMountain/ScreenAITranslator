@@ -20,8 +20,6 @@ constexpr int TotalItemCount = 9;
 constexpr int ToolbarWidth = 910;
 constexpr int ToolbarHeight = 68;
 constexpr int ActionRow = 40;
-constexpr int BadgeWidth = 290;
-constexpr int BadgeHeight = 36;
 constexpr DWORD ExcludeFromCapture = 0x00000011;
 const wchar_t* const Labels[]{L"原位译文", L"查看原图", L"全文阅读", L"AI识图翻译",
                               L"复制译文", L"重新框选", L"关闭"};
@@ -72,24 +70,41 @@ RECT Fit(RECT r, RECT work) {
     r.bottom = r.top + h;
     return r;
 }
+RECT WorkAreaForAnchor(RECT anchor, const Monitor& monitor) {
+    RECT workArea = monitor.rect;
+    MONITORINFO info{sizeof(info)};
+    if (auto handle = MonitorFromRect(&anchor, MONITOR_DEFAULTTONULL);
+        handle && GetMonitorInfoW(handle, &info))
+        workArea = info.rcWork;
+    return workArea;
+}
 RECT PlaceBarBounds(RECT anchor, RECT workArea, int width, int height, int gap) {
-    RECT bounds{anchor.left, anchor.bottom + gap, anchor.left + width, anchor.bottom + gap + height};
-    if (bounds.bottom > workArea.bottom) {
-        bounds.top = anchor.top - gap - height;
-        bounds.bottom = anchor.top - gap;
-    }
-    return Fit(bounds, workArea);
+    const int w = std::min(width, Width(workArea));
+    const int h = std::min(height, Height(workArea));
+    // Default below the selection; if taskbar/work-area blocks below, place above; if neither
+    // fits cleanly inside workArea, embed near the bottom edge of the selection above taskbar.
+    RECT below{anchor.left, anchor.bottom + gap, anchor.left + w, anchor.bottom + gap + h};
+    if (below.top >= workArea.top && below.bottom <= workArea.bottom)
+        return Fit(below, workArea);
+    RECT above{anchor.left, anchor.top - gap - h, anchor.left + w, anchor.top - gap};
+    if (above.top >= workArea.top && above.bottom <= workArea.bottom)
+        return Fit(above, workArea);
+    const LONG bottom = std::min<LONG>(anchor.bottom - gap, workArea.bottom - gap);
+    const LONG top = std::max<LONG>(workArea.top, bottom - h);
+    return Fit(RECT{anchor.left, top, anchor.left + w, top + h}, workArea);
 }
 } // namespace
 std::wstring Overlay::ToolbarStatusText() const {
     if (!warning_.empty())
         return warning_;
+    if (noticeActive_ && !noticeText_.empty())
+        return noticeText_;
     if (aiPending_)
         return L"AI识图翻译中 · 请稍候...";
     return {};
 }
 const std::vector<std::string>* Overlay::ActiveDetectedLanguages() const {
-    if (windows_.empty())
+    if (toolbarBusy_ || windows_.empty())
         return nullptr;
     const auto& block = Active(*windows_.front());
     if (block.sourceResult && !block.sourceResult->detectedLanguages.empty())
@@ -99,17 +114,51 @@ const std::vector<std::string>* Overlay::ActiveDetectedLanguages() const {
     return nullptr;
 }
 bool Overlay::HasToolbarStatusRow() const {
-    if (!ToolbarStatusText().empty())
+    return true;
+}
+UINT Overlay::ActiveToolbarDpi() const {
+    if (!toolbarStandby_ && !windows_.empty())
+        return windows_.front()->dpi;
+    return toolbarDpi_ ? toolbarDpi_ : 96;
+}
+RECT Overlay::ActiveToolbarAnchor() const {
+    if (!toolbarStandby_ && !windows_.empty()) {
+        const auto& data = *windows_.front();
+        return data.mode == 2 && data.reading ? data.reading->screen : data.block.screen;
+    }
+    return toolbarAnchor_;
+}
+RECT Overlay::ActiveToolbarWorkArea() const {
+    if (!toolbarStandby_ && !windows_.empty())
+        return windows_.front()->block.workArea;
+    return Valid(toolbarWorkArea_) ? toolbarWorkArea_ : RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+}
+const Settings& Overlay::ActiveToolbarSettings() const {
+    if (!toolbarStandby_ && !windows_.empty())
+        return windows_.front()->settings;
+    return toolbarSettings_;
+}
+bool Overlay::ToolbarActionEnabled(int action) const {
+    if (action == CloseAction)
         return true;
-    const auto* detected = ActiveDetectedLanguages();
-    return detected && !detected->empty();
+    if (action == ReselectAction)
+        return bool(reselect_);
+    return !toolbarBusy_ && !toolbarStandby_ && !windows_.empty() && !windows_.front()->progressFrame;
 }
 void Overlay::ShowToolbar() {
-    auto& data = *windows_.front();
+    if (toolbar_) {
+        PositionToolbar();
+        PaintToolbar();
+        ShowWindow(toolbar_, SW_SHOWNOACTIVATE);
+        return;
+    }
+    const UINT dpi = ActiveToolbarDpi();
+    const RECT anchor = ActiveToolbarAnchor();
+    const RECT workArea = ActiveToolbarWorkArea();
     const int logicalHeight = HasToolbarStatusRow() ? ToolbarHeight : ActionRow;
-    const RECT bounds = PlaceBarBounds(data.block.screen, data.block.workArea,
-                                       MulDiv(ToolbarWidth, data.dpi, 96),
-                                       MulDiv(logicalHeight, data.dpi, 96), MulDiv(8, data.dpi, 96));
+    const RECT bounds = PlaceBarBounds(anchor, workArea, MulDiv(ToolbarWidth, dpi, 96),
+                                       MulDiv(logicalHeight, dpi, 96), MulDiv(8, dpi, 96));
+    HWND ownerHwnd = !windows_.empty() ? windows_.front()->hwnd : nullptr;
     WNDCLASSW wc{};
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = L"SAT.TranslationToolbar";
@@ -118,7 +167,7 @@ void Overlay::ShowToolbar() {
     RegisterClassW(&wc);
     toolbar_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                                wc.lpszClassName, L"翻译操作", WS_POPUP, bounds.left, bounds.top,
-                               Width(bounds), Height(bounds), data.hwnd, nullptr, wc.hInstance, this);
+                               Width(bounds), Height(bounds), ownerHwnd, nullptr, wc.hInstance, this);
     if (!toolbar_)
         throw AppError("overlay", "无法创建翻译工具条");
     if (passthrough_)
@@ -127,13 +176,14 @@ void Overlay::ShowToolbar() {
     ShowWindow(toolbar_, SW_SHOWNOACTIVATE);
 }
 void Overlay::PositionToolbar() {
-    if (!toolbar_ || windows_.empty())
+    if (!toolbar_ || (!toolbarStandby_ && windows_.empty()))
         return;
-    auto& data = *windows_.front();
-    auto r = data.mode == 2 && data.reading ? data.reading->screen : data.block.screen;
+    const UINT dpi = ActiveToolbarDpi();
+    const RECT anchor = ActiveToolbarAnchor();
+    const RECT workArea = ActiveToolbarWorkArea();
     const int logicalHeight = HasToolbarStatusRow() ? ToolbarHeight : ActionRow;
-    const RECT bounds = PlaceBarBounds(r, data.block.workArea, MulDiv(ToolbarWidth, data.dpi, 96),
-                                       MulDiv(logicalHeight, data.dpi, 96), MulDiv(8, data.dpi, 96));
+    const RECT bounds = PlaceBarBounds(anchor, workArea, MulDiv(ToolbarWidth, dpi, 96),
+                                       MulDiv(logicalHeight, dpi, 96), MulDiv(8, dpi, 96));
     SetWindowPos(toolbar_, HWND_TOPMOST, bounds.left, bounds.top, Width(bounds), Height(bounds),
                  SWP_NOACTIVATE);
 }
@@ -145,7 +195,7 @@ void Overlay::RefreshToolbar() {
     PaintToolbar();
 }
 void Overlay::PaintToolbar() {
-    if (!toolbar_ || windows_.empty())
+    if (!toolbar_ || (!toolbarStandby_ && windows_.empty()))
         return;
     RECT wndRect{};
     GetWindowRect(toolbar_, &wndRect);
@@ -185,7 +235,7 @@ void Overlay::PaintToolbar() {
         CheckHR(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                     reinterpret_cast<IUnknown**>(writeFactory.GetAddressOf())),
                 "overlay");
-        const int dpi = windows_.front()->dpi;
+        const int dpi = ActiveToolbarDpi();
         const float scale = dpi / 96.f;
         const float stroke = std::max(1.f, 1.2f * scale);
         const float outerRadius = std::min(8.f * scale, float(std::min(w, h)) * .25f);
@@ -199,7 +249,7 @@ void Overlay::PaintToolbar() {
             outerRadius};
         rt->FillRoundedRectangle(panel, brush.Get());
         const float row = float(MulDiv(ActionRow, dpi, 96));
-        const int mode = windows_.front()->mode;
+        const int mode = (!toolbarBusy_ && !toolbarStandby_ && !windows_.empty()) ? windows_.front()->mode : -1;
         const int highlighted = aiPending_ && aiHighlight_ ? 3 : mode;
         const int pressed = pressedAction_;
         const int hovered = hoverAction_;
@@ -213,11 +263,11 @@ void Overlay::PaintToolbar() {
         CheckHR(buttonFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP), "overlay");
         const float padY = 5.f * scale, pillRadius = 6.f * scale;
         const auto geom = ComputeToolbarGeometry(w, dpi);
-        const auto& activeData = *windows_.front();
-        const std::wstring sourceLabel = SourceDisplayLabel(activeData.settings);
-        const std::wstring targetLabel = FindTextTarget(activeData.settings.screenTargetLanguage).label;
-        auto drawChevron = [&](float cx, float cy, float sz, COLORREF col) {
-            brush->SetColor(ToolbarColor(col));
+        const auto& activeSettings = ActiveToolbarSettings();
+        const std::wstring sourceLabel = SourceDisplayLabel(activeSettings);
+        const std::wstring targetLabel = FindTextTarget(activeSettings.screenTargetLanguage).label;
+        auto drawChevron = [&](float cx, float cy, float sz, COLORREF col, float alpha = 1.f) {
+            brush->SetColor(ToolbarColor(col, alpha));
             rt->DrawLine(D2D1::Point2F(cx - sz, cy - sz * .45f), D2D1::Point2F(cx, cy + sz * .45f),
                          brush.Get(), std::max(1.1f, 1.3f * scale));
             rt->DrawLine(D2D1::Point2F(cx, cy + sz * .45f), D2D1::Point2F(cx + sz, cy - sz * .45f),
@@ -237,9 +287,10 @@ void Overlay::PaintToolbar() {
             langFormat->SetTrimming(&trim, ellipsisObj.Get());
         for (int id : {SourceLangAction, TargetLangAction}) {
             const auto& r = geom.items[size_t(id)];
+            const bool enabled = ToolbarActionEnabled(id);
             const D2D1_RECT_F pillRect = D2D1::RectF(r.left, padY, r.right, row - padY);
             const D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(pillRect, pillRadius, pillRadius);
-            const bool held = id == pressed, hover = id == hovered;
+            const bool held = enabled && id == pressed, hover = enabled && id == hovered;
             if (held || hover) {
                 brush->SetColor(ToolbarColor(held ? overlay_theme::Pressed : overlay_theme::Hover));
                 rt->FillRoundedRectangle(pill, brush.Get());
@@ -248,28 +299,33 @@ void Overlay::PaintToolbar() {
             const float chevronReserve = 15.f * scale;
             const D2D1_RECT_F textRect =
                 D2D1::RectF(pillRect.left + 4.f * scale, pillRect.top, pillRect.right - chevronReserve, pillRect.bottom);
-            brush->SetColor(ToolbarColor(overlay_theme::TextPrimary));
+            brush->SetColor(ToolbarColor(enabled ? overlay_theme::TextPrimary : overlay_theme::TextSecondary,
+                                         enabled ? 1.f : .42f));
             rt->DrawText(txt.c_str(), UINT32(txt.size()), langFormat.Get(), textRect, brush.Get(),
                          D2D1_DRAW_TEXT_OPTIONS_CLIP);
             drawChevron(pillRect.right - 9.f * scale, (pillRect.top + pillRect.bottom) * .5f,
-                        3.5f * scale, overlay_theme::TextSecondary);
+                        3.5f * scale, overlay_theme::TextSecondary, enabled ? 1.f : .42f);
         }
         brush->SetColor(ToolbarColor(overlay_theme::Border));
         rt->DrawLine(D2D1::Point2F(geom.dividerX, 9.f * scale), D2D1::Point2F(geom.dividerX, row - 9.f * scale),
                      brush.Get(), std::max(1.f, scale));
         for (int i = 0; i < ActionCount; ++i) {
             const auto& r = geom.items[size_t(i)];
+            const bool enabled = ToolbarActionEnabled(i);
             const D2D1_RECT_F pillRect = D2D1::RectF(r.left, padY, r.right, row - padY);
             const D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(pillRect, pillRadius, pillRadius);
-            const bool held = i == pressed, hover = i == hovered;
-            COLORREF textColor = overlay_theme::TextPrimary;
+            const bool held = enabled && i == pressed, hover = enabled && i == hovered;
+            COLORREF textColor = enabled ? overlay_theme::TextPrimary : overlay_theme::TextSecondary;
+            float textAlpha = enabled ? 1.f : .42f;
             if (i == CloseAction) {
                 const COLORREF fill = held  ? overlay_theme::CloseHeld
                                       : hover ? overlay_theme::CloseHover
                                               : overlay_theme::CloseRest;
                 brush->SetColor(ToolbarColor(fill));
                 rt->FillRoundedRectangle(pill, brush.Get());
-            } else if (i < 4 && i == highlighted) {
+                textColor = overlay_theme::TextPrimary;
+                textAlpha = 1.f;
+            } else if (enabled && i < 4 && i == highlighted) {
                 brush->SetColor(ToolbarColor(held ? overlay_theme::AccentHeld : overlay_theme::AccentFill));
                 rt->FillRoundedRectangle(pill, brush.Get());
                 brush->SetColor(ToolbarColor(overlay_theme::Accent));
@@ -279,7 +335,7 @@ void Overlay::PaintToolbar() {
                 brush->SetColor(ToolbarColor(held ? overlay_theme::Pressed : overlay_theme::Hover));
                 rt->FillRoundedRectangle(pill, brush.Get());
             }
-            brush->SetColor(ToolbarColor(textColor));
+            brush->SetColor(ToolbarColor(textColor, textAlpha));
             rt->DrawText(Labels[i], static_cast<UINT32>(wcslen(Labels[i])), buttonFormat.Get(), pillRect,
                          brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
@@ -368,6 +424,23 @@ void Overlay::PaintToolbar() {
                              brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
                 curX += chipW + chipGap;
             }
+        } else {
+            brush->SetColor(ToolbarColor(overlay_theme::Border));
+            rt->DrawLine(D2D1::Point2F(10.f * scale, row), D2D1::Point2F(float(w) - 10.f * scale, row),
+                         brush.Get(), std::max(1.f, scale));
+            ComPtr<IDWriteTextFormat> idleFormat;
+            CheckHR(writeFactory->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                                   DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                   11.5f * scale, L"zh-CN", &idleFormat),
+                    "overlay");
+            CheckHR(idleFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER), "overlay");
+            CheckHR(idleFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP), "overlay");
+            const wchar_t* hint = passthrough_ ? L"连续翻译中 · 点击「关闭」或按 Esc 退出"
+                                               : L"拖动边缘可移动选区 · 点击「关闭」或按 Esc 退出";
+            brush->SetColor(ToolbarColor(overlay_theme::TextSecondary));
+            rt->DrawText(hint, static_cast<UINT32>(wcslen(hint)), idleFormat.Get(),
+                         D2D1::RectF(12.f * scale, row, float(w) - 12.f * scale, float(h) - 2.f * scale),
+                         brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
         brush->SetColor(ToolbarColor(overlay_theme::Border));
         rt->DrawRoundedRectangle(panel, brush.Get(), stroke);
@@ -383,16 +456,18 @@ void Overlay::PaintToolbar() {
     DeleteDC(dc);
 }
 int Overlay::ToolbarHitTest(POINT clientPt) const {
-    if (!toolbar_ || windows_.empty())
+    if (!toolbar_ || (!toolbarStandby_ && windows_.empty()))
         return -1;
     RECT r{};
     GetClientRect(toolbar_, &r);
-    const int dpi = windows_.front()->dpi;
+    const int dpi = ActiveToolbarDpi();
     const int rowH = MulDiv(ActionRow, dpi, 96);
     if (clientPt.y < 0 || clientPt.y >= rowH || clientPt.x < 0 || clientPt.x >= Width(r))
         return -1;
     const auto geom = ComputeToolbarGeometry(Width(r), dpi);
     for (int id = 0; id < TotalItemCount; ++id) {
+        if (!ToolbarActionEnabled(id))
+            continue;
         const auto& box = geom.items[size_t(id)];
         if (float(clientPt.x) >= box.left && float(clientPt.x) <= box.right)
             return id;
@@ -480,6 +555,20 @@ void Overlay::ShowLanguageMenu(bool sourceMenu) {
     }
 }
 void Overlay::ToolbarAction(int action) {
+    if (!ToolbarActionEnabled(action))
+        return;
+    if (action == CloseAction) {
+        auto cb = dismissed_;
+        if (cb)
+            cb();
+        return;
+    }
+    if (action == ReselectAction) {
+        auto cb = reselect_;
+        if (cb)
+            cb();
+        return;
+    }
     if (windows_.empty())
         return;
     auto& data = *windows_.front();
@@ -492,17 +581,6 @@ void Overlay::ToolbarAction(int action) {
     if (action == TargetLangAction) {
         ShowLanguageMenu(false);
         return;
-    }
-    if (action == CloseAction) {
-        auto cb = dismissed_;
-        if (cb)
-            cb();
-        return;
-    }
-    if (action == ReselectAction) {
-        auto cb = reselect_;
-        if (cb)
-            cb();
     }
     if (action >= 0 && action <= 3) {
         if (action == 3 && !data.ai) {
@@ -755,7 +833,7 @@ LRESULT CALLBACK Overlay::ToolbarProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             self->PaintToolbar();
             return 0;
         case WM_MOUSEMOVE: {
-            if (self->windows_.empty())
+            if (!self->toolbarStandby_ && self->windows_.empty())
                 return 0;
             const int action = self->ToolbarHitTest({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
             if (action != self->hoverAction_) {
@@ -773,7 +851,7 @@ LRESULT CALLBACK Overlay::ToolbarProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             return 0;
         case WM_LBUTTONDOWN: {
-            if (self->windows_.empty())
+            if (!self->toolbarStandby_ && self->windows_.empty())
                 return 0;
             const int action = self->ToolbarHitTest({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
             if (action >= 0) {
@@ -785,7 +863,7 @@ LRESULT CALLBACK Overlay::ToolbarProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         case WM_LBUTTONUP: {
-            if (self->windows_.empty()) {
+            if (!self->toolbarStandby_ && self->windows_.empty()) {
                 self->pressedAction_ = -1;
                 if (GetCapture() == h)
                     ReleaseCapture();
@@ -827,146 +905,37 @@ LRESULT CALLBACK Overlay::ToolbarProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     return DefWindowProcW(h, m, w, l);
 }
-void Overlay::PaintBadge() {
-    if (!badge_)
-        return;
-    RECT wndRect{};
-    GetWindowRect(badge_, &wndRect);
-    const int w = Width(wndRect), h = Height(wndRect);
-    if (w <= 0 || h <= 0)
-        return;
-    BITMAPINFO bi{};
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
-    void* bits = nullptr;
-    HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    ReleaseDC(nullptr, screen);
-    if (!dc || !bmp) {
-        if (dc)
-            DeleteDC(dc);
-        if (bmp)
-            DeleteObject(bmp);
-        return;
-    }
-    auto previous = SelectObject(dc, bmp);
-    try {
-        ComPtr<ID2D1Factory> factory;
-        CheckHR(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, factory.GetAddressOf()), "overlay");
-        ComPtr<ID2D1DCRenderTarget> rt;
-        auto props = D2D1::RenderTargetProperties(
-            D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
-        CheckHR(factory->CreateDCRenderTarget(&props, &rt), "overlay");
-        RECT client{0, 0, w, h};
-        CheckHR(rt->BindDC(dc, &client), "overlay");
-        ComPtr<IDWriteFactory> writeFactory;
-        CheckHR(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-                                    reinterpret_cast<IUnknown**>(writeFactory.GetAddressOf())),
-                "overlay");
-        const float scale = badgeDpi_ / 96.f;
-        const float stroke = std::max(1.f, 1.2f * scale);
-        const float outerRadius = std::min(8.f * scale, float(std::min(w, h)) * .25f);
-        ComPtr<ID2D1SolidColorBrush> brush;
-        CheckHR(rt->CreateSolidColorBrush(ToolbarColor(overlay_theme::Surface), &brush), "overlay");
-        rt->BeginDraw();
-        rt->Clear(D2D1::ColorF(0, 0.f));
-        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        const D2D1_ROUNDED_RECT panel{
-            D2D1::RectF(stroke / 2, stroke / 2, float(w) - stroke / 2, float(h) - stroke / 2), outerRadius,
-            outerRadius};
-        rt->FillRoundedRectangle(panel, brush.Get());
-        const float dotR = 3.5f * scale;
-        brush->SetColor(ToolbarColor(overlay_theme::Accent));
-        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(14.f * scale, float(h) * .5f), dotR, dotR), brush.Get());
-        const int closeWidth = MulDiv(58, badgeDpi_, 96);
-        const int closePad = MulDiv(5, badgeDpi_, 96);
-        badgeCloseRect_ = {w - closeWidth - closePad, closePad, w - closePad, h - closePad};
-        const COLORREF closeFill = badgePressed_ ? overlay_theme::CloseHeld
-                                   : badgeHover_ ? overlay_theme::CloseHover
-                                                 : overlay_theme::CloseRest;
-        const D2D1_RECT_F closeRf =
-            D2D1::RectF(float(badgeCloseRect_.left), float(badgeCloseRect_.top),
-                        float(badgeCloseRect_.right), float(badgeCloseRect_.bottom));
-        brush->SetColor(ToolbarColor(closeFill));
-        rt->FillRoundedRectangle(D2D1::RoundedRect(closeRf, 6.f * scale, 6.f * scale), brush.Get());
-        ComPtr<IDWriteTextFormat> textFormat;
-        CheckHR(writeFactory->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_MEDIUM,
-                                               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                               12.5f * scale, L"zh-CN", &textFormat),
-                "overlay");
-        CheckHR(textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER), "overlay");
-        CheckHR(textFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP), "overlay");
-        DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
-        ComPtr<IDWriteInlineObject> ellipsis;
-        if (SUCCEEDED(writeFactory->CreateEllipsisTrimmingSign(textFormat.Get(), &ellipsis)))
-            textFormat->SetTrimming(&trimming, ellipsis.Get());
-        brush->SetColor(ToolbarColor(overlay_theme::TextPrimary));
-        const D2D1_RECT_F labelRect =
-            D2D1::RectF(24.f * scale, 0.f, float(badgeCloseRect_.left) - 8.f * scale, float(h));
-        rt->DrawText(badgeText_.c_str(), static_cast<UINT32>(badgeText_.size()), textFormat.Get(), labelRect,
-                     brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-        CheckHR(textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER), "overlay");
-        rt->DrawText(L"关闭", 2, textFormat.Get(), closeRf, brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-        brush->SetColor(ToolbarColor(overlay_theme::Border));
-        rt->DrawRoundedRectangle(panel, brush.Get(), stroke);
-        CheckHR(rt->EndDraw(), "overlay");
-        POINT position{wndRect.left, wndRect.top}, origin{};
-        SIZE size{w, h};
-        BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-        UpdateLayeredWindow(badge_, nullptr, &position, &size, dc, &origin, 0, &blend, ULW_ALPHA);
-    } catch (...) {
-    }
-    SelectObject(dc, previous);
-    DeleteObject(bmp);
-    DeleteDC(dc);
-}
 void Overlay::ShowContinuousBadge(RECT anchor, const Monitor& monitor, const std::wstring& text,
-                                  std::function<void()> dismissed) {
-    badgeText_ = text;
-    badgeDpi_ = monitor.dpi;
-    badgeClosed_ = std::move(dismissed);
-    badgeHover_ = false;
-    badgePressed_ = false;
-    RECT workArea = monitor.rect;
-    MONITORINFO info{sizeof(info)};
-    if (auto handle = MonitorFromRect(&anchor, MONITOR_DEFAULTTONULL);
-        handle && GetMonitorInfoW(handle, &info) && EqualRect(&info.rcMonitor, &monitor.rect))
-        workArea = info.rcWork;
-    const RECT bounds = PlaceBarBounds(anchor, workArea, MulDiv(BadgeWidth, badgeDpi_, 96),
-                                       MulDiv(BadgeHeight, badgeDpi_, 96), MulDiv(8, badgeDpi_, 96));
-    if (!badge_) {
-        WNDCLASSW wc{};
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.lpszClassName = L"SAT.ContinuousBadge";
-        wc.lpfnWndProc = BadgeProc;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        RegisterClassW(&wc);
-        badge_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                                 wc.lpszClassName, L"连续翻译状态", WS_POPUP, bounds.left, bounds.top,
-                                 Width(bounds), Height(bounds), nullptr, nullptr, wc.hInstance, this);
-        if (!badge_)
-            return;
-        SetWindowDisplayAffinity(badge_, ExcludeFromCapture);
-    } else {
-        SetWindowPos(badge_, HWND_TOPMOST, bounds.left, bounds.top, Width(bounds), Height(bounds),
-                     SWP_NOACTIVATE);
-    }
-    PaintBadge();
-    ShowWindow(badge_, SW_SHOWNOACTIVATE);
+                                  std::function<void()> dismissed, const Settings& settings,
+                                  std::function<void()> reselect) {
+    toolbarStandby_ = true;
+    toolbarBusy_ = true;
+    toolbarAnchor_ = anchor;
+    toolbarWorkArea_ = WorkAreaForAnchor(anchor, monitor);
+    toolbarDpi_ = monitor.dpi;
+    toolbarSettings_ = settings;
+    noticeActive_ = true;
+    noticeText_ = text;
+    passthrough_ = true;
+    dismissed_ = std::move(dismissed);
+    if (reselect)
+        reselect_ = std::move(reselect);
+    hoverAction_ = -1;
+    pressedAction_ = -1;
+    ShowToolbar();
 }
 void Overlay::CloseContinuousBadge() {
-    badgeClosed_ = {};
-    badgeHover_ = false;
-    badgePressed_ = false;
-    badgeText_.clear();
-    if (badge_) {
-        DestroyWindow(badge_);
-        badge_ = nullptr;
+    if (!toolbarStandby_)
+        return;
+    toolbarStandby_ = false;
+    toolbarBusy_ = false;
+    noticeActive_ = false;
+    noticeText_.clear();
+    toolbarAnchor_ = {};
+    toolbarWorkArea_ = {};
+    if (toolbar_) {
+        DestroyWindow(toolbar_);
+        toolbar_ = nullptr;
     }
 }
 bool Overlay::IsControlPoint(POINT screenPt) const {
@@ -976,7 +945,7 @@ bool Overlay::IsControlPoint(POINT screenPt) const {
         RECT r{};
         return GetWindowRect(hwnd, &r) && PtInRect(&r, screenPt) != FALSE;
     };
-    if (hits(toolbar_) || hits(badge_))
+    if (hits(toolbar_))
         return true;
     for (const auto& w : windows_) {
         if (!w->progressFrame && !(GetWindowLongPtrW(w->hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT) &&
@@ -984,70 +953,5 @@ bool Overlay::IsControlPoint(POINT screenPt) const {
             return true;
     }
     return false;
-}
-LRESULT CALLBACK Overlay::BadgeProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    auto self = reinterpret_cast<Overlay*>(GetWindowLongPtrW(h, GWLP_USERDATA));
-    if (m == WM_NCCREATE) {
-        self = static_cast<Overlay*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);
-        SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-    }
-    if (!self)
-        return DefWindowProcW(h, m, w, l);
-    switch (m) {
-    case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE;
-    case WM_ERASEBKGND:
-        return 1;
-    case WM_PAINT:
-        ValidateRect(h, nullptr);
-        self->PaintBadge();
-        return 0;
-    case WM_MOUSEMOVE: {
-        POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        const bool hover = PtInRect(&self->badgeCloseRect_, pt) != FALSE;
-        if (hover != self->badgeHover_) {
-            self->badgeHover_ = hover;
-            self->PaintBadge();
-        }
-        TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0};
-        TrackMouseEvent(&track);
-        return 0;
-    }
-    case WM_MOUSELEAVE:
-        if (self->badgeHover_) {
-            self->badgeHover_ = false;
-            self->PaintBadge();
-        }
-        return 0;
-    case WM_LBUTTONDOWN: {
-        POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        if (PtInRect(&self->badgeCloseRect_, pt)) {
-            self->badgePressed_ = true;
-            SetCapture(h);
-            self->PaintBadge();
-        }
-        return 0;
-    }
-    case WM_LBUTTONUP: {
-        POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        const bool run = self->badgePressed_ && PtInRect(&self->badgeCloseRect_, pt);
-        self->badgePressed_ = false;
-        if (GetCapture() == h)
-            ReleaseCapture();
-        self->PaintBadge();
-        if (run && self->badgeClosed_)
-            self->badgeClosed_();
-        return 0;
-    }
-    case WM_CAPTURECHANGED:
-        self->badgePressed_ = false;
-        self->PaintBadge();
-        return 0;
-    case WM_NCDESTROY:
-        self->badge_ = nullptr;
-        SetWindowLongPtrW(h, GWLP_USERDATA, 0);
-        return 0;
-    }
-    return DefWindowProcW(h, m, w, l);
 }
 } // namespace sat

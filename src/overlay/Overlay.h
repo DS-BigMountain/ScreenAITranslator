@@ -49,15 +49,12 @@ struct PositionedText {
     bool centerAligned{};
     bool bold{};
     float maxOverhang{24.f};
-    float maxLeftOverhang{0.f};
+    OrientedBox obb{};
     ComPtr<IDWriteTextLayout> layout;
     // One entry per source strip of a vertical passage; the first entry also fills layout.
     std::vector<ColumnText> columnTexts;
     bool suppressed{};
     std::optional<COLORREF> sourceColor;
-    bool hasStroke{};
-    std::optional<COLORREF> strokeColor;
-    bool uniformBackdrop{true};
     std::vector<RECT> detectedLines;
     std::vector<EraseRow> eraseLines{};
 };
@@ -128,23 +125,27 @@ class Overlay {
     bool passthrough_{};
     bool captureExcluded_{true};
     std::wstring warning_;
-    HWND badge_{};
-    std::wstring badgeText_;
-    UINT badgeDpi_{96};
-    RECT badgeCloseRect_{};
-    bool badgeHover_{}, badgePressed_{};
-    std::function<void()> badgeClosed_;
-    // The progress notice swaps its fixed status line in place, so the strip and the frozen frame beside
-    // it keep running while the work moves from recognition to the service request.
+    bool toolbarStandby_{};
+    bool toolbarBusy_{};
+    RECT toolbarAnchor_{};
+    RECT toolbarWorkArea_{};
+    UINT toolbarDpi_{96};
+    Settings toolbarSettings_{};
+    // The progress status swaps its fixed status line in place on the unified toolbar, so the
+    // frozen frame and controls keep steady while work moves from recognition to translation.
     bool noticeActive_{};
     std::wstring noticeText_;
     Image noticeBackdrop_;
     Monitor noticeMonitor_{};
     static LRESULT CALLBACK ToolbarProc(HWND, UINT, WPARAM, LPARAM);
-    static LRESULT CALLBACK BadgeProc(HWND, UINT, WPARAM, LPARAM);
     std::wstring ToolbarStatusText() const;
     bool HasToolbarStatusRow() const;
     const std::vector<std::string>* ActiveDetectedLanguages() const;
+    UINT ActiveToolbarDpi() const;
+    RECT ActiveToolbarAnchor() const;
+    RECT ActiveToolbarWorkArea() const;
+    const Settings& ActiveToolbarSettings() const;
+    bool ToolbarActionEnabled(int action) const;
     void PositionToolbar();
     void RefreshToolbar();
     void ShowToolbar();
@@ -152,7 +153,6 @@ class Overlay {
     void ShowLanguageMenu(bool sourceMenu);
     int ToolbarHitTest(POINT clientPt) const;
     void PaintToolbar();
-    void PaintBadge();
     static LRESULT CALLBACK Proc(HWND, UINT, WPARAM, LPARAM);
     // The block the current view draws: the one-off vision result, the reading panel, or the recognized
     // result behind them.
@@ -170,15 +170,17 @@ public:
               std::function<void()> reselect = {}, std::function<void(RECT)> moved = {},
               bool passthrough = false);
     void ShowContinuousBadge(RECT anchor, const Monitor&, const std::wstring& text,
-                             std::function<void()> dismissed);
+                             std::function<void()> dismissed, const Settings& settings = {},
+                             std::function<void()> reselect = {});
     void CloseContinuousBadge();
     bool IsControlPoint(POINT screenPt) const;
     void Notice(const std::wstring& text, RECT anchor, const Monitor&, std::function<void()> dismissed,
                 bool excludeFromCapture = false);
-    // Rewrites the running notice with another fixed status line. Callers use one phrase per stage.
+    // Rewrites the running status with another fixed status line. Callers use one phrase per stage.
     void SetProgressText(const std::wstring& text);
     void Progress(RECT region, const Monitor&, Image frozen, std::function<void()> dismissed,
-                  bool continuous = false);
+                  const Settings& settings = {}, bool continuous = false,
+                  std::function<void()> reselect = {});
     bool CaptureExcluded() const {
         return captureExcluded_;
     }

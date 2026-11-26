@@ -240,6 +240,8 @@ PreparedTranslation PrepareTranslation(Image image, RECT region, const Monitor& 
                                 {"rejected_space", report.rejectedSpace},
                                 {"rejected_bounds", report.rejectedBounds}});
         }
+        for (const RECT& line : detected.uncoveredLines)
+            prepared.result.uncoveredLines.push_back(line);
 
         // Placement carries the source pixels that decided font size and color; recording it here
         // keeps the trace aligned with what the overlay actually received.

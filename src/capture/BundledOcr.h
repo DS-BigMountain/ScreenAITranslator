@@ -5,7 +5,8 @@ namespace sat {
 std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_token stop,
                                        bool geometryOnly = false, bool preserveGeometry = false,
                                        bool retainLowConfidenceText = false,
-                                       const std::vector<RECT>* precomputedBoxes = nullptr);
+                                       const std::vector<RECT>* precomputedBoxes = nullptr,
+                                       const std::vector<TextLine>* precomputedLines = nullptr);
 // Manga pipeline: a detector and recognizer trained on artwork and vertical columns. Empty when the
 // weights are absent, which lets the caller fall back to the general engine.
 std::vector<TextLine> RecognizeMangaBundled(const Image& image, std::stop_token stop);

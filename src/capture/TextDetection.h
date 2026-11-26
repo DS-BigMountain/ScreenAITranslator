@@ -5,6 +5,7 @@ struct TextLine {
     RECT rect{};
     std::string text;
     float confidence{};
+    OrientedBox obb{};
 };
 struct TextRegion {
     int id{};
@@ -14,12 +15,14 @@ struct TextRegion {
     float lineHeight{};
     Box imageBox{};
     float confidence{};
+    OrientedBox obb{};
 };
 struct TextDetection {
     std::vector<TextRegion> regions;
     std::string status;
     size_t unrecognizedLines{};
     std::vector<std::string> detectedLanguages;
+    std::vector<RECT> uncoveredLines;
 };
 std::vector<std::string> DetectScriptLanguages(const std::vector<TextRegion>& regions, int ocrHint = OcrLocalAuto,
                                                std::string_view sourceHint = "auto");

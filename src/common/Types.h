@@ -7,6 +7,7 @@
 #include <vector>
 #include <optional>
 #include <chrono>
+#include <cmath>
 #include <stop_token>
 #include <stdexcept>
 #include <memory>
@@ -19,6 +20,12 @@ namespace sat {
 struct Box {
     int x{}, y{}, width{}, height{};
 };
+struct OrientedBox {
+    float centerX{}, centerY{}, width{}, height{}, angleDeg{};
+    bool valid() const {
+        return width > 0.f && height > 0.f && std::abs(angleDeg) >= 6.f;
+    }
+};
 struct Segment {
     std::string original, translated;
     Box box;
@@ -26,6 +33,7 @@ struct Segment {
     std::optional<RECT> sourcePixels;
     std::vector<RECT> sourceLines;
     float sourceLineHeight{};
+    OrientedBox obb{};
     int sourceId{};
     bool positionUnavailable{}, untranslated{};
 };

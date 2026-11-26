@@ -238,6 +238,10 @@ void Overlay::Close() {
     dismissed_ = {};
     reselect_ = {};
     moved_ = {};
+    toolbarStandby_ = false;
+    toolbarBusy_ = false;
+    toolbarAnchor_ = {};
+    toolbarWorkArea_ = {};
     noticeActive_ = false;
     noticeText_.clear();
     noticeBackdrop_ = {};
@@ -637,8 +641,12 @@ void Overlay::Notice(const std::wstring& text, RECT anchor, const Monitor& m,
     }
     TranslationResult r;
     r.segments.push_back({"", Utf8(text), {0, 0, 1000, 1000}});
+    RECT workArea = m.rect;
+    MONITORINFO info{sizeof(info)};
+    if (auto handle = MonitorFromRect(&anchor, MONITOR_DEFAULTTONULL); handle && GetMonitorInfoW(handle, &info))
+        workArea = info.rcWork;
     RECT roi{anchor.left, anchor.top, anchor.left + width, anchor.top + height};
-    roi = Clamp(roi, m.rect);
+    roi = Clamp(roi, workArea);
     auto blocks = BuildOverlay(r, image, roi, m, s, false);
     // Show calls Close(), so the notice state must be armed afterward and the header repainted.
     Show(blocks, s, m.dpi, std::move(dismissed));
@@ -652,9 +660,15 @@ void Overlay::Notice(const std::wstring& text, RECT anchor, const Monitor& m,
         Render(*windows_.front());
 }
 void Overlay::SetProgressText(const std::wstring& text) {
-    if (!noticeActive_ || text == noticeText_ || windows_.empty())
+    if (!noticeActive_ || text == noticeText_)
         return;
     noticeText_ = text;
+    if (toolbar_) {
+        PaintToolbar();
+        return;
+    }
+    if (windows_.empty())
+        return;
     Settings s;
     s.spatialOverlay = false;
     s.autoFont = false;
@@ -668,24 +682,26 @@ void Overlay::SetProgressText(const std::wstring& text) {
     Render(data);
 }
 void Overlay::Progress(RECT region, const Monitor& monitor, Image frozen,
-                       std::function<void()> dismissed, bool continuous) {
-    // Retain the exact translation input while the notice occupies a separate strip.
-    RECT anchor = region;
-    const int noticeHeight = 70;
-    const int gap = MulDiv(8, monitor.dpi, 96);
-    if (region.bottom + gap + noticeHeight <= monitor.rect.bottom)
-        anchor.top = region.bottom + gap;
-    else if (region.top - gap - noticeHeight >= monitor.rect.top)
-        anchor.top = region.top - gap - noticeHeight;
-    else if (region.bottom + noticeHeight <= monitor.rect.bottom)
-        anchor.top = region.bottom;
-    else if (region.top - noticeHeight >= monitor.rect.top)
-        anchor.top = region.top - noticeHeight;
-    anchor.bottom = anchor.top + noticeHeight;
-    // Recognition always runs first, so the first line describes it; the controller swaps the line when
-    // the work moves on to the service request.
-    Notice(L"文字识别中 · 点击 × 取消", anchor, monitor, std::move(dismissed), continuous);
+                       std::function<void()> dismissed, const Settings& settings,
+                       bool continuous, std::function<void()> reselect) {
+    Close();
+    dismissed_ = std::move(dismissed);
+    reselect_ = std::move(reselect);
     passthrough_ = continuous;
+    RECT workArea = monitor.rect;
+    MONITORINFO info{sizeof(info)};
+    if (auto handle = MonitorFromRect(&region, MONITOR_DEFAULTTONULL); handle && GetMonitorInfoW(handle, &info))
+        workArea = info.rcWork;
+    toolbarStandby_ = true;
+    toolbarBusy_ = true;
+    toolbarAnchor_ = region;
+    toolbarWorkArea_ = workArea;
+    toolbarDpi_ = monitor.dpi;
+    toolbarSettings_ = settings;
+    noticeActive_ = true;
+    noticeText_ = L"正在识别文字 · 可点击「关闭」或按 Esc 取消";
+    hoverAction_ = -1;
+    pressedAction_ = -1;
     try {
         WNDCLASSW wc{};
         wc.hInstance = GetModuleHandleW(nullptr);
@@ -699,6 +715,8 @@ void Overlay::Progress(RECT region, const Monitor& monitor, Image frozen,
         data->dragPreview = true;
         data->progressFrame = true;
         data->block.screen = region;
+        data->block.monitorArea = monitor.rect;
+        data->block.workArea = workArea;
         data->block.image = std::make_shared<Image>(std::move(frozen));
         auto ptr = data.get();
         windows_.push_back(std::move(data));
@@ -712,7 +730,7 @@ void Overlay::Progress(RECT region, const Monitor& monitor, Image frozen,
             captureExcluded_ = SetWindowDisplayAffinity(ptr->hwnd, 0x00000011) != FALSE;
         Render(*ptr);
         ShowWindow(ptr->hwnd, SW_SHOWNOACTIVATE);
-        Render(*windows_.front());
+        ShowToolbar();
     } catch (...) {
         Close();
         throw;

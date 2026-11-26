@@ -331,6 +331,41 @@ std::vector<float> Tensor(const Image& image, RECT crop, int width, int height, 
     }
     return result;
 }
+std::vector<float> OrientedTensor(const Image& image, const OrientedBox& obb, int width, int height,
+                                  int contentWidth, bool turnLeft = false) {
+    std::vector<float> result(size_t(width) * height * 3, 0.f);
+    constexpr double kPi = 3.14159265358979323846;
+    const float rad = float(double(obb.angleDeg) * kPi / 180.0);
+    const float cosA = std::cos(rad), sinA = std::sin(rad);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < contentWidth; ++x) {
+            float lx{}, ly{};
+            if (turnLeft) {
+                lx = obb.width * .5f - (y + .5f) * obb.width / float(height);
+                ly = -obb.height * .5f + (x + .5f) * obb.height / float(contentWidth);
+            } else {
+                lx = -obb.width * .5f + (x + .5f) * obb.width / float(contentWidth);
+                ly = -obb.height * .5f + (y + .5f) * obb.height / float(height);
+            }
+            const float px = std::clamp(obb.centerX + lx * cosA - ly * sinA, 0.f, float(image.width - 1));
+            const float py = std::clamp(obb.centerY + lx * sinA + ly * cosA, 0.f, float(image.height - 1));
+            const int y0 = int(py), y1 = std::min(y0 + 1, image.height - 1);
+            const float fy = py - y0;
+            const int x0 = int(px), x1 = std::min(x0 + 1, image.width - 1);
+            const float fx = px - x0;
+            for (int c = 0; c < 3; ++c) {
+                auto sample = [&](int sampleX, int sampleY) {
+                    return float(image.bgra[(size_t(sampleY) * image.width + sampleX) * 4 + c]);
+                };
+                const float pixel = ((sample(x0, y0) * (1 - fx) + sample(x1, y0) * fx) * (1 - fy) +
+                                     (sample(x0, y1) * (1 - fx) + sample(x1, y1) * fx) * fy) /
+                                    255.f;
+                result[(size_t(c) * height + y) * width + x] = pixel * 2 - 1;
+            }
+        }
+    }
+    return result;
+}
 // DB post-processing parameters. The general detector keeps its original bias toward strict
 // contours; the manga detector pairs a low binarisation threshold with a soft average score and a
 // smaller expansion, which is what keeps thin vertical strokes and kana apart on artwork.
@@ -340,7 +375,11 @@ struct DbParams {
     float unclip{1.6f};
     size_t minPixels{4};
 };
-std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams params = {}) {
+struct DetectedBox {
+    RECT rect{};
+    OrientedBox obb{};
+};
+std::vector<DetectedBox> BoxesWithObb(const Ort::Value& output, const Image& image, DbParams params = {}) {
     auto shape = output.GetTensorTypeAndShapeInfo().GetShape();
     if (shape.size() != 4 || shape[0] != 1 || shape[1] != 1 || shape[2] <= 0 || shape[3] <= 0 ||
         shape[2] * shape[3] > 4096 * 4096)
@@ -351,6 +390,10 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
     std::vector<int> pending;
     std::vector<RECT> boxes;
     std::vector<RECT> rawBoxes;
+    std::vector<OrientedBox> obbs;
+    const double sx = double(image.width) / double(w);
+    const double sy = double(image.height) / double(h);
+    constexpr double kPi = 3.14159265358979323846;
     for (int p = 0; p < w * h; ++p) {
         if (seen[p] || map[p] < params.threshold)
             continue;
@@ -398,10 +441,66 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
                  std::clamp<LONG>(LONG(std::floor(double(t) * image.height / h)), rect.top, rect.bottom),
                  std::clamp<LONG>(LONG(std::ceil(double(r + 1) * image.width / w)), rect.left, rect.right),
                  std::clamp<LONG>(LONG(std::ceil(double(b + 1) * image.height / h)), rect.top, rect.bottom)};
+        OrientedBox obb;
+        if (pending.size() >= 6) {
+            double mx = 0.0, my = 0.0;
+            for (int idx : pending) {
+                mx += ((idx % w) + 0.5) * sx;
+                my += ((idx / w) + 0.5) * sy;
+            }
+            mx /= double(pending.size());
+            my /= double(pending.size());
+            double cxx = 0.0, cyy = 0.0, cxy = 0.0;
+            for (int idx : pending) {
+                const double dx = ((idx % w) + 0.5) * sx - mx;
+                const double dy = ((idx / w) + 0.5) * sy - my;
+                cxx += dx * dx;
+                cyy += dy * dy;
+                cxy += dx * dy;
+            }
+            const double theta = 0.5 * std::atan2(2.0 * cxy, cxx - cyy);
+            const double ux = std::cos(theta), uy = std::sin(theta);
+            const double vx = -uy, vy = ux;
+            double minU = 1e9, maxU = -1e9, minV = 1e9, maxV = -1e9;
+            const double halfCellU = 0.5 * (std::abs(ux) * sx + std::abs(uy) * sy);
+            const double halfCellV = 0.5 * (std::abs(vx) * sx + std::abs(vy) * sy);
+            for (int idx : pending) {
+                const double dx = ((idx % w) + 0.5) * sx - mx;
+                const double dy = ((idx / w) + 0.5) * sy - my;
+                const double pu = dx * ux + dy * uy;
+                const double pv = dx * vx + dy * vy;
+                minU = std::min(minU, pu - halfCellU);
+                maxU = std::max(maxU, pu + halfCellU);
+                minV = std::min(minV, pv - halfCellV);
+                maxV = std::max(maxV, pv + halfCellV);
+            }
+            const double padImg = double(pad) * 0.5 * (sx + sy);
+            minU -= padImg;
+            maxU += padImg;
+            minV -= padImg;
+            maxV += padImg;
+            const double lenU = maxU - minU, lenV = maxV - minV;
+            const double midU = 0.5 * (minU + maxU), midV = 0.5 * (minV + maxV);
+            const double cx = mx + midU * ux + midV * vx;
+            const double cy = my + midU * uy + midV * vy;
+            const double deg = theta * 180.0 / kPi;
+            const double rectArea = double(Width(rect)) * double(Height(rect));
+            if (lenU >= lenV * 1.45 && lenU * lenV < rectArea * 0.90) {
+                if (std::abs(deg) <= 55.0) {
+                    if (std::abs(deg) >= 6.0)
+                        obb = {float(cx), float(cy), float(lenU), float(lenV), float(deg)};
+                } else {
+                    const double beta = deg > 0.0 ? deg - 90.0 : deg + 90.0;
+                    if (std::abs(beta) >= 6.0)
+                        obb = {float(cx), float(cy), float(lenV), float(lenU), float(beta)};
+                }
+            }
+        }
         // A tall box is either a vertical column or a rotated line. Both reach recognition; the
         // recognizer decides which reading the crop supports.
         boxes.push_back(rect);
         rawBoxes.push_back(raw);
+        obbs.push_back(obb);
     }
     // Recognition expansion can touch adjacent baselines or neighbouring UI pills on the same row.
     // Split the shared margin at their midpoint so a crop cannot import strokes from its neighbour.
@@ -440,109 +539,404 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
                 }
             }
         }
-    // Split wide horizontal boxes that bridge across separate UI buttons, pill borders or column gaps.
-    std::vector<RECT> splitBoxes;
-    splitBoxes.reserve(boxes.size());
+    // Peel enclosing pill/button frames, split across segmented-control boundaries or curved pill
+    // borders, and detach geometric colour swatches or micro-chevrons before recognition.
     auto key12 = [](const unsigned char* p) {
-        return (int(p[2] >> 4) << 8) | (int(p[1] >> 4) << 4) | (p[0] >> 4);
+        return (int(p[2] >> 4) << 8) | (int(p[1] >> 4) << 4) | int(p[0] >> 4);
     };
-    for (const RECT& rect : boxes) {
-        const int bw = Width(rect), bh = Height(rect);
-        if (bh < 10 || bh > 72 || bw <= bh * 2 || image.bgra.size() != size_t(image.width) * image.height * 4) {
-            splitBoxes.push_back(rect);
-            continue;
-        }
+    auto modeRgb = [&](RECT area, int& outR, int& outG, int& outB) -> bool {
+        area.left = std::clamp<LONG>(area.left, 0, image.width);
+        area.top = std::clamp<LONG>(area.top, 0, image.height);
+        area.right = std::clamp<LONG>(area.right, area.left, image.width);
+        area.bottom = std::clamp<LONG>(area.bottom, area.top, image.height);
+        if (Width(area) <= 0 || Height(area) <= 0)
+            return false;
         std::array<size_t, 4096> hist{};
-        size_t totalSampled = 0;
-        for (int y = rect.top; y < rect.bottom; ++y)
-            for (int x = rect.left; x < rect.right; ++x) {
+        size_t total = 0;
+        for (int y = area.top; y < area.bottom; ++y)
+            for (int x = area.left; x < area.right; ++x) {
                 ++hist[key12(&image.bgra[(size_t(y) * image.width + x) * 4])];
-                ++totalSampled;
+                ++total;
             }
-        if (!totalSampled) {
-            splitBoxes.push_back(rect);
-            continue;
+        if (!total)
+            return false;
+        const int m = int(std::max_element(hist.begin(), hist.end()) - hist.begin());
+        const int mr = ((m >> 8) & 15) * 16 + 8;
+        const int mg = ((m >> 4) & 15) * 16 + 8;
+        const int mb = (m & 15) * 16 + 8;
+        long long sr = 0, sg = 0, sb = 0, cnt = 0;
+        for (int y = area.top; y < area.bottom; ++y)
+            for (int x = area.left; x < area.right; ++x) {
+                const auto* p = &image.bgra[(size_t(y) * image.width + x) * 4];
+                if (std::abs(int(p[2]) - mr) + std::abs(int(p[1]) - mg) + std::abs(int(p[0]) - mb) < 42) {
+                    sr += p[2];
+                    sg += p[1];
+                    sb += p[0];
+                    ++cnt;
+                }
+            }
+        if (cnt > 0) {
+            outR = int(sr / cnt);
+            outG = int(sg / cnt);
+            outB = int(sb / cnt);
+        } else {
+            outR = mr;
+            outG = mg;
+            outB = mb;
         }
-        const int mode = int(std::max_element(hist.begin(), hist.end()) - hist.begin());
-        const int br = ((mode >> 8) & 15) * 16 + 8;
-        const int bg = ((mode >> 4) & 15) * 16 + 8;
-        const int bb = (mode & 15) * 16 + 8;
-        const int y0 = std::min<int>(rect.bottom - 1, rect.top + std::max(1, bh / 8));
-        const int y1 = std::max<int>(y0 + 1, rect.bottom - std::max(1, bh / 8));
-        std::vector<int> colInk(size_t(bw), 0);
-        std::vector<unsigned char> colBorder(size_t(bw), 0);
-        for (int x = 0; x < bw; ++x) {
-            const int sx = rect.left + x;
-            int ink = 0, minDiff = 999, maxDiff = 0;
-            for (int sy = y0; sy < y1; ++sy) {
+        return true;
+    };
+    auto peelCapsuleFrame = [&](RECT rect) -> RECT {
+        const int bw = Width(rect), bh = Height(rect);
+        if (bw < 22 || bh < 12 || bh > 84 || bw <= bh ||
+            image.bgra.size() != size_t(image.width) * image.height * 4)
+            return rect;
+        int br = 255, bg = 255, bb = 255;
+        if (!modeRgb(rect, br, bg, bb))
+            return rect;
+        const int insetX = std::clamp(bh / 3, 3, std::max(3, bw / 4));
+        const int cx0 = rect.left + insetX, cx1 = rect.right - insetX;
+        if (cx1 - cx0 < 8)
+            return rect;
+        const int cSpan = cx1 - cx0;
+        // Measure text-core row ink in a deeper horizontal inset so rounded pill corner arcs
+        // never bridge the whitespace between the top/bottom rails and the actual text band.
+        const int coreInsetX = std::clamp(int(std::lround(bh * .58f)), insetX, std::max(insetX, bw / 3));
+        const int coreX0 = rect.left + coreInsetX, coreX1 = rect.right - coreInsetX;
+        std::vector<int> rowInk(size_t(bh), 0);
+        std::vector<unsigned char> rowRail(size_t(bh), 0);
+        for (int y = 0; y < bh; ++y) {
+            const int sy = rect.top + y;
+            int ink = 0, smoothRun = 0, maxSmoothRun = 0;
+            for (int sx = cx0; sx < cx1; ++sx) {
                 const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
                 const int d = std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb);
-                if (d >= 56)
+                if (d >= 44 && sx >= coreX0 && sx < coreX1)
                     ++ink;
+                // A horizontal capsule border is a horizontally smooth non-background stroke near
+                // the top/bottom rim; text rows oscillate rapidly between glyph stems and counters.
+                bool smoothBorder = d >= 18;
+                if (smoothBorder && sx > cx0) {
+                    const auto* pl = &image.bgra[(size_t(sy) * image.width + sx - 1) * 4];
+                    const int dh = std::abs(int(p[2]) - int(pl[2])) + std::abs(int(p[1]) - int(pl[1])) +
+                                   std::abs(int(p[0]) - int(pl[0]));
+                    if (dh > 24)
+                        smoothBorder = false;
+                }
+                if (smoothBorder) {
+                    ++smoothRun;
+                    maxSmoothRun = std::max(maxSmoothRun, smoothRun);
+                } else {
+                    smoothRun = 0;
+                }
+            }
+            const bool inRailZone = (y <= std::max(2, bh / 3)) || (y >= bh - 1 - std::max(2, bh / 3));
+            if (inRailZone && maxSmoothRun >= std::max(10, int(cSpan * .45f)))
+                rowRail[size_t(y)] = 1;
+            rowInk[size_t(y)] = rowRail[size_t(y)] ? 0 : ink;
+        }
+        const int midY = bh / 2;
+        int bestRunTop = -1, bestRunBottom = -1, bestDist = bh;
+        for (int y = 0; y < bh;) {
+            if (rowInk[size_t(y)] < 2) {
+                ++y;
+                continue;
+            }
+            const int r0 = y;
+            int gap = 0;
+            while (y < bh) {
+                if (rowInk[size_t(y)] >= 2) {
+                    gap = 0;
+                    ++y;
+                } else if (gap == 0 && y + 1 < bh && rowInk[size_t(y + 1)] >= 2) {
+                    gap = 1;
+                    ++y;
+                } else {
+                    break;
+                }
+            }
+            const int r1 = (y > r0 && rowInk[size_t(y - 1)] < 2) ? y - 1 : y;
+            if (r1 - r0 >= 4) {
+                const int dist =
+                    (midY >= r0 && midY <= r1) ? 0 : std::min(std::abs(midY - r0), std::abs(midY - r1));
+                if (dist < bestDist || (dist == bestDist && (r1 - r0) > (bestRunBottom - bestRunTop))) {
+                    bestDist = dist;
+                    bestRunTop = r0;
+                    bestRunBottom = r1;
+                }
+            }
+        }
+        if (bestRunTop < 0)
+            return rect;
+        const int coreTop = bestRunTop;
+        const int coreBottom = bestRunBottom;
+        LONG newTop = rect.top, newBottom = rect.bottom;
+        int topRailBottom = -1;
+        for (int y = 0; y < coreTop; ++y)
+            if (rowRail[size_t(y)])
+                topRailBottom = y;
+        if (topRailBottom >= 0 && coreTop - topRailBottom - 1 >= 1)
+            newTop = rect.top + std::min(coreTop, topRailBottom + 2);
+        int bottomRailTop = -1;
+        for (int y = bh - 1; y >= coreBottom; --y)
+            if (rowRail[size_t(y)])
+                bottomRailTop = y;
+        if (bottomRailTop >= 0 && bottomRailTop - coreBottom >= 1)
+            newBottom = rect.top + std::max(coreBottom, bottomRailTop - 1);
+        // Only peel curved/vertical side rims when an enclosing capsule rail is present and the side
+        // stroke extends into BOTH upper and lower corner zones (never peeling trailing '!' or 'y').
+        LONG newLeft = rect.left, newRight = rect.right;
+        if (topRailBottom >= 0 || bottomRailTop >= 0) {
+            const int absCoreTop = rect.top + coreTop;
+            const int absCoreBottom = rect.top + coreBottom;
+            const int cornerTop0 =
+                topRailBottom >= 0 ? rect.top + topRailBottom + 1 : std::max(int(rect.top), absCoreTop - 4);
+            const int cornerBot1 =
+                bottomRailTop >= 0 ? rect.top + bottomRailTop : std::min(int(rect.bottom), absCoreBottom + 4);
+            std::vector<int> bandInk(size_t(bw), 0);
+            std::vector<int> outerTop(size_t(bw), 0), outerBot(size_t(bw), 0);
+            for (int x = 0; x < bw; ++x) {
+                const int sx = rect.left + x;
+                for (int sy = absCoreTop; sy < absCoreBottom; ++sy) {
+                    const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
+                    if (std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb) >= 36)
+                        ++bandInk[size_t(x)];
+                }
+                for (int sy = cornerTop0; sy < absCoreTop; ++sy) {
+                    const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
+                    if (std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb) >= 28)
+                        ++outerTop[size_t(x)];
+                }
+                for (int sy = absCoreBottom; sy < cornerBot1; ++sy) {
+                    const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
+                    if (std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb) >= 28)
+                        ++outerBot[size_t(x)];
+                }
+            }
+            const int maxRimZone = std::min(12, bw / 4);
+            {
+                int x = 0;
+                while (x < maxRimZone && bandInk[size_t(x)] == 0)
+                    ++x;
+                const int rimStart = x;
+                while (x < maxRimZone && bandInk[size_t(x)] > 0)
+                    ++x;
+                const int rimEnd = x;
+                int topHits = 0, botHits = 0;
+                const int cornerEnd = std::min(bw, rimEnd + 4);
+                for (int cx = rimStart; cx < cornerEnd; ++cx) {
+                    topHits += outerTop[size_t(cx)];
+                    botHits += outerBot[size_t(cx)];
+                }
+                int cleanCols = 0;
+                while (x < bw && bandInk[size_t(x)] == 0) {
+                    ++cleanCols;
+                    ++x;
+                }
+                if (rimEnd > rimStart && rimEnd - rimStart <= 5 && cleanCols >= 2 && x < bw - 6 &&
+                    topHits >= 1 && botHits >= 1) {
+                    newLeft = rect.left + rimEnd + std::min(3, cleanCols - 1);
+                }
+            }
+            {
+                int x = bw - 1;
+                while (x >= bw - maxRimZone && bandInk[size_t(x)] == 0)
+                    --x;
+                const int rimEnd = x;
+                while (x >= bw - maxRimZone && bandInk[size_t(x)] > 0)
+                    --x;
+                const int rimStart = x;
+                int topHits = 0, botHits = 0;
+                const int cornerStart = std::max(0, rimStart - 3);
+                for (int cx = cornerStart; cx <= rimEnd; ++cx) {
+                    topHits += outerTop[size_t(cx)];
+                    botHits += outerBot[size_t(cx)];
+                }
+                int cleanCols = 0;
+                while (x >= 0 && bandInk[size_t(x)] == 0) {
+                    ++cleanCols;
+                    --x;
+                }
+                if (rimEnd > rimStart && rimEnd - rimStart <= 5 && cleanCols >= 2 && x >= 6 &&
+                    topHits >= 1 && botHits >= 1) {
+                    newRight = rect.left + rimStart + 1 - std::min(3, cleanCols - 1);
+                }
+            }
+        }
+        if (newRight - newLeft >= 8 && newBottom - newTop >= 6)
+            return {newLeft, newTop, newRight, newBottom};
+        return rect;
+    };
+    auto trimGeometricAffixes = [&](RECT rect) -> RECT {
+        const LONG origLeft = rect.left;
+        const int bw = Width(rect), bh = Height(rect);
+        if (bw < 24 || bh < 10 || bh > 72 || bw <= bh ||
+            image.bgra.size() != size_t(image.width) * image.height * 4)
+            return rect;
+        int br = 255, bg = 255, bb = 255;
+        if (!modeRgb(rect, br, bg, bb))
+            return rect;
+        std::vector<int> colInk(size_t(bw), 0);
+        std::vector<int> colTop(size_t(bw), bh), colBot(size_t(bw), 0);
+        for (int x = 0; x < bw; ++x) {
+            const int sx = rect.left + x;
+            for (int y = 0; y < bh; ++y) {
+                const auto* p = &image.bgra[(size_t(rect.top + y) * image.width + sx) * 4];
+                if (std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb) >= 48) {
+                    ++colInk[size_t(x)];
+                    colTop[size_t(x)] = std::min(colTop[size_t(x)], y);
+                    colBot[size_t(x)] = std::max(colBot[size_t(x)], y + 1);
+                }
+            }
+        }
+        struct Span {
+            int x0{}, x1{}, top{}, bot{}, areaInk{};
+        };
+        std::vector<Span> spans;
+        for (int x = 0; x < bw;) {
+            if (colInk[size_t(x)] == 0) {
+                ++x;
+                continue;
+            }
+            Span s{x, x, bh, 0, 0};
+            int gap = 0;
+            while (x < bw) {
+                if (colInk[size_t(x)] > 0) {
+                    s.top = std::min(s.top, colTop[size_t(x)]);
+                    s.bot = std::max(s.bot, colBot[size_t(x)]);
+                    s.areaInk += colInk[size_t(x)];
+                    gap = 0;
+                    ++x;
+                } else if (gap == 0 && x + 1 < bw && colInk[size_t(x + 1)] > 0) {
+                    gap = 1;
+                    ++x;
+                } else {
+                    break;
+                }
+            }
+            s.x1 = (x > s.x0 && colInk[size_t(x - 1)] == 0) ? x - 1 : x;
+            if (s.x1 > s.x0 && s.bot > s.top)
+                spans.push_back(s);
+        }
+        if (spans.size() < 2)
+            return rect;
+        // Detach leading solid colour swatches (e.g. [black-square] #0A0A0C).
+        if (spans.size() >= 2) {
+            const auto& first = spans.front();
+            const int sw = first.x1 - first.x0, sh = first.bot - first.top;
+            const int gap = spans[1].x0 - first.x1;
+            const int restW = spans.back().x1 - spans[1].x0;
+            const float fill = float(first.areaInk) / float(std::max(1, sw * sh));
+            if (sw >= 8 && sw <= 28 && sh >= 8 && sh <= 28 && float(sw) >= sh * .65f &&
+                float(sw) <= sh * 1.55f && gap >= 4 && restW >= 14 && fill >= .72f) {
+                rect.left = origLeft + std::max(first.x1 + 2, spans[1].x0 - 2);
+                spans.erase(spans.begin());
+            }
+        }
+        // Detach trailing solid swatches or vertically-centred micro-chevrons / arrows (e.g. dropdown v).
+        if (spans.size() >= 2) {
+            const auto& last = spans.back();
+            const auto& prev = spans[spans.size() - 2];
+            const int lw = last.x1 - last.x0, lh = last.bot - last.top;
+            const int gap = last.x0 - prev.x1;
+            const int leadW = prev.x1 - spans.front().x0;
+            int mainTop = bh, mainBot = 0;
+            for (size_t k = 0; k + 1 < spans.size(); ++k) {
+                mainTop = std::min(mainTop, spans[k].top);
+                mainBot = std::max(mainBot, spans[k].bot);
+            }
+            const int mainH = std::max(6, mainBot - mainTop);
+            const float fill = float(last.areaInk) / float(std::max(1, lw * lh));
+            const bool solidSwatch = lw >= 8 && lw <= 28 && lh >= 8 && lh <= 28 && float(lw) >= lh * .65f &&
+                                     float(lw) <= lh * 1.55f && gap >= 4 && fill >= .72f;
+            const bool microChevron = lw >= 3 && lw <= std::max(12, int(mainH * .95f)) && lh >= 2 &&
+                                      lh <= int(mainH * .58f) &&
+                                      gap >= std::max(5, int(std::lround(mainH * .45f))) &&
+                                      last.top >= mainTop + 2 && last.bot <= mainBot - 1;
+            if (leadW >= 12 && (solidSwatch || microChevron)) {
+                const LONG newRight = origLeft + std::min(last.x0 - 2, prev.x1 + 3);
+                if (newRight - rect.left >= 8)
+                    rect.right = std::min(rect.right, newRight);
+            }
+        }
+        return rect;
+    };
+    std::vector<DetectedBox> splitBoxes;
+    splitBoxes.reserve(boxes.size());
+    for (size_t idx = 0; idx < boxes.size(); ++idx) {
+        const RECT rawRect = boxes[idx];
+        const OrientedBox rawObb = obbs[idx];
+        // Tilted lines must not be split or capsule-peeled by axis-aligned row/column scans.
+        if (rawObb.valid()) {
+            splitBoxes.push_back({rawRect, rawObb});
+            continue;
+        }
+        const RECT rect = peelCapsuleFrame(rawRect);
+        const int bw = Width(rect), bh = Height(rect);
+        if (bh < 10 || bh > 80 || bw <= bh * 3 / 2 ||
+            image.bgra.size() != size_t(image.width) * image.height * 4) {
+            splitBoxes.push_back({trimGeometricAffixes(rect), {}});
+            continue;
+        }
+        // Per-tile local backdrop keeps segmented controls (white active pill next to light-grey track)
+        // from treating one half's surface as ink or masking the divider between them.
+        constexpr int kTileW = 36;
+        const int numTiles = std::max(1, (bw + kTileW - 1) / kTileW);
+        struct Rgb {
+            int r{255}, g{255}, b{255};
+        };
+        std::vector<Rgb> tileBg;
+        tileBg.resize(size_t(numTiles));
+        int globalR = 255, globalG = 255, globalB = 255;
+        modeRgb(rect, globalR, globalG, globalB);
+        for (int t = 0; t < numTiles; ++t) {
+            const LONG tx0 = rect.left + t * kTileW;
+            const LONG tx1 = std::min<LONG>(rect.right, tx0 + kTileW);
+            if (!modeRgb({tx0, rect.top, tx1, rect.bottom}, tileBg[size_t(t)].r, tileBg[size_t(t)].g,
+                         tileBg[size_t(t)].b))
+                tileBg[size_t(t)] = {globalR, globalG, globalB};
+        }
+        const int vInset = bh >= 24 ? std::max(2, bh / 5) : std::max(1, bh / 8);
+        const int y0 = std::min<int>(rect.bottom - 1, rect.top + vInset);
+        const int y1 = std::max<int>(y0 + 1, rect.bottom - vInset);
+        std::vector<int> colInk(size_t(bw), 0);
+        std::vector<int> colTopY(size_t(bw), y1), colBotY(size_t(bw), y0);
+        std::vector<unsigned char> colBorder(size_t(bw), 0);
+        int inkMinY = y1, inkMaxY = y0;
+        for (int x = 0; x < bw; ++x) {
+            const int sx = rect.left + x;
+            const auto& tb = tileBg[size_t(std::min(numTiles - 1, x / kTileW))];
+            int ink = 0, minDiff = 999, maxDiff = 0;
+            int colFirstY = y1, colLastY = y0;
+            for (int sy = y0; sy < y1; ++sy) {
+                const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
+                const int d = std::abs(int(p[2]) - tb.r) + std::abs(int(p[1]) - tb.g) + std::abs(int(p[0]) - tb.b);
+                if (d >= 52) {
+                    ++ink;
+                    colFirstY = std::min(colFirstY, sy);
+                    colLastY = std::max(colLastY, sy + 1);
+                }
                 minDiff = std::min(minDiff, d);
                 maxDiff = std::max(maxDiff, d);
             }
-            // A subtle vertical container border has uniform colour from top to bottom.
             const bool uniformVerticalLine = (y1 - y0 >= 8) && (maxDiff - minDiff <= 24) && maxDiff < 160;
-            if (uniformVerticalLine && minDiff >= 20)
+            if (uniformVerticalLine && minDiff >= 18)
                 colBorder[size_t(x)] = 1;
             colInk[size_t(x)] = uniformVerticalLine ? 0 : ink;
+            colTopY[size_t(x)] = colFirstY;
+            colBotY[size_t(x)] = colLastY;
+            if (colInk[size_t(x)] >= 2 && colInk[size_t(x)] < (y1 - y0) * 9 / 10) {
+                inkMinY = std::min(inkMinY, colFirstY);
+                inkMaxY = std::max(inkMaxY, colLastY);
+            }
         }
-        // Suppress structural vertical spines (axes, table rules) that continue above and below
-        // the box even when horizontal axis ticks attach to them, plus isolated 1-2 px full-height
-        // vertical border strokes. Narrow standalone glyphs ("i", "l", "1") never extend beyond both
-        // vertical edges of the text box and remain intact.
-        auto edgeHasInk = [&](int sx, int sy) {
+        auto edgeHasInk = [&](int sx, int sy, const Rgb& ref) {
             if (sy < 0 || sy >= image.height)
                 return false;
             const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
-            const int d = std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb);
-            return d >= 44;
+            const int d = std::abs(int(p[2]) - ref.r) + std::abs(int(p[1]) - ref.g) + std::abs(int(p[0]) - ref.b);
+            return d >= 40;
         };
-        const int minSpineRows = std::max(6, ((y1 - y0) * 9) / 10);
-        const int maxTickRows = std::max(3, bh / 5);
-        for (int x = 2; x + 2 < bw; ++x) {
-            auto isSpineCol = [&](int cx) {
-                if (colInk[size_t(cx)] < minSpineRows)
-                    return false;
-                const int sx = rect.left + cx;
-                if (!edgeHasInk(sx, rect.top) || !edgeHasInk(sx, rect.bottom - 1))
-                    return false;
-                int above = 0, below = 0;
-                for (int dy = 1; dy <= 4; ++dy) {
-                    above += edgeHasInk(sx, rect.top - dy) ? 1 : 0;
-                    below += edgeHasInk(sx, rect.bottom - 1 + dy) ? 1 : 0;
-                }
-                return above >= 3 && below >= 3;
-            };
-            if (!isSpineCol(x))
-                continue;
-            int run = 1;
-            while (x + run < bw - 1 && run < 3 && isSpineCol(x + run))
-                ++run;
-            for (int k = 0; k < run; ++k) {
-                colInk[size_t(x + k)] = 0;
-                colBorder[size_t(x + k)] = 1;
-            }
-            const int tickReach = std::min(8, std::max(3, bh / 2));
-            for (int lx = x - 1; lx >= std::max(0, x - tickReach); --lx) {
-                if (colInk[size_t(lx)] == 0)
-                    continue;
-                if (colInk[size_t(lx)] <= maxTickRows)
-                    colInk[size_t(lx)] = 0;
-                else
-                    break;
-            }
-            for (int rx = x + run; rx < std::min(bw, x + run + tickReach); ++rx) {
-                if (colInk[size_t(rx)] == 0)
-                    continue;
-                if (colInk[size_t(rx)] <= maxTickRows)
-                    colInk[size_t(rx)] = 0;
-                else
-                    break;
-            }
-            x += run - 1;
-        }
         const int minBorderRows = std::max(6, ((y1 - y0) * 4) / 5);
         for (int x = 3; x + 4 < bw; ++x) {
             if (colInk[size_t(x)] > 0 && colInk[size_t(x - 1)] == 0 && colInk[size_t(x - 2)] == 0 &&
@@ -555,8 +949,9 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
                     bool fullHeightStroke = true;
                     for (int k = 0; k < run; ++k) {
                         const int sx = rect.left + x + k;
+                        const auto& tb = tileBg[size_t(std::min(numTiles - 1, (x + k) / kTileW))];
                         if (colInk[size_t(x + k)] < minBorderRows ||
-                            !edgeHasInk(sx, rect.top) || !edgeHasInk(sx, rect.bottom - 1)) {
+                            !edgeHasInk(sx, rect.top, tb) || !edgeHasInk(sx, rect.bottom - 1, tb)) {
                             fullHeightStroke = false;
                             break;
                         }
@@ -570,25 +965,190 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
                 }
             }
         }
-        const int plainSplitGap = std::max(17, int(std::lround(bh * 1.12f)));
-        const int borderedSplitGap = std::max(10, int(std::lround(bh * .55f)));
-        std::vector<std::pair<int, int>> segments;
-        int segStart = -1, gapStart = -1;
+        const int inkH = (inkMaxY > inkMinY) ? std::max(8, inkMaxY - inkMinY) : std::max(10, (bh * 3) / 5);
+        // Inline dropdown chevrons (e.g. "Auto v  Optimized for: Balance v  [icon]") separate adjacent
+        // toolbar controls: a tiny vertically-centred triangle (<= 48% of line ink height) with at
+        // least 5 px clear on both sides and a wide inter-control gap (>= max(12, 1.1*inkH)) on one
+        // side marks a control boundary without ever matching single-letter words in normal prose.
+        for (int x = 5; x < bw - 5;) {
+            if (colInk[size_t(x)] == 0) {
+                ++x;
+                continue;
+            }
+            const int c0 = x;
+            int cTop = y1, cBot = y0;
+            while (x < bw && colInk[size_t(x)] > 0) {
+                cTop = std::min(cTop, colTopY[size_t(x)]);
+                cBot = std::max(cBot, colBotY[size_t(x)]);
+                ++x;
+            }
+            const int c1 = x;
+            const int cw = c1 - c0, ch = cBot - cTop;
+            if (cw >= 4 && cw <= std::max(10, int(inkH * .90f)) && ch >= 2 &&
+                ch <= std::max(4, int(inkH * .48f)) && cTop >= inkMinY + 2 && cBot <= inkMaxY - 2) {
+                int leftClean = 0;
+                for (int lx = c0 - 1; lx >= 0 && colInk[size_t(lx)] == 0; --lx)
+                    ++leftClean;
+                int rightClean = 0;
+                for (int rx = c1; rx < bw && colInk[size_t(rx)] == 0; ++rx)
+                    ++rightClean;
+                if (leftClean >= 5 && rightClean >= 5 &&
+                    std::max(leftClean, rightClean) >= std::max(12, int(std::lround(inkH * 1.1f)))) {
+                    for (int k = c0; k < c1; ++k) {
+                        colInk[size_t(k)] = 0;
+                        colBorder[size_t(k)] = 1;
+                    }
+                }
+            }
+        }
+        const int plainSplitGap =
+            std::max(18, int(std::lround(std::min(float(bh) * 1.12f, float(inkH) * 1.75f))));
+        const int borderedSplitGap = std::max(6, int(std::lround(float(inkH) * .48f)));
+        const int surfaceStepGap = std::max(8, int(std::lround(float(inkH) * .62f)));
+
+        // Detect curved pill rims or background surface steps inside an ink-free horizontal gap.
+        auto analyzeGapBoundary = [&](int segStart, int gapStart, int gapEnd, int& cutLeftEnd,
+                                      int& cutRightStart) -> bool {
+            cutLeftEnd = gapStart;
+            cutRightStart = gapEnd;
+            const int gapW = gapEnd - gapStart;
+            bool hasStraightBorder = false;
+            int bMin = gapEnd, bMax = gapStart;
+            for (int gx = gapStart; gx < gapEnd; ++gx)
+                if (colBorder[size_t(gx)]) {
+                    hasStraightBorder = true;
+                    bMin = std::min(bMin, gx);
+                    bMax = std::max(bMax, gx + 1);
+                }
+            if (hasStraightBorder && gapW >= borderedSplitGap) {
+                cutLeftEnd = std::max(segStart + 4, bMin - 1);
+                cutRightStart = std::min(bw - 4, bMax + 1);
+                return true;
+            }
+            if (gapW >= std::max(borderedSplitGap, 8) && y1 - y0 >= 8) {
+                // Stay strictly inside the whitespace gap (>= 2 px clear of both adjacent words) so
+                // vertical glyph stems ("m", "l", "p", "h") and their JPEG halos never read as a border.
+                const int gx0 = gapStart + 2;
+                const int gx1 = gapEnd - 3;
+                if (gx1 >= gx0) {
+                    auto maxGradInRow = [&](int sy, int& outX) {
+                        int bestX = -1, bestGrad = 0;
+                        for (int gx = gx0; gx <= gx1; ++gx) {
+                            const int sx = rect.left + gx;
+                            if (sx <= 0 || sx + 1 >= image.width)
+                                continue;
+                            const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
+                            const auto* pl = &image.bgra[(size_t(sy) * image.width + sx - 1) * 4];
+                            const auto* pr = &image.bgra[(size_t(sy) * image.width + sx + 1) * 4];
+                            const int gL = std::abs(int(p[2]) - int(pl[2])) +
+                                           std::abs(int(p[1]) - int(pl[1])) +
+                                           std::abs(int(p[0]) - int(pl[0]));
+                            const int gR = std::abs(int(p[2]) - int(pr[2])) +
+                                           std::abs(int(p[1]) - int(pr[1])) +
+                                           std::abs(int(p[0]) - int(pr[0]));
+                            const int g = std::max(gL, gR);
+                            if (g > bestGrad) {
+                                bestGrad = g;
+                                bestX = gx;
+                            }
+                        }
+                        outX = bestX;
+                        return bestGrad;
+                    };
+                    int prevX = -1, hitRows = 0, continuousRows = 0;
+                    int curveMinX = gx1, curveMaxX = gx0;
+                    for (int sy = y0; sy < y1; ++sy) {
+                        int bestX = -1;
+                        const int bestGrad = maxGradInRow(sy, bestX);
+                        if (bestGrad >= 18 && bestX >= 0) {
+                            ++hitRows;
+                            if (prevX < 0 || std::abs(bestX - prevX) <= 2)
+                                ++continuousRows;
+                            prevX = bestX;
+                            curveMinX = std::min(curveMinX, bestX);
+                            curveMaxX = std::max(curveMaxX, bestX);
+                        } else {
+                            prevX = -1;
+                        }
+                    }
+                    int extHits = 0;
+                    for (int sy = std::max(0, y0 - 4); sy < y0; ++sy) {
+                        int dummy = -1;
+                        if (maxGradInRow(sy, dummy) >= 16)
+                            ++extHits;
+                    }
+                    for (int sy = y1; sy < std::min(image.height, y1 + 4); ++sy) {
+                        int dummy = -1;
+                        if (maxGradInRow(sy, dummy) >= 16)
+                            ++extHits;
+                    }
+                    const int spanRows = y1 - y0;
+                    if (extHits >= 2 && hitRows * 10 >= spanRows * 6 &&
+                        continuousRows * 10 >= spanRows * 5 &&
+                        curveMaxX - curveMinX <= std::max(8, bh / 2)) {
+                        cutLeftEnd = std::max(segStart + 4, std::min(gapStart + 2, curveMinX - 1));
+                        cutRightStart = std::max(cutLeftEnd + 2, std::max(gapEnd - 2, curveMaxX + 2));
+                        return true;
+                    }
+                }
+            }
+            if (gapW >= surfaceStepGap) {
+                int lR = 0, lG = 0, lB = 0, rR = 0, rG = 0, rB = 0;
+                const LONG lx0 = rect.left + std::max(0, gapStart - std::min(36, gapStart - segStart));
+                const LONG lx1 = rect.left + gapStart;
+                const LONG rx0 = rect.left + gapEnd;
+                const LONG rx1 = rect.left + std::min(bw, gapEnd + 36);
+                if (lx1 - lx0 >= 6 && rx1 - rx0 >= 6 &&
+                    modeRgb({lx0, rect.top, lx1, rect.bottom}, lR, lG, lB) &&
+                    modeRgb({rx0, rect.top, rx1, rect.bottom}, rR, rG, rB)) {
+                    const int stepDiff = std::abs(lR - rR) + std::abs(lG - rG) + std::abs(lB - rB);
+                    if (stepDiff >= 18) {
+                        int firstNonLeft = gapEnd, lastNonRight = gapStart;
+                        for (int gx = gapStart; gx < gapEnd; ++gx) {
+                            int cR = 0, cG = 0, cB = 0;
+                            if (modeRgb({rect.left + gx, rect.top + 2, rect.left + gx + 1, rect.bottom - 2},
+                                        cR, cG, cB)) {
+                                const int dL = std::abs(cR - lR) + std::abs(cG - lG) + std::abs(cB - lB);
+                                const int dR = std::abs(cR - rR) + std::abs(cG - rG) + std::abs(cB - rB);
+                                if (dL >= 12)
+                                    firstNonLeft = std::min(firstNonLeft, gx);
+                                if (dR >= 12)
+                                    lastNonRight = std::max(lastNonRight, gx + 1);
+                            }
+                        }
+                        cutLeftEnd = std::max(segStart + 4, std::min(gapEnd - 2, firstNonLeft - 1));
+                        cutRightStart = std::max(cutLeftEnd + 2, std::max(gapStart + 2, lastNonRight + 1));
+                        return true;
+                    }
+                }
+            }
+            if (gapW >= plainSplitGap) {
+                const int mid = (gapStart + gapEnd) / 2;
+                const int padX = std::max(2, inkH / 5);
+                cutLeftEnd = std::min(mid, gapStart + padX);
+                cutRightStart = std::max(mid, gapEnd - padX);
+                return true;
+            }
+            return false;
+        };
+
+        struct SplitSpan {
+            int left{}, right{};
+        };
+        std::vector<SplitSpan> segments;
+        int segStart = -1, gapStart = -1, pendingLeftBound = 0;
         for (int x = 0; x < bw; ++x) {
             if (colInk[size_t(x)] > 0) {
                 if (segStart < 0) {
                     segStart = x;
+                    pendingLeftBound = std::max(0, x - std::max(2, inkH / 5));
                 } else if (gapStart >= 0) {
-                    bool hasBorder = false;
-                    for (int gx = gapStart; gx < x; ++gx)
-                        if (colBorder[size_t(gx)]) {
-                            hasBorder = true;
-                            break;
-                        }
-                    const int minSplitGap = hasBorder ? borderedSplitGap : plainSplitGap;
-                    if (x - gapStart >= minSplitGap && gapStart - segStart >= 4 && segments.size() + 1 < 8) {
-                        segments.push_back({segStart, gapStart});
+                    int cutLeftEnd = gapStart, cutRightStart = x;
+                    if (gapStart - segStart >= 4 && segments.size() + 1 < 8 &&
+                        analyzeGapBoundary(segStart, gapStart, x, cutLeftEnd, cutRightStart)) {
+                        segments.push_back({pendingLeftBound, cutLeftEnd});
                         segStart = x;
+                        pendingLeftBound = std::min(x, cutRightStart);
                     }
                 }
                 gapStart = -1;
@@ -598,117 +1158,34 @@ std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams p
         }
         if (segStart >= 0) {
             const int segEnd = gapStart >= 0 ? gapStart : bw;
-            if (segEnd - segStart >= 4)
-                segments.push_back({segStart, segEnd});
+            if (segEnd - segStart >= 4) {
+                const int padX = std::max(2, inkH / 5);
+                segments.push_back({pendingLeftBound, std::min(bw, segEnd + padX)});
+            }
         }
         if (segments.size() <= 1) {
-            splitBoxes.push_back(rect);
+            splitBoxes.push_back({trimGeometricAffixes(rect), {}});
         } else {
-            for (size_t s = 0; s < segments.size(); ++s) {
-                const int padX = std::max(2, bh / 5);
-                const int leftLimit = s == 0 ? 0 : (segments[s - 1].second + segments[s].first) / 2;
-                const int rightLimit =
-                    s + 1 == segments.size() ? bw : (segments[s].second + segments[s + 1].first) / 2;
-                const LONG subLeft = rect.left + std::max(leftLimit, segments[s].first - padX);
-                const LONG subRight = rect.left + std::min(rightLimit, segments[s].second + padX);
+            for (const auto& seg : segments) {
+                const LONG subLeft = rect.left + seg.left;
+                const LONG subRight = rect.left + seg.right;
                 if (subRight - subLeft >= 4 && splitBoxes.size() < 512)
-                    splitBoxes.push_back({subLeft, rect.top, subRight, rect.bottom});
+                    splitBoxes.push_back({trimGeometricAffixes({subLeft, rect.top, subRight, rect.bottom}), {}});
             }
         }
     }
-    // Split tabular rows that bridged a consistent page-wide column seam (e.g. date + title lists
-    // where most rows already split at the same vertical gutter).
-    if (image.bgra.size() == size_t(image.width) * image.height * 4 && splitBoxes.size() >= 6) {
-        std::vector<RECT> tabSplit;
-        tabSplit.reserve(splitBoxes.size());
-        for (size_t i = 0; i < splitBoxes.size(); ++i) {
-            const RECT rect = splitBoxes[i];
-            const int bw = Width(rect), bh = Height(rect);
-            if (bh < 8 || bh > 48 || bw <= bh * 4) {
-                tabSplit.push_back(rect);
-                continue;
-            }
-            int bestSeam = -1;
-            int bestVotes = 0;
-            for (size_t j = 0; j < splitBoxes.size(); ++j) {
-                if (i == j)
-                    continue;
-                const RECT& b = splitBoxes[j];
-                if (std::abs(b.left - rect.left) > 12 || Height(b) < bh * .55f || Height(b) > bh * 1.7f)
-                    continue;
-                // True left-hand date/tick columns are compact labels, never wide prose fragments.
-                if (Width(b) > LONG(bh * 3.4f))
-                    continue;
-                if (b.right <= rect.left + LONG(bh * 1.5f) || b.right >= rect.right - LONG(bh * 2.f))
-                    continue;
-                const int cx = int(b.right);
-                int leftVotes = 0, rightVotes = 0;
-                for (size_t k = 0; k < splitBoxes.size(); ++k) {
-                    if (k == i)
-                        continue;
-                    const RECT& o = splitBoxes[k];
-                    if (Height(o) < bh * .55f || Height(o) > bh * 1.7f)
-                        continue;
-                    if (std::abs(o.left - rect.left) <= 12 && std::abs(o.right - cx) <= 6 &&
-                        Width(o) <= LONG(bh * 3.4f))
-                        ++leftVotes;
-                    if (std::abs(o.left - cx) <= 6 && o.right > cx + bh)
-                        ++rightVotes;
-                }
-                if (leftVotes >= 5 && rightVotes >= 5 && leftVotes + rightVotes > bestVotes) {
-                    bestVotes = leftVotes + rightVotes;
-                    bestSeam = cx;
-                }
-            }
-            if (bestSeam < 0) {
-                tabSplit.push_back(rect);
-                continue;
-            }
-            std::array<size_t, 4096> hist{};
-            for (int y = rect.top; y < rect.bottom; ++y)
-                for (int x = rect.left; x < rect.right; ++x)
-                    ++hist[key12(&image.bgra[(size_t(y) * image.width + x) * 4])];
-            const int mode = int(std::max_element(hist.begin(), hist.end()) - hist.begin());
-            const int br = ((mode >> 8) & 15) * 16 + 8;
-            const int bg = ((mode >> 4) & 15) * 16 + 8;
-            const int bb = (mode & 15) * 16 + 8;
-            const int y0 = std::min<int>(rect.bottom - 1, rect.top + std::max(1, bh / 8));
-            const int y1 = std::max<int>(y0 + 1, rect.bottom - std::max(1, bh / 8));
-            const int sx0 = std::max<int>(rect.left + 6, bestSeam - 14);
-            const int sx1 = std::min<int>(rect.right - 6, bestSeam + 8);
-            int curStart = -1, bestStart = -1, bestLen = 0;
-            for (int sx = sx0; sx <= sx1; ++sx) {
-                int ink = 0;
-                for (int sy = y0; sy < y1; ++sy) {
-                    const auto* p = &image.bgra[(size_t(sy) * image.width + sx) * 4];
-                    if (std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb) >= 56)
-                        ++ink;
-                }
-                if (ink == 0) {
-                    if (curStart < 0)
-                        curStart = sx;
-                    const int len = sx - curStart + 1;
-                    if (len > bestLen) {
-                        bestLen = len;
-                        bestStart = curStart;
-                    }
-                } else {
-                    curStart = -1;
-                }
-            }
-            if (bestLen >= 4 && tabSplit.size() + 2 <= 512) {
-                const LONG splitX = bestStart + bestLen / 2;
-                tabSplit.push_back({rect.left, rect.top, splitX, rect.bottom});
-                tabSplit.push_back({splitX, rect.top, rect.right, rect.bottom});
-            } else {
-                tabSplit.push_back(rect);
-            }
-        }
-        splitBoxes = std::move(tabSplit);
-    }
-    boxes = std::move(splitBoxes);
-    std::sort(boxes.begin(), boxes.end(),
-              [](RECT a, RECT b) { return a.top == b.top ? a.left < b.left : a.top < b.top; });
+    std::sort(splitBoxes.begin(), splitBoxes.end(),
+              [](const DetectedBox& a, const DetectedBox& b) {
+                  return a.rect.top == b.rect.top ? a.rect.left < b.rect.left : a.rect.top < b.rect.top;
+              });
+    return splitBoxes;
+}
+std::vector<RECT> Boxes(const Ort::Value& output, const Image& image, DbParams params = {}) {
+    auto detected = BoxesWithObb(output, image, params);
+    std::vector<RECT> boxes;
+    boxes.reserve(detected.size());
+    for (const auto& d : detected)
+        boxes.push_back(d.rect);
     return boxes;
 }
 std::pair<std::string, float> Decode(const Ort::Value& output, const std::vector<std::string>& alphabet) {
@@ -799,47 +1276,6 @@ bool HasLatinLetters(std::string_view utf8) {
             return true;
     }
     return false;
-}
-bool HasCjkScript(std::string_view utf8) {
-    for (size_t i = 0; i < utf8.size();) {
-        const char32_t code = NextCodePoint(utf8, i);
-        if ((code >= 0x3040 && code <= 0x30FF) || (code >= 0x3400 && code <= 0x4DBF) ||
-            (code >= 0x4E00 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF))
-            return true;
-    }
-    return false;
-}
-int VisibleCodePointCount(std::string_view utf8) {
-    int count = 0;
-    for (size_t i = 0; i < utf8.size();) {
-        const char32_t code = NextCodePoint(utf8, i);
-        if (code == U' ' || code == U'\t' || code == U'\r' || code == U'\n' || code == 0x3000 ||
-            IsCombiningMark(code))
-            continue;
-        ++count;
-    }
-    return count;
-}
-double EstimateTextUnits(std::string_view utf8) {
-    double units = 0;
-    for (size_t i = 0; i < utf8.size();) {
-        const char32_t code = NextCodePoint(utf8, i);
-        if (IsCombiningMark(code))
-            continue;
-        if ((code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF) ||
-            (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFF00 && code <= 0xFFEF))
-            units += .95;
-        else if (code == U' ' || code == U'i' || code == U'l' || code == U'I' || code == U'j' ||
-                 code == U't' || code == U'f' || code == U'r' || code == U'.' || code == U',' ||
-                 code == U';' || code == U':' || code == U'!' || code == U'|' || code == U'\'' ||
-                 code == U'`')
-            units += .30;
-        else if (code == U'm' || code == U'w' || code == U'M' || code == U'W')
-            units += .68;
-        else
-            units += .50;
-    }
-    return units;
 }
 // PP-OCRv6_rec_small maps Cyrillic letters onto visually similar ASCII letters (e.g. В->B, Т->T,
 // М->M, р->p, и->u, с->c), producing words with mid-word lowercase->uppercase jumps like "IpuBeT".
@@ -984,99 +1420,11 @@ struct TimeoutGuard {
               }
           }) {}
 };
-// DBNet detectors use a stride-32 FPN backbone; tight single-line or narrow-strip captures
-// (e.g. 1024x33 code comments) otherwise collapse the C5 feature map to a single border-corrupted
-// row and drop the middle of the text line. Pad narrow captures with the dominant background color
-// so the scaled detector canvas keeps >= 128 px (4 FPN rows) and clean margin on every side.
-Image PadForDetection(const Image& image, int& padX, int& padY) {
-    padX = 0;
-    padY = 0;
-    if (image.width <= 0 || image.height <= 0 ||
-        image.bgra.size() != size_t(image.width) * size_t(image.height) * 4)
-        return {};
-    constexpr int kMinDetectSide = 160;
-    const double wideScale = std::min(1.0, 1600.0 / double(std::max(image.width + 48, image.height + 48)));
-    const int targetSide = std::max(kMinDetectSide, int(std::ceil(128.0 / std::max(0.25, wideScale))));
-    if (image.width >= targetSide && image.height >= targetSide)
-        return {};
-    padY = image.height < targetSide ? std::max(48, (targetSide - image.height + 1) / 2) : 24;
-    padX = image.width < targetSide ? std::max(48, (targetSide - image.width + 1) / 2) : 24;
-    std::array<size_t, 4096> hist{};
-    const int step = std::max(1, int(std::sqrt(double(image.width) * double(image.height) / 65536.0)));
-    for (int y = 0; y < image.height; y += step)
-        for (int x = 0; x < image.width; x += step) {
-            const auto* p = &image.bgra[(size_t(y) * size_t(image.width) + size_t(x)) * 4];
-            ++hist[(int(p[2] >> 4) << 8) | (int(p[1] >> 4) << 4) | (int(p[0] >> 4))];
-        }
-    const int mode = int(std::max_element(hist.begin(), hist.end()) - hist.begin());
-    const int mr = ((mode >> 8) & 15) * 16 + 8;
-    const int mg = ((mode >> 4) & 15) * 16 + 8;
-    const int mb = (mode & 15) * 16 + 8;
-    std::array<std::array<size_t, 256>, 3> ch{};
-    size_t bgCount = 0;
-    for (int y = 0; y < image.height; y += step)
-        for (int x = 0; x < image.width; x += step) {
-            const auto* p = &image.bgra[(size_t(y) * size_t(image.width) + size_t(x)) * 4];
-            if (std::abs(int(p[2]) - mr) + std::abs(int(p[1]) - mg) + std::abs(int(p[0]) - mb) < 48) {
-                ++ch[0][p[0]];
-                ++ch[1][p[1]];
-                ++ch[2][p[2]];
-                ++bgCount;
-            }
-        }
-    unsigned char fill[4]{static_cast<unsigned char>(mb), static_cast<unsigned char>(mg),
-                          static_cast<unsigned char>(mr), 255};
-    if (bgCount > 0) {
-        const size_t mid = (bgCount + 1) / 2;
-        for (int c = 0; c < 3; ++c) {
-            size_t acc = 0;
-            for (int v = 0; v < 256; ++v) {
-                acc += ch[c][v];
-                if (acc >= mid) {
-                    fill[c] = static_cast<unsigned char>(v);
-                    break;
-                }
-            }
-        }
-    }
-    Image padded;
-    padded.width = image.width + padX * 2;
-    padded.height = image.height + padY * 2;
-    padded.backend = image.backend;
-    padded.bgra.resize(size_t(padded.width) * size_t(padded.height) * 4);
-    for (size_t i = 0; i < padded.bgra.size(); i += 4) {
-        padded.bgra[i + 0] = fill[0];
-        padded.bgra[i + 1] = fill[1];
-        padded.bgra[i + 2] = fill[2];
-        padded.bgra[i + 3] = 255;
-    }
-    const size_t rowBytes = size_t(image.width) * 4;
-    for (int y = 0; y < image.height; ++y) {
-        const auto* src = &image.bgra[size_t(y) * rowBytes];
-        auto* dst = &padded.bgra[(size_t(y + padY) * size_t(padded.width) + size_t(padX)) * 4];
-        std::copy_n(src, rowBytes, dst);
-    }
-    return padded;
-}
-std::vector<RECT> UnpadBoxes(std::vector<RECT> boxes, int padX, int padY, int origWidth, int origHeight) {
-    if (padX <= 0 && padY <= 0)
-        return boxes;
-    std::vector<RECT> unpadded;
-    unpadded.reserve(boxes.size());
-    for (RECT b : boxes) {
-        b.left = std::clamp<LONG>(b.left - padX, 0, origWidth);
-        b.top = std::clamp<LONG>(b.top - padY, 0, origHeight);
-        b.right = std::clamp<LONG>(b.right - padX, 0, origWidth);
-        b.bottom = std::clamp<LONG>(b.bottom - padY, 0, origHeight);
-        if (Width(b) >= 3 && Height(b) >= 5)
-            unpadded.push_back(b);
-    }
-    return unpadded;
-}
 } // namespace
 std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_token stop, bool geometryOnly,
                                        bool preserveGeometry, bool retainLowConfidenceText,
-                                       const std::vector<RECT>* precomputedBoxes) {
+                                       const std::vector<RECT>* precomputedBoxes,
+                                       const std::vector<TextLine>* precomputedLines) {
     if (!ValidOcrMode(mode))
         throw AppError("ocr", "Invalid OCR mode");
     geometryOnly = geometryOnly || mode == OcrAuto || mode == OcrDirectVision;
@@ -1095,23 +1443,36 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
     std::stop_callback cancel(stop, [&] { run.SetTerminate(); });
     TimeoutGuard watchdog(run);
     try {
+        float scale = std::min(1.f, 1600.f / std::max(image.width, image.height));
+        int w = std::max(32, int(std::round(image.width * scale / 32)) * 32),
+            h = std::max(32, int(std::round(image.height * scale / 32)) * 32);
         std::vector<RECT> boxes;
-        if (precomputedBoxes) {
+        std::vector<OrientedBox> obbs;
+        if (precomputedLines) {
+            boxes.reserve(precomputedLines->size());
+            obbs.reserve(precomputedLines->size());
+            for (const auto& ln : *precomputedLines) {
+                boxes.push_back(ln.rect);
+                obbs.push_back(ln.obb);
+            }
+            engine->detector.reset();
+        } else if (precomputedBoxes) {
             // The routing pass already detected this page; repeating the detector would add its cost to
             // every horizontal page for boxes that are byte identical.
             boxes = *precomputedBoxes;
+            obbs.resize(boxes.size());
             engine->detector.reset();
         } else {
-            int padX = 0, padY = 0;
-            Image padded = PadForDetection(image, padX, padY);
-            const Image& detImage = padded.bgra.empty() ? image : padded;
-            float scale = std::min(1.f, 1600.f / std::max(detImage.width, detImage.height));
-            int w = std::max(32, int(std::round(detImage.width * scale / 32)) * 32),
-                h = std::max(32, int(std::round(detImage.height * scale / 32)) * 32);
             DiagnosticSpan detection("ocr_detect", {{"width", w}, {"height", h}});
-            auto input = Tensor(detImage, {0, 0, detImage.width, detImage.height}, w, h, w, true);
+            auto input = Tensor(image, {0, 0, image.width, image.height}, w, h, w, true);
             auto det = engine->detector->Run(input, w, h, run);
-            boxes = UnpadBoxes(Boxes(det, detImage), padX, padY, image.width, image.height);
+            auto detected = BoxesWithObb(det, image);
+            boxes.reserve(detected.size());
+            obbs.reserve(detected.size());
+            for (const auto& d : detected) {
+                boxes.push_back(d.rect);
+                obbs.push_back(d.obb);
+            }
             detection.End("ok", {{"boxes", boxes.size()}});
         }
         // Detection and recognition never need their weights or tensors concurrently.
@@ -1119,8 +1480,8 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
         CheckStop(stop);
         std::vector<TextLine> lines;
         if (geometryOnly) {
-            for (auto box : boxes)
-                lines.push_back({box, " "});
+            for (size_t i = 0; i < boxes.size(); ++i)
+                lines.push_back({boxes[i], " ", 0.f, obbs[i]});
             return lines;
         }
         if (boxes.empty())
@@ -1178,10 +1539,27 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                 orientation.End("skipped");
         }
         CheckStop(stop);
-        auto recognize = [&](Model& model, RECT box, bool rotated, bool rtlOrder) {
+        auto recognize = [&](Model& model, RECT box, OrientedBox obb, bool rotated, bool rtlOrder) {
             CheckStop(stop);
             const int inputHeight = model.InputHeight(48);
             const int fixedWidth = model.InputWidth();
+            if (obb.valid()) {
+                const bool vertical = obb.height > obb.width * 1.5f;
+                const float spanW = vertical ? obb.height : obb.width;
+                const float spanH = vertical ? obb.width : obb.height;
+                int contentWidth = fixedWidth;
+                if (fixedWidth <= 0)
+                    contentWidth = std::max(8, int(std::ceil(float(inputHeight) * spanW / std::max(1.f, spanH))));
+                if (contentWidth <= 4096) {
+                    const int width = fixedWidth > 0 ? fixedWidth : std::max(320, contentWidth);
+                    auto pixels = OrientedTensor(image, obb, width, inputHeight, contentWidth, vertical);
+                    auto output = model.Run(pixels, width, inputHeight, run);
+                    auto [text, score] = Decode(output, model.alphabet);
+                    if (rtlOrder && !text.empty())
+                        text = ReorderVisualToLogical(text);
+                    return TextLine{box, std::move(text), score, obb};
+                }
+            }
             const bool tall = Height(box) > Width(box) * 3 / 2;
             auto attempt = [&](bool vertical, bool quarter, int blocks) {
                 // Float arithmetic keeps the aspect-ratio width bit-identical to the original mobile
@@ -1197,9 +1575,8 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                         contentWidth =
                             std::max(8, int(std::ceil(float(inputHeight) * Width(box) / Height(box))));
                 }
-                if (contentWidth > 8192)
+                if (contentWidth > 4096)
                     return TextLine{box, " ", 0.f};
-                contentWidth = std::min(4096, contentWidth);
                 const int width = fixedWidth > 0 ? fixedWidth : std::max(320, contentWidth);
                 auto pixels = Tensor(image, box, width, inputHeight, contentWidth, false,
                                      rotated && !vertical && !quarter, vertical, quarter, blocks);
@@ -1231,107 +1608,45 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
             return turned.confidence > best.confidence ? turned : best;
         };
         try {
-            // Precompute tight ink dimensions for each box so mixed-script coverage checks measure
-            // actual glyph extent rather than DB unclip padding.
-            std::vector<int> boxInkWidth(boxes.size(), 1);
-            std::vector<int> boxInkHeight(boxes.size(), 1);
-            const bool hasPixels = image.bgra.size() == size_t(image.width) * image.height * 4;
-            for (size_t bi = 0; bi < boxes.size(); ++bi) {
-                const RECT r = boxes[bi];
-                boxInkWidth[bi] = std::max(1, Width(r));
-                boxInkHeight[bi] = std::max(1, Height(r));
-                if (!hasPixels || !Valid(r))
-                    continue;
-                const int stepX = std::max(1, Width(r) / 160);
-                std::array<size_t, 4096> hist{};
-                size_t cnt = 0;
-                for (int y = r.top; y < r.bottom; ++y)
-                    for (int x = r.left; x < r.right; x += stepX) {
-                        const auto* p = &image.bgra[(size_t(y) * image.width + x) * 4];
-                        ++hist[(int(p[2] >> 4) << 8) | (int(p[1] >> 4) << 4) | (p[0] >> 4)];
-                        ++cnt;
-                    }
-                if (!cnt)
-                    continue;
-                const int bgMode = int(std::max_element(hist.begin(), hist.end()) - hist.begin());
-                const int br = ((bgMode >> 8) & 15) * 16 + 8;
-                const int bg = ((bgMode >> 4) & 15) * 16 + 8;
-                const int bb = (bgMode & 15) * 16 + 8;
-                int minX = r.right, maxX = r.left, minY = r.bottom, maxY = r.top;
-                int inkPx = 0;
-                for (int y = r.top; y < r.bottom; ++y) {
-                    const auto* row = &image.bgra[size_t(y) * image.width * 4];
-                    for (int x = r.left; x < r.right; ++x) {
-                        const auto* p = &row[size_t(x) * 4];
-                        if (std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) + std::abs(int(p[0]) - bb) >= 48) {
-                            minX = std::min(minX, x);
-                            maxX = std::max(maxX, x + 1);
-                            minY = std::min(minY, y);
-                            maxY = std::max(maxY, y + 1);
-                            ++inkPx;
-                        }
-                    }
+            auto quality = [](const TextLine& line) {
+                double units = 0;
+                for (size_t i = 0; i < line.text.size();) {
+                    const char32_t code = NextCodePoint(line.text, i);
+                    if (IsCombiningMark(code))
+                        continue;
+                    if ((code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF) ||
+                        (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFF00 && code <= 0xFFEF))
+                        units += .95;
+                    else
+                        units += .55;
                 }
-                if (inkPx >= 4 && maxX > minX && maxY > minY) {
-                    boxInkWidth[bi] = std::max(maxX - minX, std::max(1, Width(r) / 3));
-                    boxInkHeight[bi] = std::max(maxY - minY, std::max(1, Height(r) / 2));
-                }
-            }
-            auto isIconBox = [](RECT r) {
-                const int w = Width(r), h = Height(r);
-                return (w <= int(h * 1.9f) && std::max(w, h) <= 54) || w < 18 || h < 10;
-            };
-            size_t nonIconCount = 0;
-            for (const RECT& b : boxes)
-                if (!isIconBox(b))
-                    ++nonIconCount;
-            auto lineCoverage = [&](const TextLine& line, size_t idx) {
-                const double units = EstimateTextUnits(line.text);
-                const RECT r = boxes[idx];
-                if (Height(r) > Width(r) * 3 / 2)
-                    return std::min(1., units * std::max(1, Width(r)) / std::max(1, Height(r)));
-                const double effH = std::max(double(boxInkHeight[idx]), double(Height(r)) * .78);
-                const double inkW = std::max(1., double(boxInkWidth[idx]));
-                return std::min(1., units * effH / inkW);
-            };
-            auto quality = [&](const TextLine& line, size_t idx) {
-                const double coverage = lineCoverage(line, idx);
+                const double coverage =
+                    std::min(1., units * Height(line.rect) / std::max(1, Width(line.rect)));
                 return float(line.confidence * (.6 + .4 * coverage));
             };
             std::vector<int> lineLanguages(boxes.size(), mode);
             bool triedRussian = false, triedGreek = false;
-            auto lineNeedsRefine = [&](size_t i, int targetLang) {
-                const float q = quality(lines[i], i);
+            auto lineNeedsRefine = [&](size_t i) {
+                const float q = quality(lines[i]);
                 if (q < .90f)
                     return true;
-                if (targetLang == OcrJapanese && lineLanguages[i] == OcrEnglish &&
-                    !HasCjkScript(lines[i].text) && Width(boxes[i]) >= Height(boxes[i]) * 3 &&
-                    lineCoverage(lines[i], i) < .88)
+                if (!triedGreek && HasGreekScript(lines[i].text) && lineLanguages[i] != OcrGreek)
                     return true;
-                if (!triedGreek && !isIconBox(boxes[i]) && HasGreekScript(lines[i].text) &&
-                    lineLanguages[i] != OcrGreek)
-                    return true;
-                if (!triedRussian && !isIconBox(boxes[i]) && LooksLikeMisreadCyrillic(lines[i].text) &&
+                if (!triedRussian && LooksLikeMisreadCyrillic(lines[i].text) &&
                     lineLanguages[i] != OcrRussian)
                     return true;
                 return false;
             };
             auto acceptCandidate = [&](size_t idx, TextLine&& cand, int language) {
-                const float newQ = quality(cand, idx);
-                const float oldQ = quality(lines[idx], idx);
-                const double oldCov = lineCoverage(lines[idx], idx);
-                const double newCov = lineCoverage(cand, idx);
-                const bool upgradeCjk =
-                    (language == OcrJapanese || language == OcrKorean) && HasCjkScript(cand.text) &&
-                    !HasCjkScript(lines[idx].text) && cand.confidence >= .70f && newCov > oldCov + .12 &&
-                    (cand.confidence * (.42 + .58 * newCov) > lines[idx].confidence * (.42 + .58 * oldCov));
+                const float newQ = quality(cand);
+                const float oldQ = quality(lines[idx]);
                 const bool upgradeCyrillic =
                     language == OcrRussian && LooksLikeMisreadCyrillic(lines[idx].text) &&
                     HasCyrillicScript(cand.text) && newQ >= oldQ - .03f;
                 const bool upgradeGreek =
                     language == OcrGreek && HasGreekScript(lines[idx].text) &&
                     HasGreekScript(cand.text) && newQ >= oldQ - .03f;
-                if (newQ > oldQ || upgradeCjk || upgradeCyrillic || upgradeGreek) {
+                if (newQ > oldQ || upgradeCyrillic || upgradeGreek) {
                     lines[idx] = std::move(cand);
                     lineLanguages[idx] = language;
                 }
@@ -1339,24 +1654,18 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
             auto satisfied = [&] {
                 double score = 0, weight = 0, lowWeight = 0;
                 for (size_t i = 0; i < lines.size(); ++i) {
-                    const bool skipIcon =
-                        nonIconCount >= 2 &&
-                        (isIconBox(boxes[i]) ||
-                         (VisibleCodePointCount(lines[i].text) <= 1 && lines[i].confidence < .45f));
-                    if (skipIcon)
-                        continue;
                     if ((!triedGreek && HasGreekScript(lines[i].text) && lineLanguages[i] != OcrGreek) ||
                         (!triedRussian && LooksLikeMisreadCyrillic(lines[i].text) &&
                          lineLanguages[i] != OcrRussian))
                         return false;
                     const double importance = std::sqrt(double(std::max(1, Width(lines[i].rect))));
-                    const float confidence = quality(lines[i], i);
+                    const float confidence = quality(lines[i]);
                     score += confidence * importance;
                     weight += importance;
                     if (confidence < .72f)
                         lowWeight += importance;
                 }
-                return weight > 0. && score / weight >= .88 && lowWeight <= weight * .10;
+                return score / std::max(1., weight) >= .88 && lowWeight <= weight * .10;
             };
             auto runAll = [&](int language) {
                 if (language == OcrRussian)
@@ -1372,13 +1681,10 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                 size_t recognized = 0;
                 const bool rtl = language == OcrArabic;
                 for (size_t i = 0; i < boxes.size(); ++i) {
-                    if (mode == OcrLocalAuto && !lines.empty() && !lineNeedsRefine(i, language)) {
-                        candidate.push_back(lines[i]);
-                    } else if (mode == OcrLocalAuto && !lines.empty() && nonIconCount >= 2 &&
-                               isIconBox(boxes[i]) && language != OcrEnglish) {
+                    if (mode == OcrLocalAuto && !lines.empty() && !lineNeedsRefine(i)) {
                         candidate.push_back(lines[i]);
                     } else {
-                        candidate.push_back(recognize(model, boxes[i], upsideDown[i], rtl));
+                        candidate.push_back(recognize(model, boxes[i], obbs[i], upsideDown[i], rtl));
                         ++recognized;
                     }
                 }
@@ -1403,18 +1709,19 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                 if (hasUnifiedModel) {
                     runAll(OcrJapanese);
                 } else {
-                    for (int language : {OcrEnglish, OcrJapanese}) {
+                    for (int language : {OcrEnglish, OcrJapanese, OcrKorean}) {
                         runAll(language);
                         if (satisfied())
                             break;
                     }
                 }
                 if (!satisfied()) {
-                    const std::array<int, 8> probeOrder{OcrKorean,  OcrRussian, OcrGreek,
+                    const std::array<int, 8> probeOrder{OcrRussian, OcrGreek,   OcrKorean,
                                                         OcrThai,    OcrArabic,  OcrDevanagari,
                                                         OcrEnglish, OcrLatin};
                     for (int language : probeOrder) {
-                        if (!hasUnifiedModel && language == OcrEnglish)
+                        if (!hasUnifiedModel &&
+                            (language == OcrKorean || language == OcrEnglish))
                             continue;
                         if (std::chrono::steady_clock::now() - recognitionStart >= kAutoCascadeBudget)
                             break;
@@ -1423,24 +1730,17 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                                 : !HasDedicatedRecognizer(root, language))
                             continue;
                         std::vector<size_t> uncertain;
-                        bool anyLatin = false;
-                        size_t multiCharUncertain = 0;
+                        bool anyLatin = false, anyGreek = false, anyCyrillicHint = false;
                         for (size_t i = 0; i < lines.size(); ++i) {
-                            if (!lineNeedsRefine(i, language))
-                                continue;
-                            if (nonIconCount >= 2 && isIconBox(boxes[i]))
+                            if (!lineNeedsRefine(i))
                                 continue;
                             uncertain.push_back(i);
                             anyLatin = anyLatin || HasLatinLetters(lines[i].text);
-                            if (Width(boxes[i]) >= int(Height(boxes[i]) * 2.2f))
-                                ++multiCharUncertain;
+                            anyGreek = anyGreek || HasGreekScript(lines[i].text);
+                            anyCyrillicHint = anyCyrillicHint || LooksLikeMisreadCyrillic(lines[i].text);
                         }
                         if (uncertain.empty())
                             break;
-                        const bool isNonLatinProbe =
-                            language != OcrEnglish && language != OcrLatin;
-                        if (nonIconCount >= 2 && isNonLatinProbe && multiCharUncertain == 0)
-                            continue;
                         if (hasUnifiedModel && (language == OcrEnglish || language == OcrLatin) && !anyLatin)
                             continue;
                         if (language == OcrRussian)
@@ -1453,63 +1753,58 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                         DiagnosticSpan recognition("ocr_recognize", {{"ocr_mode", language}});
                         const bool rtl = language == OcrArabic;
                         size_t recognized = 0;
-                        // Probe up to 3 representative uncertain lines first and commit only if the
-                        // script genuinely promotes on real multi-character text (preventing single-char
-                        // cross-script hallucinations on icons or noisy fragments).
-                        std::vector<size_t> ranked = uncertain;
-                        std::stable_sort(ranked.begin(), ranked.end(), [&](size_t a, size_t b) {
-                            const float qa = quality(lines[a], a), qb = quality(lines[b], b);
-                            if ((qa < .80f) != (qb < .80f))
-                                return qa < .80f;
-                            const long long areaA = 1LL * Width(boxes[a]) * Height(boxes[a]);
-                            const long long areaB = 1LL * Width(boxes[b]) * Height(boxes[b]);
-                            return areaA > areaB;
-                        });
-                        std::vector<size_t> probes;
-                        for (size_t idx : ranked) {
-                            if (Width(boxes[idx]) >= int(Height(boxes[idx]) * 2.f) &&
-                                Width(boxes[idx]) >= 20 && Height(boxes[idx]) >= 8)
-                                probes.push_back(idx);
-                            if (probes.size() == 3)
-                                break;
-                        }
-                        if (probes.empty())
-                            for (size_t k = 0; k < std::min<size_t>(3, ranked.size()); ++k)
-                                probes.push_back(ranked[k]);
-                        std::vector<std::pair<size_t, TextLine>> probeResults;
-                        probeResults.reserve(probes.size());
-                        bool promoted = false;
-                        for (size_t idx : probes) {
-                            const float oldQ = quality(lines[idx], idx);
-                            const std::string oldText = lines[idx].text;
-                            auto cand = recognize(model, boxes[idx], upsideDown[idx], rtl);
-                            ++recognized;
-                            const float newQ = quality(cand, idx);
-                            const int cpCnt = VisibleCodePointCount(cand.text);
-                            const bool multiBox =
-                                Width(boxes[idx]) >= int(Height(boxes[idx]) * 2.f) && cpCnt >= 2;
-                            const bool smallPageSingle = boxes.size() <= 2 && cpCnt >= 1 &&
-                                                         newQ >= .82f && newQ > oldQ + .15f;
-                            if ((multiBox && ((newQ >= .76f && newQ > oldQ + .06f) ||
-                                              (oldQ < .58f && newQ >= .70f) ||
-                                              (language == OcrRussian && LooksLikeMisreadCyrillic(oldText) &&
-                                               HasCyrillicScript(cand.text) && newQ >= oldQ - .03f) ||
-                                              (language == OcrGreek && HasGreekScript(oldText) &&
-                                               HasGreekScript(cand.text) && newQ >= oldQ - .03f) ||
-                                              (!isNonLatinProbe && newQ >= .85f && newQ > oldQ + .03f))) ||
-                                smallPageSingle)
-                                promoted = true;
-                            probeResults.emplace_back(idx, std::move(cand));
-                        }
-                        if (promoted) {
-                            for (auto& [idx, cand] : probeResults)
-                                acceptCandidate(idx, std::move(cand), language);
+                        if (uncertain.size() <= 4) {
                             for (size_t idx : uncertain) {
-                                if (std::find(probes.begin(), probes.end(), idx) != probes.end())
-                                    continue;
-                                auto cand = recognize(model, boxes[idx], upsideDown[idx], rtl);
+                                auto cand = recognize(model, boxes[idx], obbs[idx], upsideDown[idx], rtl);
                                 ++recognized;
                                 acceptCandidate(idx, std::move(cand), language);
+                            }
+                        } else {
+                            // Probe up to 3 representative uncertain lines first so non-matching
+                            // script models exit quickly without running every box on the page.
+                            std::vector<size_t> ranked = uncertain;
+                            std::stable_sort(ranked.begin(), ranked.end(), [&](size_t a, size_t b) {
+                                const float qa = quality(lines[a]), qb = quality(lines[b]);
+                                if ((qa < .80f) != (qb < .80f))
+                                    return qa < .80f;
+                                const long long areaA = 1LL * Width(boxes[a]) * Height(boxes[a]);
+                                const long long areaB = 1LL * Width(boxes[b]) * Height(boxes[b]);
+                                return areaA > areaB;
+                            });
+                            std::vector<size_t> probes;
+                            for (size_t idx : ranked) {
+                                if (Width(boxes[idx]) >= 20 && Height(boxes[idx]) >= 8)
+                                    probes.push_back(idx);
+                                if (probes.size() == 3)
+                                    break;
+                            }
+                            if (probes.empty())
+                                for (size_t k = 0; k < std::min<size_t>(3, ranked.size()); ++k)
+                                    probes.push_back(ranked[k]);
+                            bool promoted = false;
+                            for (size_t idx : probes) {
+                                const float oldQ = quality(lines[idx]);
+                                const std::string oldText = lines[idx].text;
+                                auto cand = recognize(model, boxes[idx], obbs[idx], upsideDown[idx], rtl);
+                                ++recognized;
+                                const float newQ = quality(cand);
+                                if ((newQ >= .75f && newQ > oldQ + .05f) ||
+                                    (oldQ < .60f && newQ >= .68f) ||
+                                    (language == OcrRussian && LooksLikeMisreadCyrillic(oldText) &&
+                                     HasCyrillicScript(cand.text) && newQ >= oldQ - .03f) ||
+                                    (language == OcrGreek && HasGreekScript(oldText) &&
+                                     HasGreekScript(cand.text) && newQ >= oldQ - .03f))
+                                    promoted = true;
+                                acceptCandidate(idx, std::move(cand), language);
+                            }
+                            if (promoted) {
+                                for (size_t idx : uncertain) {
+                                    if (std::find(probes.begin(), probes.end(), idx) != probes.end())
+                                        continue;
+                                    auto cand = recognize(model, boxes[idx], obbs[idx], upsideDown[idx], rtl);
+                                    ++recognized;
+                                    acceptCandidate(idx, std::move(cand), language);
+                                }
                             }
                         }
                         recognition.End("ok", {{"recognized_lines", recognized}});
@@ -1517,14 +1812,243 @@ std::vector<TextLine> RecognizeBundled(const Image& image, int mode, std::stop_t
                             break;
                     }
                 }
-                for (size_t i = 0; i < lines.size(); ++i)
-                    lines[i].confidence = quality(lines[i], i);
+                for (auto& line : lines)
+                    line.confidence = quality(line);
                 for (int language : {OcrEnglish, OcrJapanese, OcrKorean, OcrChinese, OcrLatin, OcrRussian,
                                      OcrThai, OcrArabic, OcrGreek, OcrDevanagari}) {
                     const auto count = std::count(lineLanguages.begin(), lineLanguages.end(), language);
                     if (count)
                         DiagnosticEvent("ocr_language_selected",
                                         {{"ocr_mode", language}, {"recognized_lines", count}});
+                }
+            }
+            // Detach leading/trailing UI icons (bug, cloud, chat bubble, info badge, chevron) that DB
+            // grouped into the same horizontal crop as adjacent button or label text.
+            {
+                auto trimAscii = [](std::string_view s) {
+                    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+                        s.remove_prefix(1);
+                    while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
+                        s.remove_suffix(1);
+                    return s;
+                };
+                auto isBlank = [&](std::string_view s) { return trimAscii(s).empty(); };
+                auto isTrailingPunct = [](char c) {
+                    return c == '.' || c == '?' || c == '!' || c == ':' || c == ';' || c == ')' || c == ']' ||
+                           c == '%' || c == '"' || c == '\'';
+                };
+                auto hasAlnum = [](std::string_view s) {
+                    for (unsigned char c : s)
+                        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c >= 0x80)
+                            return true;
+                    return false;
+                };
+                // Group line indices by recognizer language (starting with the loaded model) to avoid
+                // redundant ONNX session reloads during affix-icon verification.
+                std::vector<size_t> order(lines.size());
+                for (size_t i = 0; i < lines.size(); ++i)
+                    order[i] = i;
+                const int loadedLang = engine->recognizerMode;
+                auto langOf = [&](size_t idx) {
+                    return (idx < lineLanguages.size() && lineLanguages[idx] != OcrLocalAuto)
+                               ? lineLanguages[idx]
+                               : (loadedLang > 0 ? loadedLang : OcrJapanese);
+                };
+                std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+                    const int la = langOf(a), lb = langOf(b);
+                    if ((la == loadedLang) != (lb == loadedLang))
+                        return la == loadedLang;
+                    return la < lb;
+                });
+                for (size_t i : order) {
+                    CheckStop(stop);
+                    if (isBlank(lines[i].text) || lines[i].obb.valid())
+                        continue;
+                    RECT box = lines[i].rect;
+                    const int bw = Width(box), bh = Height(box);
+                    if (bw < 24 || bh < 10 || bh > 68 || bw <= bh)
+                        continue;
+                    const int lang = langOf(i);
+                    const bool rtl = lang == OcrArabic;
+                    auto extractSpans = [&](RECT r, int& outInkH) {
+                        struct InkSpan {
+                            int x0{}, x1{};
+                        };
+                        std::vector<InkSpan> spans;
+                        const int rw = Width(r), rh = Height(r);
+                        outInkH = std::max(8, (rh * 3) / 5);
+                        if (rw < 16 || rh < 8)
+                            return spans;
+                        std::array<size_t, 4096> hist{};
+                        for (int y = r.top; y < r.bottom; ++y)
+                            for (int x = r.left; x < r.right; ++x) {
+                                const auto* p = &image.bgra[(size_t(y) * image.width + x) * 4];
+                                ++hist[(int(p[2] >> 4) << 8) | (int(p[1] >> 4) << 4) | int(p[0] >> 4)];
+                            }
+                        const int m = int(std::max_element(hist.begin(), hist.end()) - hist.begin());
+                        const int br = ((m >> 8) & 15) * 16 + 8;
+                        const int bg = ((m >> 4) & 15) * 16 + 8;
+                        const int bb = (m & 15) * 16 + 8;
+                        std::vector<int> colInk(size_t(rw), 0);
+                        int minY = rh, maxY = 0;
+                        for (int x = 0; x < rw; ++x) {
+                            for (int y = 0; y < rh; ++y) {
+                                const auto* p = &image.bgra[(size_t(r.top + y) * image.width + (r.left + x)) * 4];
+                                if (std::abs(int(p[2]) - br) + std::abs(int(p[1]) - bg) +
+                                        std::abs(int(p[0]) - bb) >=
+                                    46) {
+                                    ++colInk[size_t(x)];
+                                    minY = std::min(minY, y);
+                                    maxY = std::max(maxY, y + 1);
+                                }
+                            }
+                        }
+                        if (maxY > minY)
+                            outInkH = std::max(7, maxY - minY);
+                        for (int x = 0; x < rw;) {
+                            if (colInk[size_t(x)] == 0) {
+                                ++x;
+                                continue;
+                            }
+                            const int x0 = x;
+                            int gap = 0;
+                            while (x < rw) {
+                                if (colInk[size_t(x)] > 0) {
+                                    gap = 0;
+                                    ++x;
+                                } else if (gap == 0 && x + 1 < rw && colInk[size_t(x + 1)] > 0) {
+                                    gap = 1;
+                                    ++x;
+                                } else {
+                                    break;
+                                }
+                            }
+                            const int x1 = (x > x0 && colInk[size_t(x - 1)] == 0) ? x - 1 : x;
+                            if (x1 > x0)
+                                spans.push_back({x0, x1});
+                        }
+                        return spans;
+                    };
+                    auto shouldDetach = [&](const TextLine& fullLine, const TextLine& iconLine,
+                                            const TextLine& bodyLine, bool trailing) -> bool {
+                        const auto fullT = trimAscii(fullLine.text);
+                        const auto bodyT = trimAscii(bodyLine.text);
+                        const auto iconT = trimAscii(iconLine.text);
+                        if (bodyT.empty() || bodyLine.confidence < .70f)
+                            return false;
+                        if (bodyT == fullT)
+                            return true;
+                        if (trailing && !fullT.empty() && isTrailingPunct(fullT.back()) &&
+                            (bodyT.empty() || bodyT.back() != fullT.back()))
+                            return false;
+                        const float fullRawConf = fullLine.confidence;
+                        const float bodyQ = mode == OcrLocalAuto ? quality(bodyLine) : bodyLine.confidence;
+                        if ((iconT.empty() || iconLine.confidence < .68f) && bodyQ >= fullRawConf - .06f)
+                            return true;
+                        if (bodyQ >= fullRawConf + .08f)
+                            return true;
+                        // Detect hallucination instability on leading icons (e.g. full="Jo Auto" vs icon="gro").
+                        if (!trailing && fullT.size() > bodyT.size() &&
+                            fullT.substr(fullT.size() - bodyT.size()) == bodyT) {
+                            auto prefix = trimAscii(fullT.substr(0, fullT.size() - bodyT.size()));
+                            if (!prefix.empty() && !iconT.empty() && prefix[0] != iconT[0] &&
+                                bodyLine.confidence >= .85f)
+                                return true;
+                        }
+                        // Detach a trailing isolated non-alphanumeric symbol/arrow (e.g. '->' read as '+').
+                        if (trailing && !fullT.empty() && !isTrailingPunct(fullT.back()) &&
+                            fullT.size() > bodyT.size() + 1 && fullT.substr(0, bodyT.size()) == bodyT &&
+                            fullT[bodyT.size()] == ' ') {
+                            auto suffix = trimAscii(fullT.substr(bodyT.size()));
+                            if (!suffix.empty() && !hasAlnum(suffix) && !hasAlnum(iconT) &&
+                                bodyLine.confidence >= .82f)
+                                return true;
+                        }
+                        return false;
+                    };
+                    // Check trailing icon/chevron first so removing a wide trailing dropdown gap does
+                    // not skew inner-gap statistics when subsequently checking a leading icon.
+                    for (int pass : {1, 0}) {
+                        RECT curBox = lines[i].rect;
+                        int inkH = 12;
+                        auto spans = extractSpans(curBox, inkH);
+                        if (spans.size() < 2)
+                            break;
+                        const int minIconGap = std::max(5, int(std::lround(inkH * .45f)));
+                        const int maxIconW = std::max(22, int(std::lround(inkH * 1.85f)));
+                        if (pass == 0) {
+                            const int w0 = spans.front().x1 - spans.front().x0;
+                            const int gap0 = spans[1].x0 - spans.front().x1;
+                            const int restW = spans.back().x1 - spans[1].x0;
+                            int medInner = 0;
+                            if (spans.size() >= 3) {
+                                std::vector<int> ig;
+                                for (size_t k = 1; k + 1 < spans.size(); ++k)
+                                    ig.push_back(spans[k + 1].x0 - spans[k].x1);
+                                std::sort(ig.begin(), ig.end());
+                                medInner = ig[ig.size() / 2];
+                            }
+                            if (w0 >= 4 && w0 <= maxIconW && gap0 >= minIconGap &&
+                                restW >= std::max(12, int(inkH * .90f)) &&
+                                (spans.size() == 2 || gap0 >= medInner + 2)) {
+                                auto& activeModel = engine->Recognizer(lang);
+                                const LONG splitX = curBox.left + (spans.front().x1 + spans[1].x0) / 2;
+                                const RECT iconRect{curBox.left, curBox.top,
+                                                    std::min(curBox.right, curBox.left + spans.front().x1 + 3),
+                                                    curBox.bottom};
+                                const RECT bodyRect{std::max(curBox.left + spans.front().x1 + 2, splitX),
+                                                    curBox.top, curBox.right, curBox.bottom};
+                                if (Width(iconRect) >= 4 && Width(bodyRect) >= 8) {
+                                    auto iconRes = recognize(activeModel, iconRect, {}, upsideDown[i], rtl);
+                                    auto bodyRes = recognize(activeModel, bodyRect, {}, upsideDown[i], rtl);
+                                    if (shouldDetach(lines[i], iconRes, bodyRes, false)) {
+                                        if (mode == OcrLocalAuto)
+                                            bodyRes.confidence = quality(bodyRes);
+                                        lines[i] = std::move(bodyRes);
+                                    }
+                                }
+                            }
+                        } else {
+                            const auto& lastS = spans.back();
+                            const auto& prevS = spans[spans.size() - 2];
+                            const int wLast = lastS.x1 - lastS.x0;
+                            const int gapLast = lastS.x0 - prevS.x1;
+                            const int bodyW = prevS.x1 - spans.front().x0;
+                            int medInner = 0;
+                            if (spans.size() >= 3) {
+                                std::vector<int> ig;
+                                for (size_t k = 0; k + 2 < spans.size(); ++k)
+                                    ig.push_back(spans[k + 1].x0 - spans[k].x1);
+                                std::sort(ig.begin(), ig.end());
+                                medInner = ig[ig.size() / 2];
+                            }
+                            const int minTrailingGap = std::max(3, int(std::lround(inkH * .34f)));
+                            const auto curT = trimAscii(lines[i].text);
+                            const bool endsSentencePunct = !curT.empty() && isTrailingPunct(curT.back());
+                            if (wLast >= 4 && wLast <= maxIconW && gapLast >= minTrailingGap &&
+                                (!endsSentencePunct || gapLast >= minIconGap) &&
+                                bodyW >= std::max(12, int(inkH * .90f)) &&
+                                (spans.size() == 2 || gapLast >= medInner + 1)) {
+                                auto& activeModel = engine->Recognizer(lang);
+                                const LONG splitX = curBox.left + (prevS.x1 + lastS.x0 + 1) / 2;
+                                const RECT iconRect{std::max(curBox.left, curBox.left + lastS.x0 - 3),
+                                                    curBox.top, curBox.right, curBox.bottom};
+                                const RECT bodyRect{
+                                    curBox.left, curBox.top,
+                                    std::min({curBox.left + lastS.x0 - 2, splitX, curBox.left + prevS.x1 + 1}),
+                                    curBox.bottom};
+                                if (Width(iconRect) >= 4 && Width(bodyRect) >= 8) {
+                                    auto iconRes = recognize(activeModel, iconRect, {}, upsideDown[i], rtl);
+                                    auto bodyRes = recognize(activeModel, bodyRect, {}, upsideDown[i], rtl);
+                                    if (shouldDetach(lines[i], iconRes, bodyRes, true)) {
+                                        if (mode == OcrLocalAuto)
+                                            bodyRes.confidence = quality(bodyRes);
+                                        lines[i] = std::move(bodyRes);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         } catch (const std::exception&) {
@@ -1591,22 +2115,18 @@ std::vector<TextLine> RecognizeMangaBundled(const Image& image, std::stop_token 
     TimeoutGuard watchdog(run);
     auto detection = DiagnosticSpan("ocr_detect_manga");
     try {
-        int padX = 0, padY = 0;
-        Image padded = PadForDetection(image, padX, padY);
-        const Image& detImage = padded.bgra.empty() ? image : padded;
         // Official geometry: long side 960, or the pixel budget of a 3:4 page for long strips.
-        const double longSide = double(std::max(detImage.width, detImage.height));
-        const double shortSide = double(std::max(1, std::min(detImage.width, detImage.height)));
+        const double longSide = double(std::max(image.width, image.height));
+        const double shortSide = double(std::max(1, std::min(image.width, image.height)));
         double ratio = 960.0 / longSide;
         if (longSide / shortSide > 2.0)
             ratio = std::min(1.0, std::sqrt(0.75 * 960.0 * 960.0 /
-                                            (double(detImage.width) * double(detImage.height))));
-        const int w = std::max(32, int(std::round(detImage.width * ratio / 32)) * 32);
-        const int h = std::max(32, int(std::round(detImage.height * ratio / 32)) * 32);
-        auto input = Tensor(detImage, {0, 0, detImage.width, detImage.height}, w, h, w, true);
+                                            (double(image.width) * double(image.height))));
+        const int w = std::max(32, int(std::round(image.width * ratio / 32)) * 32);
+        const int h = std::max(32, int(std::round(image.height * ratio / 32)) * 32);
+        auto input = Tensor(image, {0, 0, image.width, image.height}, w, h, w, true);
         auto det = detector->Run(input, w, h, run);
-        auto boxes = UnpadBoxes(Boxes(det, detImage, {.15f, .25f, 1.4f, 4}), padX, padY, image.width,
-                                image.height);
+        auto boxes = BoxesWithObb(det, image, {.15f, .25f, 1.4f, 4});
         detection.End("ok", {{"boxes", boxes.size()}, {"width", w}, {"height", h}});
         engine->mangaDetector.reset();
         CheckStop(stop);
@@ -1616,22 +2136,28 @@ std::vector<TextLine> RecognizeMangaBundled(const Image& image, std::stop_token 
         auto recognition = DiagnosticSpan("ocr_recognize_manga");
         const int inputHeight = recognizer->InputHeight(48);
         const int fixedWidth = recognizer->InputWidth();
-        for (const auto& box : boxes) {
+        for (const auto& detBox : boxes) {
             CheckStop(stop);
+            const RECT box = detBox.rect;
+            const OrientedBox obb = detBox.obb;
             // A column reads after a quarter turn, which is the orientation the weights expect.
-            const bool vertical = Height(box) > Width(box);
-            const int spanWidth = vertical ? Height(box) : Width(box);
-            const int spanHeight = vertical ? Width(box) : Height(box);
+            const bool vertical = obb.valid() ? (obb.height > obb.width) : (Height(box) > Width(box));
+            const int spanWidth = obb.valid() ? int(std::lround(vertical ? obb.height : obb.width))
+                                              : (vertical ? Height(box) : Width(box));
+            const int spanHeight = obb.valid() ? int(std::lround(vertical ? obb.width : obb.height))
+                                               : (vertical ? Width(box) : Height(box));
             int contentWidth = fixedWidth;
             if (contentWidth <= 0)
                 contentWidth = std::max(16, int(std::round(48.0 * spanWidth / std::max(1, spanHeight))));
             if (contentWidth > 4096)
                 continue;
-            auto pixels = Tensor(image, box, contentWidth, inputHeight, contentWidth, false, false, false,
-                                 false, 0, vertical);
+            auto pixels = obb.valid()
+                              ? OrientedTensor(image, obb, contentWidth, inputHeight, contentWidth, vertical)
+                              : Tensor(image, box, contentWidth, inputHeight, contentWidth, false, false,
+                                       false, false, 0, vertical);
             auto output = recognizer->Run(pixels, contentWidth, inputHeight, run);
             auto [text, score] = Decode(output, recognizer->alphabet);
-            lines.push_back({box, std::move(text), score});
+            lines.push_back({box, std::move(text), score, obb});
         }
         recognition.End("ok", {{"recognized_lines", lines.size()}});
         // Manga pages read columns right to left, each column top to bottom. Horizontal passages stay

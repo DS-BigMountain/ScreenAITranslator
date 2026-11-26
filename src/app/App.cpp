@@ -360,9 +360,9 @@ class App {
     void ShowContinuousBadge(const std::wstring& status) {
         if (!Valid(anchor_) || currentMonitor_.id.empty())
             return;
-        overlay_.ShowContinuousBadge(anchor_, currentMonitor_, status, [this] {
-            Post([this] { ExitContinuous(); });
-        });
+        overlay_.ShowContinuousBadge(
+            anchor_, currentMonitor_, status, [this] { Post([this] { ExitContinuous(); }); }, settings_,
+            [this] { Post([this] { Begin(false, true, true); }); });
     }
     void ResetContinuousStability() {
         ++continuousEpoch_;
@@ -431,6 +431,7 @@ class App {
         if (!progress_.Count()) {
             RECT local = anchor_;
             OffsetRect(&local, -currentMonitor_.rect.left, -currentMonitor_.rect.top);
+            const bool continuous = continuous_ != ContinuousState::Inactive;
             progress_.Progress(
                 anchor_, currentMonitor_, Crop(screenshot, local),
                 [this, id] {
@@ -443,7 +444,14 @@ class App {
                         }
                     });
                 },
-                continuous_ != ContinuousState::Inactive);
+                settings_, continuous,
+                [this, id, continuous] {
+                    Post([this, id, continuous] {
+                        if (id == generation_)
+                            Begin(false, true, continuous);
+                    });
+                });
+            overlay_.CloseContinuousBadge();
         }
         SetStage(Stage::Preprocessing);
     }
@@ -589,7 +597,7 @@ class App {
                 lastSample_.reset();
                 stableCount_ = 0;
                 continuous_ = ContinuousState::Translating;
-                overlay_.CloseContinuousBadge();
+                ShowContinuousBadge(L"连续翻译中 · 正在识别文字...");
                 SetStage(Stage::Capture);
                 RunTranslationTask(++generation_, currentMonitor_, anchor_);
             }
@@ -757,7 +765,7 @@ class App {
                         progress_.SetProgressText(L"文字识别中 · 点击 × 取消");
                         SetStage(Stage::Preprocessing);
                     } else if (phase == TranslationPhase::Requesting) {
-                        progress_.SetProgressText(L"翻译中 · 点击 × 取消");
+                        progress_.SetProgressText(L"正在翻译内容 · 可点击「关闭」或按 Esc 取消");
                         SetStage(Stage::Requesting);
                     } else {
                         SetStage(Stage::Layout);
@@ -839,7 +847,13 @@ class App {
                     }
                 });
             },
-            passthrough);
+            options, passthrough,
+            [this, id, passthrough] {
+                Post([this, id, passthrough] {
+                    if (id == generation_)
+                        Begin(false, true, passthrough);
+                });
+            });
         SetStage(Stage::Preprocessing);
         worker_.Submit([this, id, monitor, sourceImage, region, options, history, secret](std::stop_token stop) {
             DiagnosticContext context(id);

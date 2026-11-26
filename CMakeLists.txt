@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenAITranslator VERSION 3.2.1 LANGUAGES CXX RC)
+project(ScreenAITranslator VERSION 3.3.0 LANGUAGES CXX RC)
 set(SAT_APP_NAME "你给我翻译翻译什么叫翻译")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

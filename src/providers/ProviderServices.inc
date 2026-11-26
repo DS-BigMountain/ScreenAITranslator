@@ -223,6 +223,7 @@ public:
             segment.sourcePixels = r.rect;
             segment.sourceLines = r.lines;
             segment.sourceLineHeight = r.lineHeight;
+            segment.obb = r.obb;
             result.protectedRegions.push_back(r.rect);
         }
         const auto& targetLang = FindTextTarget(s.screenTargetLanguage);

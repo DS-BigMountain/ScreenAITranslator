@@ -82,6 +82,7 @@ struct SourceLine {
     float confidence{};
     int regionId{};
     bool claimed{};
+    OrientedBox obb{};
     // A vertical passage arrives as one rectangle over its balloon plus the strips beneath it. The
     // strips are what the layout needs, so they travel with the pairing.
     std::vector<RECT> strips;
@@ -109,12 +110,13 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
         if (!region.lines.empty() && !column) {
             for (const auto& line : region.lines)
                 if (Valid(line))
-                    lines.push_back({line, float(Height(line)), region.confidence, region.id, false, {}});
+                    lines.push_back({line, float(Height(line)), region.confidence, region.id, false,
+                                     region.lines.size() == 1 ? region.obb : OrientedBox{}, {}});
             continue;
         }
         if (Valid(region.rect))
             lines.push_back({region.rect, float(Height(region.rect)), region.confidence, region.id, false,
-                             column ? region.lines : std::vector<RECT>{}});
+                             region.obb, column ? region.lines : std::vector<RECT>{}});
     }
     if (lines.empty())
         return report;
@@ -275,6 +277,7 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
             // glyph size, which is their median width.
             segment.sourcePixels = anchorLine.rect;
             segment.sourceLines = anchorLine.strips;
+            segment.obb = anchorLine.obb;
             std::vector<int> widths;
             widths.reserve(anchorLine.strips.size());
             for (auto strip : anchorLine.strips)
@@ -306,6 +309,8 @@ SourceMatchReport AttachSourceGeometry(TranslationResult& result, int width, int
         segment.sourcePixels = united;
         segment.sourceLines = std::move(rows);
         segment.sourceLineHeight = heights[heights.size() / 2];
+        if (owned[s].size() == 1)
+            segment.obb = anchorLine.obb;
         ++report.adopted;
         report.matchedLines += owned[s].size();
         report.sourceIds.push_back(lines[owned[s].front()].regionId);

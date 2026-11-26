@@ -875,6 +875,7 @@ TranslationResult ParseTranslation(const std::string& source, const std::vector<
                 segment.sourcePixels = found->rect;
                 segment.sourceLines = found->lines;
                 segment.sourceLineHeight = found->lineHeight;
+                segment.obb = found->obb;
             }
             total += segment.original.size() + segment.translated.size();
             if (total > MaxTotalText)
@@ -1136,7 +1137,10 @@ nlohmann::json BuildRequest(const std::string& image, const std::vector<ContextI
         "Preserve class names, API identifiers and code tokens, but translate surrounding human-readable "
         "messages into " +
         targetName +
-        ". Do not treat a complete error message as untranslated code. ";
+        ". Do not treat a complete error message as untranslated code. "
+        "For manga or comics, do NOT translate sound effects or onomatopoeia (SFX / 擬音語・擬態語, such as "
+        "ドーン, ガタ, スッ, バサッ, どーん, ばっ, ざわ) overlaid directly on artwork outside speech bubbles; "
+        "omit them from additional passages. ";
     const auto schema = TranslationSchema(!regions.empty(), textOnly, coordinates);
     if (options.translateAll) {
         protocol += " Coverage mode overrides any preference to restrict passages. "
